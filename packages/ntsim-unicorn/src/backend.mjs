@@ -342,9 +342,10 @@ export class UnicornCpuBackend {
     // native sentinel: hook fires exactly at the marker address
     let returned = false;
     const markerHook = this.addCodeHook(() => { returned = true; return true; }, RET_MARKER, RET_MARKER);
-    // the marker page must be mapped/translatable for the hook to ever fire
-    this.#ensurePageMapped(RET_MARKER & ~0xfffn);
-    this.mem.write(RET_MARKER & ~0xfffn, new Uint8Array(0x1000).fill(0xf4));
+    // the marker page must be mapped/translatable for the hook to ever fire;
+    // fill happens UC-side only so SparseMemory stays free of backend internals
+    const mpage = this.#ensurePageMapped(RET_MARKER & ~0xfffn);
+    this.#rawWrite(mpage, new Uint8Array(this.PAGE).fill(0xf4));
 
     this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn
 

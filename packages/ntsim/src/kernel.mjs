@@ -39,10 +39,12 @@ export class NtKernel {
    *   defaults mirror real Windows kernel VAs).
    */
   constructor(opts = {}) {
-    this.mem = new SparseMemory();
+    // Adopt the injected backend's memory so guest, kernel model, and CPU
+    // all share ONE address space (JsInterpreter default binds its own).
+    this.mem = opts.cpu?.mem ?? new SparseMemory();
     this.tables = opts.tables ?? new StructTables();
     this.cpu = opts.cpu ?? new JsInterpreter(this.mem);
-    if (!this.cpu.mem) this.cpu.mem = this.mem;
+    this.cpu.mem = this.mem;
     const B = opts.bases ?? {};
     /** @type {typeof DEFAULT_BASES} */
     this.bases = {
