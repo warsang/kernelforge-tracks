@@ -3,30 +3,12 @@ import assert from "node:assert/strict";
 
 import { SparseMemory } from "../src/memory.mjs";
 import { JsInterpreter, M64 } from "../src/cpu.mjs";
+import { CodeBuf, REX_W } from "./helpers/codebuf.mjs";
 
 function newCpu() {
   const mem = new SparseMemory();
   return { mem, cpu: new JsInterpreter(mem) };
 }
-
-/** Assemble-free code emitter: append bytes to a growing array. */
-class CodeBuf {
-  constructor() { this.b = []; }
-  bytes(...bs) { this.b.push(...bs); return this; }
-  db(b) { return this.bytes(b); }
-  dw(w) { return this.bytes(w & 0xff, (w >> 8) & 0xff); }
-  dd(d) {
-    return this.bytes(d & 0xff, (d >> 8) & 0xff, (d >> 16) & 0xff, (d >> 24) & 0xff);
-  }
-  dq(v) {
-    let x = BigInt(v);
-    const o = [];
-    for (let i = 0; i < 8; i++) { o.push(Number(x & 0xffn)); x >>= 8n; }
-    return this.bytes(...o);
-  }
-}
-
-const REX_W = 0x48;
 
 test("mov r64 imm64 + ret", () => {
   const { mem, cpu } = newCpu();
@@ -173,4 +155,44 @@ test("timeout guard stops infinite loops", () => {
   const reason = cpu.run(10_000);
   assert.equal(reason, "timeout");
   assert.ok(Date.now() - t0 < 2000);
+});
+
+test("kernel VAs (>2^53) survive register round-trip", () => {
+  const { mem, cpu } = newCpu();
+  const c = new CodeBuf();
+  c.db(REX_W).db(0x89).db(0xc8); // mov rax, rcx
+  c.db(0xc3);                    // ret
+  mem.write(0x1000n, c.b);
+  const va = 0xffffb80000001000n;
+  const r = cpu.callFunction(0x1000n, [va]);
+  assert.equal(r.status, "ok");
+  assert.equal(r.retval, va); // truncated under the old 40-bit M64 mask
+});
+
+test("addCodeHook intercepts within range only", () => {
+  const { mem, cpu } = newCpu();
+  const c = new CodeBuf();
+  // 0x1000: call 0x5000        (rel32 = 0x5000 - 0x1005 = 0x3ffb)
+  // 0x1005: mov rax, 42        (would overwrite rax if the hook failed)
+  // 0x100c: ret
+  c.db(0xe8).dd(0x3ffb);
+  c.db(REX_W).db(0xc7).db(0xc0).dd(42);
+  c.db(0xc3);
+  mem.write(0x1000n, c.b);
+  mem.write(0x5000n, [0xf4]); // hlt marker, never executed when hook fires
+
+  cpu.addCodeHook(() => {
+    cpu.regs.rax = 0x99n;
+    cpu.rip = cpu.popVal(); // emulate ret
+    return true;
+  }, 0x5000n, 0x5fffn);
+  // decoy: wrong range must never fire
+  cpu.addCodeHook(() => {
+    cpu.regs.rax = 0x77n;
+    return true;
+  }, 0x9000n, 0x9fffn);
+
+  const r = cpu.callFunction(0x1000n);
+  assert.equal(r.status, "ok");
+  assert.equal(r.retval, 0x99n);
 });
