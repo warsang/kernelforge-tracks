@@ -28,12 +28,16 @@ const DEFAULT_PROCESSES = [
 
 export class NtKernel {
   /**
-   * @param {{tablesDir?: string, buildName?: string}} opts
+   * @param {{tables?: object, tablesDir?: string, buildName?: string,
+   *          cpu?: import("./cpu.mjs").CpuBackend}} opts
+   *   `cpu`: inject a pre-built backend (e.g. UnicornCpuBackend bound to the
+   *   same SparseMemory). Defaults to the deterministic JsInterpreter.
    */
   constructor(opts = {}) {
     this.mem = new SparseMemory();
     this.tables = opts.tables ?? new StructTables();
-    this.cpu = new JsInterpreter(this.mem);
+    this.cpu = opts.cpu ?? new JsInterpreter(this.mem);
+    if (!this.cpu.mem) this.cpu.mem = this.mem;
     this.buildName = opts.buildName ?? "synthetic-22h2";
 
     /** @type {Map<string, bigint>} export name -> thunk VA */
@@ -211,7 +215,7 @@ export class NtKernel {
   // ------------------------------------------------------------ driver exec
 
   _installCpuHook() {
-    this.cpu.onCodeHook = (rip) => {
+    const handler = (rip) => {
       if (rip < THUNK_BASE || rip >= THUNK_BASE + 0x10000000n) return false;
       // find which api
       for (const [name, addr] of this.apiThunks) {
@@ -230,6 +234,11 @@ export class NtKernel {
       }
       return false;
     };
+    if (typeof this.cpu.addCodeHook === "function") {
+      this.cpu.addCodeHook(handler, THUNK_BASE, THUNK_BASE + 0x10000000n);
+    } else {
+      this.cpu.onCodeHook = handler;
+    }
   }
 
   /** Invoke DriverEntry(driverObj, registryPath) on a mapped driver image. */

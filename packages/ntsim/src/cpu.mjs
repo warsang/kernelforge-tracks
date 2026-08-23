@@ -8,12 +8,38 @@
  * Register state: BigInt values. Flags modeled only where branch behavior needs them.
  */
 
+/**
+ * Contract every CPU backend must satisfy (duck-typed; JsInterpreter is the
+ * reference implementation, UnicornCpuBackend the high-fidelity alternative).
+ *
+ * @typedef {object} CpuBackend
+ * @property {Record<string, bigint>} regs 16 GPRs ("rax".."r15"), mutable BigInt values.
+ *   Backends MUST NOT round-trip values through Number (>2^53 kernel VAs).
+ * @property {bigint} rip current instruction pointer.
+ * @property {(addr: bigint) => boolean|null} [onCodeHook] legacy per-step hook;
+ *   return true to signal "handled" (caller rewinds rip itself).
+ * @property {(fn: (addr: bigint) => boolean|null, begin?: bigint, end?: bigint) => void} [addCodeHook]
+ *   range-limited hook registration (preferred over onCodeHook; backends may
+ *   map it to native range hooks for speed).
+ * @property {(funcAddr: bigint, args?: bigint[], shadowSpace?: number) =>
+ *   ({status: "ok", retval: bigint}|{status: "fault", error: Error}|
+ *    {status: "timeout"}|{status: string, rip?: bigint})} callFunction
+ *   Windows x64 ABI invoke: rcx/rdx/r8/r9 args, shadow space, runs until ret.
+ * @property {(maxSteps?: number) => ("returned"|"breakpoint"|"error"|"timeout"|"halted")} run
+ * @property {(rip?: bigint) => void} reset
+ * @property {number} steps executed-instruction counter.
+ * @property {Error|null} fault last fault captured by run().
+ * @property {() => bigint} popVal stack pop (used by NtKernel thunk ret emulation).
+ * @property {(v: bigint) => void} [pushVal] stack push.
+ */
+
 const R64 = [
   "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
   "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
 ];
 
-const M64 = 0xffffffffffn; // mask
+/** Full 64-bit mask. Kernel VAs live at 0xffff8000'00000000+ — never shrink this. */
+const M64 = 0xffffffffffffffffn;
 
 function sx(v, bits) {
   const sign = 1n << BigInt(bits - 1);
@@ -41,6 +67,8 @@ export class JsInterpreter {
     this.halted = false;
     /** @type {(addr: bigint)=>boolean|null} hook returning true to stop */
     this.onCodeHook = null;
+    /** @type {Array<{fn: (addr: bigint)=>boolean|null, begin: bigint, end: bigint}>} */
+    this.codeHooks = [];
     this.steps = 0;
     /** last fault info for bugcheck reporting */
     this.fault = null;
@@ -62,6 +90,18 @@ export class JsInterpreter {
     const name = R64[i];
     if (name === "rsp") v &= M64;
     this.regs[name] = v & M64;
+  }
+
+  /**
+   * Range-limited code hook registration (CpuBackend contract). A hook that
+   * returns true signals "handled" — the step is consumed and the caller is
+   * expected to have rewritten regs/rip itself.
+   * @param {(addr: bigint) => boolean|null} fn
+   * @param {bigint} [begin] inclusive
+   * @param {bigint} [end] inclusive
+   */
+  addCodeHook(fn, begin = 0n, end = M64) {
+    this.codeHooks.push({ fn, begin: BigInt(begin), end: BigInt(end) });
   }
 
   // -- register file access by 64-bit index (ModRM reg/rm order) -------------
@@ -241,6 +281,12 @@ export class JsInterpreter {
     if (this.onCodeHook?.(this.rip) === true) {
       this.steps++;
       return "hook";
+    }
+    for (const h of this.codeHooks) {
+      if (this.rip >= h.begin && this.rip <= h.end && h.fn(this.rip) === true) {
+        this.steps++;
+        return "hook";
+      }
     }
 
     const startRip = this.rip;
