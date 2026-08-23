@@ -19,10 +19,8 @@ const TABLES_DIR = path.join(
 
 // Node-side stand-in for the browser's fetch loader
 async function loadTables() {
-  const names = [
-    "_EPROCESS", "_LIST_ENTRY", "_UNICODE_STRING",
-    "_KLDR_DATA_TABLE_ENTRY", "_PS_PROTECTION",
-  ];
+  const names = ["_EPROCESS", "_LIST_ENTRY", "_UNICODE_STRING",
+    "_KLDR_DATA_TABLE_ENTRY", "_PS_PROTECTION", "_KPCR", "_KPRCB", "_ETHREAD"];
   const tables = new StructTables();
   for (const name of names) {
     const json = JSON.parse(await readFile(path.join(TABLES_DIR, `${name}.json`), "utf8"));

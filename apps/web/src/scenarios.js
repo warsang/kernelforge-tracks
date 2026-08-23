@@ -49,6 +49,49 @@ async function bootDefault({ makeBackend, loadTables }) {
   }
   kernel.loadedModules = modules;
 
+  // Synthesize EX_FAST_REF tokens so !process <addr> 1 / !token have a live
+  // target. Blobs are recognizable pattern data, NOT a real _TOKEN layout
+  // (no Vergilius _TOKEN table is loaded — see debugger note).
+  const tokOff = tables.offsetOf("_EPROCESS", "Token");
+  const tokens = {};
+  let tokBlob = 0x60000000n;
+  for (const p of kernel.listProcesses()) {
+    mem.w64(tokBlob, BigInt(`0x7A${p.pid.toString(16)}CAFE`)); // recognizable
+    const encoded = tokBlob | 0x8n; // pretend 8 fastrefs held on the pointer
+    mem.w64(p.eprocess + tokOff, encoded);
+    tokens[p.pid.toString()] = { blob: tokBlob, raw: encoded };
+    tokBlob += 0x100n;
+  }
+  kernel.tokens = tokens;
+
+  // Synthesize the processor control chain: KPCR -> PRCB -> CurrentThread.
+  // Offsets come from the active build's tables; only CLIENT_ID's stable
+  // {UniqueProcess; UniqueThread} pair is written by fixed sub-offsets.
+  const kpcr = kernel.bases.kva + 0x200000n;   // one page, page-aligned
+  const prcb = kpcr + 0x180n;                  // classic embedded-PRCB spot
+  const ethread = kernel.bases.kva + 0x210000n;
+  const lsassPid = 108n;
+
+  mem.w64(kpcr + tables.offsetOf("_KPCR", "Self"), kpcr);
+  mem.w64(kpcr + tables.offsetOf("_KPCR", "CurrentPrcb"), prcb);
+  mem.w64(kpcr + tables.offsetOf("_KPCR", "IdtBase"), kernel.bases.kva + 0x220000n);
+  mem.w64(kpcr + tables.offsetOf("_KPCR", "GdtBase"), kernel.bases.kva + 0x230000n);
+
+  mem.w64(prcb + tables.offsetOf("_KPRCB", "CurrentThread"), ethread);
+  mem.w32(prcb + tables.offsetOf("_KPRCB", "InitialApicId"), 0);
+
+  const cidOff = tables.offsetOf("_ETHREAD", "Cid");
+  mem.w64(ethread + cidOff, lsassPid);          // CLIENT_ID.UniqueProcess
+  mem.w64(ethread + cidOff + 8n, 408n);         // CLIENT_ID.UniqueThread
+  mem.w64(ethread + tables.offsetOf("_ETHREAD", "Win32StartAddress"), 0x7ff00000n);
+  mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
+  // mark lsass EPROCESS so explorers can correlate: stamp StartAddress too
+  mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
+
+  kernel.kpcr = kpcr;
+  kernel.prcb = prcb;
+  kernel.currentThread = ethread;
+
   return { kernel, kind: "boot-default" };
 }
 

@@ -177,6 +177,7 @@ function renderLesson(lesson) {
             inp.disabled = true;
             btn.disabled = true;
             refreshHeader();
+            renderSidebar(); // surface newly unlocked lessons immediately
           } else {
             inp.classList.add("bad");
             setTimeout(() => inp.classList.remove("bad"), 600);
