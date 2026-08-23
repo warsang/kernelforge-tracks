@@ -19,19 +19,28 @@ when a scenario explicitly asks for it.
 Rule of thumb: grade and teach on `js`; use `unicorn` when a scenario needs
 instructions the interpreter refuses, or as a differential oracle.
 
-## Known limitation — real kernel VAs
+## Real kernel VAs — supported (TLB-VIRTUAL)
 
-Unicorn ≤ 2.1.x cannot execute or access memory at canonical kernel-half VAs
-(bit 63 set): with paging disabled its softmmu masks physical addresses to 52
-bits ([upstream #2010](https://github.com/unicorn-engine/unicorn/issues/2010)).
-ntsim's default synthetic bases (`0xffff_f800…`) therefore **fault under this
-backend**. Two mitigations ship today:
+Unicorn ≥ 2.1's default softmmu masks physical addresses to x86_64's 52-bit PA
+space, which breaks canonical kernel-half VAs when paging is off
+([upstream #2010](https://github.com/unicorn-engine/unicorn/issues/2010)).
+The backend therefore enables **`UC_TLB_VIRTUAL`** at construction via
+`uc_ctl(UC_CTL_TLB_TYPE)`, which maps guest VA→PA 1:1 across the full 64-bit
+space. With it, ntsim's default synthetic bases (`0xffff_f800…`) execute and
+are exercised by the differential suite (`differential.test.mjs`, "REAL kernel
+VAs" case).
 
-1. Low-memory layouts via `new NtKernel({ cpu, bases: { … } })` — used by the
-   differential suite; runs identically on both backends.
-2. A guest-paging bootstrap (real PML4 page tables mapping kernel VAs → low
-   physical pages, like Windows itself) is designed but not yet landed; see
-   `docs/spike-unicorn.md` in the repo history for the validated approach.
+Implementation notes learned the hard way:
+- `uc_ctl` is variadic. The only reliable invocation from JS is the wrapper's
+  `engine.ctl(controlWord, [{type:'i32', value}])`, which materializes a
+  va_list buffer — raw fixed-arity ccalls read garbage varargs and silently
+  no-op (mode defaults to CPU = no fix).
+- Code-hook ranges must be registered through raw `'i64'` ccalls: the
+  wrapper's `hook_add` marshals begin/end through f64, corrupting any range
+  containing addresses above 2^53 — exactly where kernel API thunks live.
+
+Low-memory layouts (`new NtKernel({ bases })`) remain supported for scenarios
+that want small address spaces.
 
 ## Versioning & provenance
 

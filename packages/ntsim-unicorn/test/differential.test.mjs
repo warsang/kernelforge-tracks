@@ -132,3 +132,37 @@ test("differential: DbgPrint formatting matches", async () => {
   assert.equal(logs.unicorn, logs.js);
   assert.match(logs.js, /pid=4242/);
 });
+
+test("differential: REAL kernel VAs (default bases) — DKOM driver", async () => {
+  // No bases override: kva/pool/thunk/eproc live at true canonical
+  // kernel-half addresses (0xffff…). Requires the backend's TLB-VIRTUAL
+  // enablement; JsInterpreter handles these natively.
+  const kernels = {};
+  for (const be of ["js", "unicorn"]) {
+    const mem = new SparseMemory();
+    const cpu = be === "unicorn" ? await createUnicornBackend(mem) : new JsInterpreter(mem);
+    const k = new NtKernel({ cpu }); // DEFAULT bases on purpose
+    await k.loadTablesFromDir(tablesDir);
+    k.bootstrap();
+    cpu.regs.rsp = 0x7ff00n;
+    mem.write(0x70000n, new Uint8Array(0x10000));
+
+    const t = k.tables;
+    const linksOff = t.offsetOf("_EPROCESS", "ActiveProcessLinks");
+    const img = k.allocPool(dkomDriverBytes(linksOff).length, "dkom");
+    k.mem.write(img, Uint8Array.from(dkomDriverBytes(linksOff)));
+    const target = k.processesByName.get("kftarget.exe");
+
+    const r = k.cpu.callFunction(img, [target]);
+    assert.equal(r.status, "ok", `[${be}] faulted: ${r.error?.message}`);
+    assert.equal(k.listProcesses().find((p) => p.name === "kftarget.exe"), undefined, `[${be}] not hidden`);
+    kernels[be] = k;
+  }
+
+  // semantic windows differ per-backend here (different BASES instances? no —
+  // both used defaults), so compare directly:
+  const js = stateSnapshot(kernels.js);
+  const uc = stateSnapshot(kernels.unicorn);
+  assert.deepEqual(uc.dbgLog, js.dbgLog);
+  assert.deepEqual(uc.processes, js.processes);
+});
