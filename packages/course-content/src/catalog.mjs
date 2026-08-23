@@ -1,6 +1,9 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "./sha256.mjs";
 
-const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex");
+// Synchronous on purpose: flags are hashed at module load so the catalog is
+// plain static data everywhere (Node and browser). sha256Hex matches
+// node:crypto's digest("hex") byte-for-byte.
+const sha = sha256Hex;
 
 /**
  * MODULE 1 — Windows Kernel Fundamentals & Manual Mapping (first vertical slice).

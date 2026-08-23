@@ -4,8 +4,6 @@
  * hardcoded in ntsim logic — everything flows through the active build's tables.
  */
 
-import { readFile } from "node:fs/promises";
-
 export class StructTables {
   constructor() {
     /** @type {Map<string, {totalSize:number, fieldsByName:object}>} */
@@ -17,6 +15,7 @@ export class StructTables {
    * @param {string[]} names types to load
    */
   static async loadDir(dirPath, names) {
+    const { readFile } = await import("node:fs/promises"); // Node-only path
     const t = new StructTables();
     for (const n of names) {
       try {
