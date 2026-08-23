@@ -72,6 +72,15 @@ export class UnicornCpuBackend {
      * faulting (SparseMemory reads-as-zeros semantics). Lab layouts live here;
      * real kernel VAs stay unsupported until the paging bootstrap lands.
      */
+    // Full 64-bit guest VA support: unicorn's default softmmu masks physical
+    // addresses to x86_64's 52-bit PA space, breaking canonical kernel-half
+    // VAs when paging is off (upstream issue #2010). The VIRTUAL tlb does a
+    // clean 1:1 mapping instead. MUST go through the wrapper's ctl() which
+    // builds a proper va_list buffer — raw fixed-arity ccalls silently no-op.
+    const UC_CTL_TLB_TYPE = 12;
+    const ctlWord = (type, nr, rw) => ((type | (nr << 26) | (rw << 30)) >>> 0);
+    this.engine.ctl(ctlWord(UC_CTL_TLB_TYPE, 1, 1), [{ type: "i32", value: 1 /* UC_TLB_VIRTUAL */ }]);
+
     const arenaSize = Number(opts?.arenaSize ?? 0x2000000);
     if (arenaSize > 0) {
       const rc = this.#rawMap(0n, BigInt(arenaSize), uc.PROT_ALL);
