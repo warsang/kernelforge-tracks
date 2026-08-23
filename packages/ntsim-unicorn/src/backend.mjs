@@ -29,7 +29,26 @@ import { CpuError } from "@kernelforge/ntsim/src/cpu.mjs";
 let modulePromise = null;
 async function loadModule() {
   if (!modulePromise) {
-    modulePromise = import("../vendor/unicorn_x86.mjs").then((m) => (m.default ?? m)());
+    modulePromise = (async () => {
+      // The bundle is ESM now; its emscripten glue would pick the NODE branch
+      // under Node and die on require(). Hide node-ness during eval+init so
+      // it always takes the browser branch (WebAssembly works everywhere).
+      const procRef = globalThis.process;
+      const savedVersions = procRef?.versions;
+      let masked = false;
+      if (typeof document === "undefined" && savedVersions) {
+        Object.defineProperty(procRef, "versions", { value: {}, configurable: true });
+        masked = true;
+      }
+      try {
+        const m = await import("../vendor/unicorn_x86.mjs");
+        return (m.default ?? m)();
+      } finally {
+        if (masked) {
+          Object.defineProperty(procRef, "versions", { value: savedVersions, configurable: true });
+        }
+      }
+    })();
   }
   return modulePromise;
 }
