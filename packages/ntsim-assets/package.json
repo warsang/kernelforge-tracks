@@ -1,0 +1,10 @@
+{
+  "name": "@kernelforge/ntsim-assets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape": "node scripts/scrape-vergilius.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

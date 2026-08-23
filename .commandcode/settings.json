@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(node --version)",
+      "Shell(npm:*)",
+      "Shell(git:*)",
+      "Shell(pnpm:*)",
+      "Shell(python3 --version)",
+      "Shell(corepack:*)",
+      "Shell(node --test packages/lab-runtime/test/*.test.mjs 2 >& 1)",
+      "Shell(mkdir:*)",
+      "Shell(curl -sL https://raw.githubusercontent.com/VergiliusProject/vergiliusproject.github.io/master/kernels/x64/windows-10/22h2/_EPROCESS.html -o packages/ntsim-assets/test/fixtures/_EPROCESS-22h2.html)",
+      "Shell(node --test packages/ntsim-assets/test/*.test.mjs 2 >& 1)",
+      "Shell(node scripts/scrape-vergilius.mjs --family windows-10 --build 22h2 2 >& 1)",
+      "Shell(node scripts/scrape-vergilius.mjs --family windows-7 --build 7601 2 >& 1)",
+      "Shell(curl -s https://api.github.com/repos/VergiliusProject/vergiliusproject.github.io/contents/kernels/x64/windows-7)",
+      "Shell(node scripts/scrape-vergilius.mjs --family windows-7 --build sp1 2 >& 1)",
+      "Shell(node -e \" const j = require('./packages/ntsim-assets/data/vergilius/windows-10/22h2/_EPROCESS.json'); console.log('size:', '0x'+j.totalSize.toString(16)); for (const f of ['UniqueProcessId','ActiveProcessLinks','Token','ImageFileName','Protection']) { const e = j.fieldsByName[f]; console.log(f.padEnd(20), '0x'+e.offset.toString(16).padStart(3,'0'), e.base); } const w7 = require('./packages/ntsim-assets/data/vergilius/windows-7/sp1/_EPROCESS.json'); console.log('win7 ActiveProcessLinks:', '0x'+w7.fieldsByName.ActiveProcessLinks.offset.toString(16)); console.log('win7 ImageFileName:', '0x'+w7.fieldsByName.ImageFileName.offset.toString(16)); \")",
+      "Shell(npm view unicorn-maas version dist-tags 2>/dev/null; npm view @korki/unicorn-wasm version 2>/dev/null; npm search unicorn wasm --json 2>/dev/null | head -50)",
+      "Shell(for:*)",
+      "Shell(do:*)",
+      "Shell(done:*)",
+      "Shell(node --test packages/ntsim/test/*.test.mjs 2 >& 1)",
+      "Shell(grep:*)",
+      "Shell(sed:*)",
+      "Shell(node -e  import('./packages/ntsim/src/memory.mjs').then(async ({SparseMemory}) => { const { JsInterpreter } = await import('./packages/ntsim/src/cpu.mjs'); const mem = new SparseMemory(); const cpu = new JsInterpreter(mem); // test7 code const code = [0x31,0xc0, 0x48,0x01,0xc8, 0xff,0xc9, 0x75,0xfb, 0xc3]; mem.write(0x1000n, code); const r = cpu.callFunction(0x1000n, [10n]); console.log('test7:', JSON.stringify(r, (k,v)=> typeof v==='bigint'?v.toString():v)); }); 2 >& 1)",
+      "Shell(awk:*)",
+      "Shell(while:*)",
+      "Shell(node -e \" import('./packages/ntsim/src/memory.mjs').then(async ({SparseMemory}) => { const { JsInterpreter } = await import('./packages/ntsim/src/cpu.mjs'); const mem = new SparseMemory(); const cpu = new JsInterpreter(mem); // FF C9 = grp5 /1 dec rcx (reg field=1) mem.write(0x1000n, [0xff,0xc9, 0xc3]); cpu.regs.rcx = 5n; cpu.regs.rsp = 0x7ff00n; const r = cpu.callFunction(0x1000n); console.log('dec rcx:', r.status, 'rcx=', cpu.regs.rcx.toString()); });\")",
+      "Shell(node -e \" import('./packages/ntsim/src/memory.mjs').then(async ({SparseMemory}) => { const { JsInterpreter } = await import('./packages/ntsim/src/cpu.mjs'); const mem = new SparseMemory(); const cpu = new JsInterpreter(mem); // test7: xor eax,eax; L: add rax,rcx; dec rcx; jnz L(-5); ret mem.write(0x1000n, [0x31,0xc0, 0x48,0x01,0xc8, 0xff,0xc9, 0x75,0xfb, 0xc3]); const r = cpu.callFunction(0x1000n, [10n]); console.log('test7:', r.status, r.retval !== undefined ? r.retval.toString() : ''); // test5 code: push rbp; mov rbp,rsp; sub rsp,0x10; mov [rbp],rcx; mov rax,[rbp]; leave; ret const c = [0x55, 0x48,0x89,0xe5, 0x48,0x83,0xec,0x10, 0x48,0x89,0x4d,0x00, 0x48,0x8b,0x45,0x00, 0xc9, 0xc3]; mem.write(0x2000n, c); const r2 = cpu.callFunction(0x2000n, [0x777n]); console.log('test5:', r2.status ?? '', 'rax=', cpu.regs.rax.toString(16)); });\")",
+      "Shell(node -e \" import('./packages/ntsim/src/memory.mjs').then(async ({SparseMemory}) => { const { JsInterpreter } = await import('./packages/ntsim/src/cpu.mjs'); const mem = new SparseMemory(); const cpu = new JsInterpreter(mem); mem.write(0x1000n, [0x31,0xc0, 0x48,0x01,0xc8, 0xff,0xc9, 0x75,0xfb, 0xc3]); const r = cpu.callFunction(0x1000n, [10n]); console.log('test7:', r.status, r.retval !== undefined ? r.retval.toString() : (r.error?.message ?? '')); const c = [0x55, 0x48,0x89,0xe5, 0x48,0x83,0xec,0x10, 0x48,0x89,0x4d,0x00, 0x48,0x8b,0x45,0x00, 0xc9, 0xc3]; mem.write(0x2000n, c); const r2 = cpu.callFunction(0x2000n, [0x777n]); console.log('test5:', r2.status ?? '', 'rax=', cpu.regs.rax.toString(16)); });\")",
+      "Shell(which zig clang gcc x86_64-w64-mingw32-gcc 2>/dev/null; clang --version 2>/dev/null | head -2; brew list 2>/dev/null | grep -i -E \"mingw|zig|llvm\" | head)",
+      "Shell(cd /tmp && cat > drv.c <<'EOF' typedef unsigned long long u64; __declspec(dllexport) u64 add64(u64 a, u64 b) { return a + b; } EOF clang --target=x86_64-pc-windows-msvc -c drv.c -o drv.obj 2>&1 && file drv.obj && llvm-objdump -d /tmp/drv.obj 2>/dev/null | head -20 || objdump -d /tmp/drv.obj 2>/dev/null | head -20)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

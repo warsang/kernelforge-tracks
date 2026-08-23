@@ -1,0 +1,713 @@
+/**
+ * Pluggable CPU backend interface + deterministic JS x86-64 interpreter.
+ *
+ * The interpreter covers the integer subset that clang -O0/-O1/-O2 emits for
+ * typical kernel-mode C code (no SEH prologues, no intrinsics). Unsupported
+ * instructions raise immediately — never silently misexecute.
+ *
+ * Register state: BigInt values. Flags modeled only where branch behavior needs them.
+ */
+
+const R64 = [
+  "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+  "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+];
+
+const M64 = 0xffffffffffn; // mask
+
+function sx(v, bits) {
+  const sign = 1n << BigInt(bits - 1);
+  return ((v & (sign - 1n)) - (v & sign)) & M64;
+}
+
+export class CpuError extends Error {
+  constructor(msg, rip) {
+    super(`${msg} @ rip=0x${rip.toString(16)}`);
+    this.rip = rip;
+  }
+}
+
+/** Minimal x86-64 interpreter implementing the CpuBackend contract. */
+export class JsInterpreter {
+  /**
+   * @param {object} mem SparseMemory-like: read(addr,len)->Uint8Array, write(addr,bytes)
+   */
+  constructor(mem) {
+    this.mem = mem;
+    this.regs = {};
+    for (const r of R64) this.regs[r] = 0n;
+    this.rip = 0n;
+    this.cf = this.zf = this.sf = this.of = false;
+    this.halted = false;
+    /** @type {(addr: bigint)=>boolean|null} hook returning true to stop */
+    this.onCodeHook = null;
+    this.steps = 0;
+    /** last fault info for bugcheck reporting */
+    this.fault = null;
+    /** when set, run() returns "returned" upon reaching this rip (call sentinel) */
+    this.stopOnRip = null;
+  }
+
+  reset(rip) {
+    for (const r of R64) this.regs[r] = 0n;
+    this.rip = rip;
+    this.halted = false;
+    this.steps = 0;
+    this.fault = null;
+  }
+
+  getReg(i) { return i < 8 ? this.regs[R64[i]] : this.regs[R64[i]]; }
+
+  setReg(i, v) {
+    const name = R64[i];
+    if (name === "rsp") v &= M64;
+    this.regs[name] = v & M64;
+  }
+
+  // -- register file access by 64-bit index (ModRM reg/rm order) -------------
+
+  readReg(idx, size) {
+    const full = this.regs[R64[idx]];
+    switch (size) {
+      case 8: return full & M64;
+      case 4: return full & 0xffffffffn;
+      case 2: return full & 0xffffn;
+      case 1: {
+        // rex prefix distinguishes sil/dil/bpl/spl vs ah/ch/dh/bh; we support
+        // only low-byte access (compiled C rarely touches high bytes at O1/O2).
+        return full & 0xffn;
+      }
+      default: throw new Error("bad size");
+    }
+  }
+
+  writeReg(idx, size, val) {
+    const name = R64[idx];
+    const cur = this.regs[name];
+    switch (size) {
+      case 8: this.regs[name] = val & M64; break;
+      case 4: this.regs[name] = val & 0xffffffffn; break; // zero-extends!
+      case 2: this.regs[name] = (cur & ~0xffffn) | (val & 0xffffn); break;
+      case 1: this.regs[name] = (cur & ~0xffn) | (val & 0xffn); break;
+    }
+  }
+
+  // -- memory ----------------------------------------------------------------
+
+  fetch8() {
+    const b = this.mem.read(this.rip, 1)[0];
+    this.rip += 1n;
+    return b;
+  }
+
+  fetch(n) {
+    let v = 0n;
+    for (let i = 0; i < n; i++) v |= BigInt(this.fetch8()) << BigInt(8 * i);
+    return v;
+  }
+
+  fetchImmSx(n) {
+    return n === 8 ? this.fetch(8) : sx(this.fetch(n), n * 8);
+  }
+
+  // -- ModRM -------------------------------------------------------------------
+
+  /** Decode ModRM byte at rip; returns {reg, rm:{kind:'reg'|'mem', ...}} */
+  decodeModrm(opsize) {
+    const modrm = this.fetch8();
+    const mod = modrm >> 6;
+    let reg = (modrm >> 3) & 7;
+    let rm = modrm & 7;
+
+    // SIB
+    if (mod !== 3 && rm === 4) {
+      const sib = this.fetch8();
+      const scale = 1n << BigInt(sib >> 6);
+      const idx = (sib >> 3) & 7;
+      const base = sib & 7;
+      let addr = 0n;
+      if (idx !== 4) addr += this.readReg(idx, 8) * scale;
+      if (base === 5 && mod === 0) {
+        addr += this.fetch(4); // disp32, no base
+      } else {
+        addr += this.readReg(base, 8);
+      }
+      rm = { kind: "mem", addr };
+    } else if (mod !== 3) {
+      // RIP-relative special case
+      if (rm === 5 && mod === 0) {
+        const disp = sx(this.fetch(4), 32);
+        rm = { kind: "mem", addr: (this.rip + disp) & M64 };
+      } else {
+        rm = { kind: "mem", addr: this.readReg(rm, 8) };
+      }
+    }
+
+    if (mod === 1) {
+      rm.addr = (rm.addr + sx(BigInt(this.fetch8()), 8)) & M64;
+    } else if (mod === 2 || (mod === 0 && typeof rm === "number")) {
+      rm.addr = (rm.addr + this.fetchImmSx(4)) & M64;
+    }
+
+    // REX.R extends reg field
+    if (this.rexR) reg |= 8;
+
+    // mod==3 => rm is a REGISTER INDEX (REX.B extends it)
+    if (mod === 3) {
+      return { mod, reg, rm: { kind: "reg", reg: this.rexB ? (rm | 8) : rm } };
+    }
+    return { mod, reg, rm };
+  }
+
+  loadOp(rm, size) {
+    return rm.kind === "reg" ? this.readReg(rm.reg ?? 0, size) : this.loadMem(rm.addr, size);
+  }
+
+  storeOp(rm, size, val) {
+    if (rm.kind === "reg") this.writeReg(rm.reg ?? 0, size, val);
+    else this.storeMem(rm.addr, size, val);
+  }
+
+  loadMem(addr, size) {
+    const bytes = this.mem.read(addr & M64, size);
+    let v = 0n;
+    for (let i = size - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+    return v;
+  }
+
+  storeMem(addr, size, val) {
+    const out = new Uint8Array(size);
+    let b = val;
+    for (let i = 0; i < size; i++) { out[i] = Number(b & 0xffn); b >>= 8n; }
+    this.mem.write(addr & M64, out);
+  }
+
+  // -- ALU ---------------------------------------------------------------------
+
+  alu(op, a, b, size) {
+    const mask = size === 8 ? M64 : (1n << BigInt(size * 8)) - 1n;
+    const signBit = 1n << BigInt(size * 8 - 1);
+    let r;
+    switch (op) {
+      case "add": r = a + b; this.cf = (a + b) > mask; break;
+      case "adc": r = a + b + (this.cf ? 1n : 0n); this.cf = (a + b + (this.cf ? 1n : 0n)) > mask; break;
+      case "sub": r = a - b; this.cf = a < b; break;
+      case "sbb": r = a - b - (this.cf ? 1n : 0n); this.cf = (a - (b + (this.cf ? 1n : 0n))) < 0n; break;
+      case "and":
+      case "or":
+      case "xor": {
+        r = op === "and" ? a & b : op === "or" ? a | b : a ^ b;
+        this.cf = false;
+        break;
+      }
+      case "cmp": r = a - b; this.cf = a < b; break;
+      case "test": r = a & b; this.cf = false; break;
+    }
+    r &= mask;
+    this.zf = r === 0n;
+    this.sf = (r & signBit) !== 0n;
+    this.of =
+      op === "add" ? ((a & signBit) === (b & signBit) && (r & signBit) !== (a & signBit))
+      : ["sub", "cmp"].includes(op) ? ((a & signBit) !== (b & signBit) && (r & signBit) !== (a & signBit))
+      : false;
+    return r;
+  }
+
+  cond(cc) {
+    switch (cc) {
+      case 0x0: return this.of;                    // o
+      case 0x1: return !this.of;                   // no
+      case 0x2: return this.cf;                    // b
+      case 0x3: return !this.cf;                   // ae
+      case 0x4: return this.zf;                    // e
+      case 0x5: return !this.zf;                   // ne
+      case 0x6: return this.cf || this.zf;         // be
+      case 0x7: return !this.cf && !this.zf;       // a
+      case 0x8: return this.sf;                    // s
+      case 0x9: return !this.sf;                   // ns
+      case 0xa: return this.of !== this.sf;        // p (approximated as parity-less)
+      case 0xb: return this.of === this.sf;
+      case 0xc: return this.zf || (this.sf !== this.of); // le
+      case 0xd: return !this.zf && (this.sf === this.of); // g
+      case 0xe: return this.zf || (this.sf !== this.of);
+      case 0xf: return !this.zf && (this.sf === this.of);
+    }
+  }
+
+  // -- main step ---------------------------------------------------------------
+
+  step() {
+    if (this.halted) throw new Error("cpu halted");
+    if (this.onCodeHook?.(this.rip) === true) {
+      this.steps++;
+      return "hook";
+    }
+
+    const startRip = this.rip;
+    this.steps++;
+    this.rexR = false;
+    this.rexByte = 0;
+
+    // prefixes
+    let rex = 0, opsize = 4, rep = null;
+    for (;;) {
+      const p = this.fetch8();
+      if (p === 0x66) { opsize = 2; continue; }
+      if (p === 0x67) continue; // addr-size: ignore (flat model)
+      if (p === 0xf2) { rep = "repnz"; continue; }
+      if (p === 0xf3) { rep = "rep"; continue; }
+      if (p >= 0x40 && p <= 0x4f) {
+        rex = p;
+        this.rexByte = rex;
+        this.rexR = (rex & 4) !== 0;
+        if (rex & 8) opsize = 8;
+        else if (opsize === 4) opsize = 4;
+        continue;
+      }
+      if (p === 0x2e || p === 0x36 || p === 0x3e || p === 0x26 || p === 0x64 || p === 0x65) continue; // seg overrides ignored
+      // not a prefix
+      this.opcodeStart = this.rip - 1n;
+      this.dispatch(p, { rex, opsize, rep });
+      return startRip;
+    }
+  }
+
+  dispatch(p, { rex, opsize, rep }) {
+    const rexB = (rex & 1) !== 0;
+    const rexX = (rex & 2) !== 0;
+    this.rexB = rexB;
+
+    const twoByte = p === 0x0f;
+    if (twoByte) {
+      const op = this.fetch8();
+      return this.dispatch2(op, { rex, opsize, rep, rexB, rexX });
+    }
+
+    // lock prefix already consumed in prefix loop (single-threaded: execute normally)
+
+    switch (true) {
+      case p >= 0x50 && p <= 0x57: {
+        const r = p - 0x50 + (rexB ? 8 : 0);
+        this.pushVal(this.regs[R64[r]]);
+        return;
+      }
+      case p >= 0x58 && p <= 0x5f: {
+        const r = p - 0x58 + (rexB ? 8 : 0);
+        this.regs[R64[r]] = this.popVal();
+        return;
+      }
+      case p === 0x98: { // cdqe/cwde
+        if (opsize === 8) this.regs.rax = sx(this.regs.rax & 0xffffffffn, 32) & M64;
+        else this.writeReg(0, 4, sx(this.regs.rax & 0xffffn, 16));
+        return;
+      }
+      case p === 0xc9: this.leave(); return;
+      case p === 0xc3: case p === 0xcb: this.ret(); return;
+      case p === 0xe8: {
+        const rel = this.fetchImmSx(4);
+        this.pushVal(this.rip);
+        this.rip = (this.rip + rel) & M64;
+        return;
+      }
+      case p === 0xeb: {
+        const rel = this.fetchImmSx(1);
+        this.rip = (this.rip + rel) & M64;
+        return;
+      }
+      case p === 0xe9: {
+        const rel = this.fetchImmSx(4);
+        this.rip = (this.rip + rel) & M64;
+        return;
+      }
+      case (p & 0xf0) === 0x70: {
+        const disp = sx(BigInt(this.fetch8()), 8);
+        if (this.cond(p & 0xf)) this.rip = (this.rip + disp) & M64;
+        return;
+      }
+      case p === 0x90: return; // nop / pause(F3 90)
+      case p === 0xfc: this.df = false; return; // cld
+      case p === 0xfd: this.df = true; return;  // std
+      case p === 0xa4 || p === 0xa5 || p === 0xaa || p === 0xab: {
+        // movs/stos, single or rep-driven (rep count looped here)
+        const size = p === 0xa4 || p === 0xaa ? 1 : opsize;
+        const step = BigInt(size) * (this.df ? -1n : 1n);
+        const doOne = () => {
+          if (p === 0xa4 || p === 0xa5) {
+            this.storeMem(this.regs.rdi, size, this.loadMem(this.regs.rsi, size));
+            this.regs.rsi += step; this.regs.rdi += step;
+          } else {
+            this.storeMem(this.regs.rdi, size, this.regs.rax & ((1n << BigInt(size * 8)) - 1n));
+            this.regs.rdi += step;
+          }
+        };
+        if (rep === "rep") {
+          while (this.regs.rcx > 0n) { doOne(); this.regs.rcx -= 1n; }
+        } else {
+          doOne();
+        }
+        return;
+      }
+      case p === 0xcc: {
+        this.pendingBreak = true;
+        this.ripAfterInt3 = startRip + 1n;
+        return;
+      }
+      case p === 0xf4: this.halted = true; return;
+    }
+
+    // ALU family: 00-3d (add,or,adc,sbb,and,sub,xor,cmp) x forms 0..5
+    if (p < 0x40) {
+      const names = ["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"];
+      const name = names[(p >> 3) & 7];
+      const low = p & 7;
+      const size = low === 0 || low === 2 || low === 4 ? 1 : opsize;
+
+      if (low === 0 || low === 1) {
+        // r/m <- r op r/m  ... store back unless compare/test-only
+        const { reg, rm } = this.decodeModrm(size);
+        const a = this.loadOp(rm, size);
+        const b = this.readReg(reg, size);
+        const r = this.alu(name, a, b, size);
+        if (name !== "cmp") this.storeOp(rm, size, r);
+        return;
+      }
+      if (low === 2 || low === 3) {
+        // r <- r op r/m (direction reversed)
+        const { reg, rm } = this.decodeModrm(size);
+        const a = this.readReg(reg, size);
+        const b = this.loadOp(rm, size);
+        const r = this.alu(name, a, b, size);
+        if (name !== "cmp") this.writeReg(reg, size, r);
+        return;
+      }
+      if (low === 4 || low === 5) {
+        const a = this.readReg(0, size);
+        const b = size === 1 ? BigInt(this.fetch8()) : this.fetch(4);
+        const r = this.alu(name, a, b, size);
+        if (name !== "cmp") this.writeReg(0, size, r);
+        return;
+      }
+      throw new CpuError(`invalid alu form ${name} /${low}`, this.opcodeStart);
+    }
+
+    // 68: push imm32 ; 6a: push imm8
+    if (p === 0x68) { this.pushVal(sx(this.fetch(4), 32) & M64); return; }
+    if (p === 0x6a) { this.pushVal(sx(BigInt.asIntN(8, Number(this.fetch8())), 8) & M64); return; }
+    // 69/6b: imul r, r/m, imm
+    if (p === 0x69 || p === 0x6b) {
+      const { reg, rm } = this.decodeModrm(opsize);
+      const a = this.loadOp(rm, opsize);
+      const b = p === 0x69 ? this.fetch(opsize) : BigInt(BigInt.asIntN(8, Number(this.fetch8())));
+      this.writeReg(reg, opsize, a * b);
+      return;
+    }
+    // 84/85 test ; 86/87 xchg
+    if (p === 0x84 || p === 0x85) {
+      const size = p === 0x84 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      this.alu("test", this.loadOp(rm, size), this.readReg(reg, size), size);
+      return;
+    }
+    if (p === 0xa8 || p === 0xa9) {
+      const size = p === 0xa8 ? 1 : opsize;
+      const a = this.readReg(0, size);
+      const b = size === 1 ? BigInt(this.fetch8()) : this.fetch(4);
+      this.alu("test", a, b, size);
+      return;
+    }
+    if (p === 0x86 || p === 0x87) {
+      const size = p === 0x86 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      const a = this.readReg(reg, size);
+      const b = this.loadOp(rm, size);
+      this.storeOp(rm, size, a);
+      this.writeReg(reg, size, b);
+      return;
+    }
+
+    // FE/FF grp5: inc/dec/call/jmp/push r/m
+    if (p === 0xfe || p === 0xff) {
+      const size = p === 0xfe ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      const a = this.loadOp(rm, size);
+      const mask = (1n << BigInt(size * 8)) - 1n;
+      switch (reg) {
+        case 0: case 1: { // inc/dec (preserve CF)
+          const savedCf = this.cf;
+          const r = this.alu(reg === 0 ? "add" : "sub", a, 1n, size);
+          this.cf = savedCf;
+          this.storeOp(rm, size, r);
+          return;
+        }
+        case 2: { // call near r/m
+          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          this.pushVal(this.rip);
+          this.rip = target & M64;
+          return;
+        }
+        case 4: { // jmp near r/m
+          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          this.rip = target & M64;
+          return;
+        }
+        default:
+          throw new CpuError(`unimplemented grp5 /${reg}`, this.opcodeStart);
+      }
+    }
+
+    // 80/81/83 grp1 imm
+    if (p === 0x80 || p === 0x81 || p === 0x83) {
+      const names = ["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"];
+      const size = p === 0x80 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      const immSize = p === 0x81 ? size : 1;
+      const a = this.loadOp(rm, size);
+      const immRaw = immSize === 1 ? BigInt(this.fetch8()) : this.fetch(size);
+      const b = p === 0x83 ? sx(BigInt(immRaw), 8) & ((1n << BigInt(size*8))-1n) : immRaw;
+      const r = this.alu(names[reg], a, b, size);
+      if (names[reg] !== "cmp") this.storeOp(rm, size, r);
+      return;
+    }
+
+    // 88/89/8a/8b: mov r/m, r ; r, r/m
+    if (p === 0x88 || p === 0x89) {
+      const size = p === 0x88 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      this.storeOp(rm, size, this.readReg(reg, size));
+      return;
+    }
+    if (p === 0x8a || p === 0x8b) {
+      const size = p === 0x8a ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      this.writeReg(reg, size, this.loadOp(rm, size));
+      return;
+    }
+    // 8c/8d lea
+    if (p === 0x8d) {
+      const { reg, rm } = this.decodeModrm(opsize);
+      this.writeReg(reg, opsize, rm.kind === "mem" ? rm.addr : this.readReg(reg, opsize));
+      return;
+    }
+    if (p === 0xc6 || p === 0xc7) { // mov r/m, imm
+      const size = p === 0xc6 ? 1 : opsize;
+      const { rm } = this.decodeModrm(size);
+      const imm = size === 1 ? this.fetch8() : this.fetch(size);
+      this.storeOp(rm, size, imm);
+      return;
+    }
+    if (p === 0xb0 || (p >= 0xb8 && p <= 0xbf)) {
+      if (p >= 0xb8) { // mov r64, imm64 (with REX.W) / imm32
+        const idx = p - 0xb8 + (rexB ? 8 : 0);
+        this.regs[R64[idx]] = rex & 8 ? this.fetch(8) : this.fetch(4);
+        return;
+      }
+      // b0-b7: mov r8, imm8
+      const idx = (p - 0xb0) + (rexB ? 8 : 0);
+      this.writeReg(idx, 1, this.fetch8());
+      return;
+    }
+
+    // c0/c1/d0/d1/d2/d3 shift group
+    if (p === 0xc1 || p === 0xd1 || p === 0xc0 || p === 0xd0) {
+      const names = ["rol", "ror", "shl", "shr", "sal", "sar", "shl", "sar"];
+      const size = (p & 1) === 0 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      const count = (p === 0xc1 || p === 0xc0) ? Number(this.fetch8()) : 1;
+      const a = this.loadOp(rm, size);
+      const bits = BigInt(size * 8);
+      const mask = (1n << bits) - 1n;
+      const signBit = 1n << (bits - 1n);
+      let r = a;
+      switch (names[reg]) {
+        case "shl": case "sal": r = (a << BigInt(count)) & mask; this.cf = count>0 && ((a >> (bits - BigInt(count))) & 1n)===1n; break;
+        case "shr": r = a >> BigInt(count); this.cf = count>0 && ((a >> BigInt(count-1)) & 1n)===1n; break;
+        case "sar": {
+          const sv = BigInt.asIntN(Number(bits), a) >> BigInt(count);
+          r = BigInt.asUintN(Number(bits), sv);
+          this.cf = count>0 && ((a >> BigInt(count-1)) & 1n)===1n;
+          break;
+        }
+        default: r = a;
+      }
+      this.zf = r === 0n;
+      this.sf = (r & signBit) !== 0n;
+      this.storeOp(rm, size, r);
+      return;
+    }
+
+    // f7/f6 grp3: test/not/neg/mul/imul/div/idiv
+    if (p === 0xf7 || p === 0xf6) {
+      const size = p === 0xf6 ? 1 : opsize;
+      const { reg, rm } = this.decodeModrm(size);
+      const a = this.loadOp(rm, size);
+      const mask = (1n << BigInt(size * 8)) - 1n;
+      const signBit = 1n << BigInt(size * 8 - 1);
+      switch (reg) {
+        case 0: case 1: this.alu("test", a, BigInt(this.fetch(size)), size); return;
+        case 2: this.storeOp(rm, size, (~a) & mask); return;
+        case 3: {
+          const r = this.alu("sub", 0n, a, size);
+          this.storeOp(rm, size, r);
+          return;
+        }
+        default: throw new CpuError(`unimplemented grp3 op ${reg}`, startRip);
+      }
+    }
+
+    throw new CpuError(`unimplemented opcode 0x${p.toString(16)}`, this.opcodeStart);
+  }
+
+  dispatch2(op, ctx) {
+    const { opsize, rep, rexB, rexX } = ctx;
+    const startRip = this.rip;
+
+    // endbr64/endbr32: F3 0F 1E FA / F3 0F 1E FB
+    if (op === 0x1e || op === 0x1f) {
+      this.fetch8(); // trailing modrm byte (FA/FB or nop payload)
+      return;
+    }
+
+    // conditional moves 0f 4x
+    if (op >= 0x40 && op <= 0x4f) {
+      const { reg, rm } = this.decodeModrm(opsize);
+      if (this.cond(op & 0xf)) {
+        this.writeReg(reg, opsize, this.loadOp(rm, opsize));
+      }
+      return;
+    }
+
+    // movsxd 0f 63
+    if (op === 0x63) {
+      const { reg, rm } = this.decodeModrm(4);
+      const v = sx(this.loadOp(rm, 4), 32);
+      this.writeReg(reg, opsize, v & ((1n << BigInt(opsize * 8)) - 1n));
+      return;
+    }
+
+    // setcc: 0f 9x
+    if (op >= 0x90 && op <= 0x9f) {
+      const { rm } = this.decodeModrm(1);
+      this.storeOp(rm, 1, this.cond(op & 0xf) ? 1n : 0n);
+      return;
+    }
+
+    // bt/bts/btr/btc: 0f a3/ab/b3/bb
+    if (op === 0xa3 || op === 0xab || op === 0xb3 || op === 0xbb) {
+      const { reg, rm } = this.decodeModrm(opsize);
+      const base = this.loadOp(rm, opsize);
+      const bitIdx = this.readReg(reg, opsize);
+      const bitPos = bitIdx % BigInt(opsize * 8);
+      this.cf = ((base >> bitPos) & 1n) === 1n;
+      if (op !== 0xa3) {
+        const mask = 1n << bitPos;
+        let nv;
+        if (op === 0xab) nv = base | mask;        // bts
+        else if (op === 0xb3) nv = base & ~mask;  // btr
+        else nv = base ^ mask;                    // btc
+        this.storeOp(rm, opsize, nv);
+      }
+      return;
+    }
+
+    // string ops with rep prefix: A4/A5 movs, AA/AB stos are handled in
+    // dispatch() (one-byte opcodes). Nothing to do here for rep.
+
+    switch (op) {
+      case 0xaf: { // imul r, r/m
+        const { reg, rm } = this.decodeModrm(opsize);
+        const a = BigInt.asIntN(Number(BigInt(opsize)*8n), this.readReg(reg, opsize));
+        const b = BigInt.asIntN(Number(BigInt(opsize)*8n), this.loadOp(rm, opsize));
+        const prod = a * b;
+        const bits = BigInt(opsize * 8);
+        this.writeReg(reg, opsize, BigInt.asUintN(Number(bits), prod));
+        return;
+      }
+      case 0xb6: case 0xb7: { // movzx
+        const srcSize = op === 0xb6 ? 1 : 2;
+        const { reg, rm } = this.decodeModrm(srcSize);
+        this.writeReg(reg, opsize, this.loadOp(rm, srcSize));
+        return;
+      }
+      case 0xbe: case 0xbf: { // movsx
+        const srcSize = op === 0xbe ? 1 : 2;
+        const { reg, rm } = this.decodeModrm(srcSize);
+        const v = sx(this.loadOp(rm, srcSize), srcSize * 8);
+        this.writeReg(reg, opsize, v & ((1n << BigInt(opsize * 8)) - 1n));
+        return;
+      }
+      case 0x05: throw new CpuError("syscall reached interpreter — kernel hook layer must intercept", startRip);
+      default:
+        throw new CpuError(`unimplemented 0f opcode 0x${op.toString(16)}`, startRip);
+    }
+  }
+
+  pushVal(v) {
+    this.regs.rsp = (this.regs.rsp - 8n) & M64;
+    this.storeMem(this.regs.rsp, 8, v);
+  }
+
+  popVal() {
+    const v = this.loadMem(this.regs.rsp, 8);
+    this.regs.rsp = (this.regs.rsp + 8n) & M64;
+    return v;
+  }
+
+  ret() {
+    this.rip = this.popVal();
+  }
+
+  leave() {
+    this.regs.rsp = this.regs.rbp;
+    this.regs.rbp = this.popVal();
+  }
+
+  /** Run until halted, error, breakpoint, sentinel RIP, or step budget. */
+  run(maxSteps = 10_000_000) {
+    while (!this.halted && this.steps < maxSteps) {
+      if (this.stopOnRip !== null && this.rip === this.stopOnRip) {
+        return "returned";
+      }
+      try {
+        this.step();
+        if (this.pendingBreak) {
+          this.pendingBreak = false;
+          return "breakpoint";
+        }
+      } catch (e) {
+        if (e instanceof CpuError) { this.fault = e; return "error"; }
+        throw e;
+      }
+    }
+    return this.halted ? "halted" : "timeout";
+  }
+
+  /** Call a function using the Windows x64 ABI. */
+  callFunction(funcAddr, args = [], shadowSpace = 32) {
+    const retAddrMarker = 0xdead0000feed0000n; // unlikely to collide with real code
+    const savedStop = this.stopOnRip;
+    this.regs.rsp = (this.regs.rsp & ~0xfn) - 8n; // align
+    const regsOrder = ["rcx", "rdx", "r8", "r9"];
+    args.slice(0, 4).forEach((a, i) => { this.regs[regsOrder[i]] = a & M64; });
+    if (args.length > 4) {
+      for (let i = args.length - 1; i >= 4; i--) this.pushVal(args[i]);
+    }
+    for (let i = 0; i < shadowSpace; i += 8) this.pushVal(0n);
+    this.pushVal(retAddrMarker);
+    this.rip = funcAddr & M64;
+
+    this.stopOnRip = retAddrMarker;
+    for (;;) {
+      const reason = this.run();
+      if (reason === "returned") break;
+      if (reason === "breakpoint") continue;
+      this.stopOnRip = savedStop;
+      if (reason === "error") return { status: "fault", error: this.fault };
+      if (reason === "timeout") return { status: "timeout" };
+      return { status: reason, rip: this.rip }; // halted / wild-return
+    }
+    this.stopOnRip = savedStop;
+    return { status: "ok", retval: this.regs.rax };
+  }
+}
+
+export { R64, M64 };

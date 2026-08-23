@@ -1,0 +1,441 @@
+{
+ "name": "LDR_DATA_TABLE_ENTRY",
+ "totalSize": 224,
+ "fieldCount": 24,
+ "fieldsByName": {
+  "InLoadOrderLinks": {
+   "name": "InLoadOrderLinks",
+   "offset": 0,
+   "decl": "struct _LIST_ENTRY InLoadOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "InMemoryOrderLinks": {
+   "name": "InMemoryOrderLinks",
+   "offset": 16,
+   "decl": "struct _LIST_ENTRY InMemoryOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "InInitializationOrderLinks": {
+   "name": "InInitializationOrderLinks",
+   "offset": 32,
+   "decl": "struct _LIST_ENTRY InInitializationOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "DllBase": {
+   "name": "DllBase",
+   "offset": 48,
+   "decl": "VOID* DllBase",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "EntryPoint": {
+   "name": "EntryPoint",
+   "offset": 56,
+   "decl": "VOID* EntryPoint",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "SizeOfImage": {
+   "name": "SizeOfImage",
+   "offset": 64,
+   "decl": "ULONG SizeOfImage",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "FullDllName": {
+   "name": "FullDllName",
+   "offset": 72,
+   "decl": "struct _UNICODE_STRING FullDllName",
+   "base": "struct _UNICODE_STRING",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "BaseDllName": {
+   "name": "BaseDllName",
+   "offset": 88,
+   "decl": "struct _UNICODE_STRING BaseDllName",
+   "base": "struct _UNICODE_STRING",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Flags": {
+   "name": "Flags",
+   "offset": 104,
+   "decl": "ULONG Flags",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "LoadCount": {
+   "name": "LoadCount",
+   "offset": 108,
+   "decl": "USHORT LoadCount",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "TlsIndex": {
+   "name": "TlsIndex",
+   "offset": 110,
+   "decl": "USHORT TlsIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "HashLinks": {
+   "name": "HashLinks",
+   "offset": 112,
+   "decl": "struct _LIST_ENTRY HashLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "SectionPointer": {
+   "name": "SectionPointer",
+   "offset": 112,
+   "decl": "VOID* SectionPointer",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "CheckSum": {
+   "name": "CheckSum",
+   "offset": 120,
+   "decl": "ULONG CheckSum",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "TimeDateStamp": {
+   "name": "TimeDateStamp",
+   "offset": 128,
+   "decl": "ULONG TimeDateStamp",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "LoadedImports": {
+   "name": "LoadedImports",
+   "offset": 128,
+   "decl": "VOID* LoadedImports",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "EntryPointActivationContext": {
+   "name": "EntryPointActivationContext",
+   "offset": 136,
+   "decl": "struct _ACTIVATION_CONTEXT* EntryPointActivationContext",
+   "base": "struct _ACTIVATION_CONTEXT*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "PatchInformation": {
+   "name": "PatchInformation",
+   "offset": 144,
+   "decl": "VOID* PatchInformation",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "ForwarderLinks": {
+   "name": "ForwarderLinks",
+   "offset": 152,
+   "decl": "struct _LIST_ENTRY ForwarderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "ServiceTagLinks": {
+   "name": "ServiceTagLinks",
+   "offset": 168,
+   "decl": "struct _LIST_ENTRY ServiceTagLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "StaticLinks": {
+   "name": "StaticLinks",
+   "offset": 184,
+   "decl": "struct _LIST_ENTRY StaticLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "ContextInformation": {
+   "name": "ContextInformation",
+   "offset": 200,
+   "decl": "VOID* ContextInformation",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "OriginalBase": {
+   "name": "OriginalBase",
+   "offset": 208,
+   "decl": "ULONGLONG OriginalBase",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "LoadTime": {
+   "name": "LoadTime",
+   "offset": 216,
+   "decl": "union _LARGE_INTEGER LoadTime",
+   "base": "union _LARGE_INTEGER",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ },
+ "fields": [
+  {
+   "name": "InLoadOrderLinks",
+   "offset": 0,
+   "decl": "struct _LIST_ENTRY InLoadOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "InMemoryOrderLinks",
+   "offset": 16,
+   "decl": "struct _LIST_ENTRY InMemoryOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "InInitializationOrderLinks",
+   "offset": 32,
+   "decl": "struct _LIST_ENTRY InInitializationOrderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "DllBase",
+   "offset": 48,
+   "decl": "VOID* DllBase",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "EntryPoint",
+   "offset": 56,
+   "decl": "VOID* EntryPoint",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "SizeOfImage",
+   "offset": 64,
+   "decl": "ULONG SizeOfImage",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "FullDllName",
+   "offset": 72,
+   "decl": "struct _UNICODE_STRING FullDllName",
+   "base": "struct _UNICODE_STRING",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "BaseDllName",
+   "offset": 88,
+   "decl": "struct _UNICODE_STRING BaseDllName",
+   "base": "struct _UNICODE_STRING",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Flags",
+   "offset": 104,
+   "decl": "ULONG Flags",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "LoadCount",
+   "offset": 108,
+   "decl": "USHORT LoadCount",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "TlsIndex",
+   "offset": 110,
+   "decl": "USHORT TlsIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HashLinks",
+   "offset": 112,
+   "decl": "struct _LIST_ENTRY HashLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "SectionPointer",
+   "offset": 112,
+   "decl": "VOID* SectionPointer",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "CheckSum",
+   "offset": 120,
+   "decl": "ULONG CheckSum",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "TimeDateStamp",
+   "offset": 128,
+   "decl": "ULONG TimeDateStamp",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "LoadedImports",
+   "offset": 128,
+   "decl": "VOID* LoadedImports",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "EntryPointActivationContext",
+   "offset": 136,
+   "decl": "struct _ACTIVATION_CONTEXT* EntryPointActivationContext",
+   "base": "struct _ACTIVATION_CONTEXT*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "PatchInformation",
+   "offset": 144,
+   "decl": "VOID* PatchInformation",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ForwarderLinks",
+   "offset": 152,
+   "decl": "struct _LIST_ENTRY ForwarderLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ServiceTagLinks",
+   "offset": 168,
+   "decl": "struct _LIST_ENTRY ServiceTagLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "StaticLinks",
+   "offset": 184,
+   "decl": "struct _LIST_ENTRY StaticLinks",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ContextInformation",
+   "offset": 200,
+   "decl": "VOID* ContextInformation",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "OriginalBase",
+   "offset": 208,
+   "decl": "ULONGLONG OriginalBase",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "LoadTime",
+   "offset": 216,
+   "decl": "union _LARGE_INTEGER LoadTime",
+   "base": "union _LARGE_INTEGER",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ ]
+}

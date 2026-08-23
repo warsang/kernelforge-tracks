@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+.DS_Store
+
+# large assets never committed
+packages/ntsim-assets/data/dumps/*
+packages/ntsim-assets/data/*.bin
+!packages/ntsim-assets/data/.gitkeep
+apps/web/public/assets/*.bin

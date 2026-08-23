@@ -1,0 +1,270 @@
+{
+ "name": "HANDLE_TABLE",
+ "totalSize": 104,
+ "fieldCount": 15,
+ "fieldsByName": {
+  "TableCode": {
+   "name": "TableCode",
+   "offset": 0,
+   "decl": "ULONGLONG TableCode",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "QuotaProcess": {
+   "name": "QuotaProcess",
+   "offset": 8,
+   "decl": "struct _EPROCESS* QuotaProcess",
+   "base": "struct _EPROCESS*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "UniqueProcessId": {
+   "name": "UniqueProcessId",
+   "offset": 16,
+   "decl": "VOID* UniqueProcessId",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "HandleLock": {
+   "name": "HandleLock",
+   "offset": 24,
+   "decl": "struct _EX_PUSH_LOCK HandleLock",
+   "base": "struct _EX_PUSH_LOCK",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "HandleTableList": {
+   "name": "HandleTableList",
+   "offset": 32,
+   "decl": "struct _LIST_ENTRY HandleTableList",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "HandleContentionEvent": {
+   "name": "HandleContentionEvent",
+   "offset": 48,
+   "decl": "struct _EX_PUSH_LOCK HandleContentionEvent",
+   "base": "struct _EX_PUSH_LOCK",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "DebugInfo": {
+   "name": "DebugInfo",
+   "offset": 56,
+   "decl": "struct _HANDLE_TRACE_DEBUG_INFO* DebugInfo",
+   "base": "struct _HANDLE_TRACE_DEBUG_INFO*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "ExtraInfoPages": {
+   "name": "ExtraInfoPages",
+   "offset": 64,
+   "decl": "LONG ExtraInfoPages",
+   "base": "LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Flags": {
+   "name": "Flags",
+   "offset": 68,
+   "decl": "ULONG Flags",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "FirstFreeHandle": {
+   "name": "FirstFreeHandle",
+   "offset": 72,
+   "decl": "ULONG FirstFreeHandle",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "LastFreeHandleEntry": {
+   "name": "LastFreeHandleEntry",
+   "offset": 80,
+   "decl": "struct _HANDLE_TABLE_ENTRY* LastFreeHandleEntry",
+   "base": "struct _HANDLE_TABLE_ENTRY*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "HandleCount": {
+   "name": "HandleCount",
+   "offset": 88,
+   "decl": "ULONG HandleCount",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "NextHandleNeedingPool": {
+   "name": "NextHandleNeedingPool",
+   "offset": 92,
+   "decl": "ULONG NextHandleNeedingPool",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "HandleCountHighWatermark": {
+   "name": "HandleCountHighWatermark",
+   "offset": 96,
+   "decl": "ULONG HandleCountHighWatermark",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ },
+ "fields": [
+  {
+   "name": "TableCode",
+   "offset": 0,
+   "decl": "ULONGLONG TableCode",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "QuotaProcess",
+   "offset": 8,
+   "decl": "struct _EPROCESS* QuotaProcess",
+   "base": "struct _EPROCESS*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "UniqueProcessId",
+   "offset": 16,
+   "decl": "VOID* UniqueProcessId",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HandleLock",
+   "offset": 24,
+   "decl": "struct _EX_PUSH_LOCK HandleLock",
+   "base": "struct _EX_PUSH_LOCK",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HandleTableList",
+   "offset": 32,
+   "decl": "struct _LIST_ENTRY HandleTableList",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HandleContentionEvent",
+   "offset": 48,
+   "decl": "struct _EX_PUSH_LOCK HandleContentionEvent",
+   "base": "struct _EX_PUSH_LOCK",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "DebugInfo",
+   "offset": 56,
+   "decl": "struct _HANDLE_TRACE_DEBUG_INFO* DebugInfo",
+   "base": "struct _HANDLE_TRACE_DEBUG_INFO*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ExtraInfoPages",
+   "offset": 64,
+   "decl": "LONG ExtraInfoPages",
+   "base": "LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Flags",
+   "offset": 68,
+   "decl": "ULONG Flags",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 68,
+   "decl": "UCHAR StrictFIFO:1",
+   "base": "UCHAR StrictFIFO:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "FirstFreeHandle",
+   "offset": 72,
+   "decl": "ULONG FirstFreeHandle",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "LastFreeHandleEntry",
+   "offset": 80,
+   "decl": "struct _HANDLE_TABLE_ENTRY* LastFreeHandleEntry",
+   "base": "struct _HANDLE_TABLE_ENTRY*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HandleCount",
+   "offset": 88,
+   "decl": "ULONG HandleCount",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "NextHandleNeedingPool",
+   "offset": 92,
+   "decl": "ULONG NextHandleNeedingPool",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "HandleCountHighWatermark",
+   "offset": 96,
+   "decl": "ULONG HandleCountHighWatermark",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ ]
+}

@@ -1,0 +1,387 @@
+{
+ "name": "DISPATCHER_HEADER",
+ "totalSize": 24,
+ "fieldCount": 29,
+ "fieldsByName": {
+  "Type": {
+   "name": "Type",
+   "offset": 0,
+   "decl": "UCHAR Type",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "TimerControlFlags": {
+   "name": "TimerControlFlags",
+   "offset": 1,
+   "decl": "UCHAR TimerControlFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Abandoned": {
+   "name": "Abandoned",
+   "offset": 1,
+   "decl": "UCHAR Abandoned",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Signalling": {
+   "name": "Signalling",
+   "offset": 1,
+   "decl": "UCHAR Signalling",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "ThreadControlFlags": {
+   "name": "ThreadControlFlags",
+   "offset": 2,
+   "decl": "UCHAR ThreadControlFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Hand": {
+   "name": "Hand",
+   "offset": 2,
+   "decl": "UCHAR Hand",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Size": {
+   "name": "Size",
+   "offset": 2,
+   "decl": "UCHAR Size",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "TimerMiscFlags": {
+   "name": "TimerMiscFlags",
+   "offset": 3,
+   "decl": "UCHAR TimerMiscFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "DebugActive": {
+   "name": "DebugActive",
+   "offset": 3,
+   "decl": "UCHAR DebugActive",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "DpcActive": {
+   "name": "DpcActive",
+   "offset": 3,
+   "decl": "UCHAR DpcActive",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "Lock": {
+   "name": "Lock",
+   "offset": 0,
+   "decl": "volatile LONG Lock",
+   "base": "volatile LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "SignalState": {
+   "name": "SignalState",
+   "offset": 4,
+   "decl": "LONG SignalState",
+   "base": "LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "WaitListHead": {
+   "name": "WaitListHead",
+   "offset": 8,
+   "decl": "struct _LIST_ENTRY WaitListHead",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ },
+ "fields": [
+  {
+   "name": "Type",
+   "offset": 0,
+   "decl": "UCHAR Type",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "TimerControlFlags",
+   "offset": 1,
+   "decl": "UCHAR TimerControlFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 1,
+   "decl": "UCHAR Absolute:1",
+   "base": "UCHAR Absolute:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 1,
+   "decl": "UCHAR Coalescable:1",
+   "base": "UCHAR Coalescable:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 1,
+   "decl": "UCHAR KeepShifting:1",
+   "base": "UCHAR KeepShifting:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 1,
+   "decl": "UCHAR EncodedTolerableDelay:5",
+   "base": "UCHAR EncodedTolerableDelay:5",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "Abandoned",
+   "offset": 1,
+   "decl": "UCHAR Abandoned",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Signalling",
+   "offset": 1,
+   "decl": "UCHAR Signalling",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ThreadControlFlags",
+   "offset": 2,
+   "decl": "UCHAR ThreadControlFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 2,
+   "decl": "UCHAR CpuThrottled:1",
+   "base": "UCHAR CpuThrottled:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 2,
+   "decl": "UCHAR CycleProfiling:1",
+   "base": "UCHAR CycleProfiling:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 2,
+   "decl": "UCHAR CounterProfiling:1",
+   "base": "UCHAR CounterProfiling:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 2,
+   "decl": "UCHAR Reserved:5",
+   "base": "UCHAR Reserved:5",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "Hand",
+   "offset": 2,
+   "decl": "UCHAR Hand",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Size",
+   "offset": 2,
+   "decl": "UCHAR Size",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "TimerMiscFlags",
+   "offset": 3,
+   "decl": "UCHAR TimerMiscFlags",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR Index:6",
+   "base": "UCHAR Index:6",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR Inserted:1",
+   "base": "UCHAR Inserted:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "volatile UCHAR Expired:1",
+   "base": "volatile UCHAR Expired:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "DebugActive",
+   "offset": 3,
+   "decl": "UCHAR DebugActive",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR ActiveDR7:1",
+   "base": "UCHAR ActiveDR7:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR Instrumented:1",
+   "base": "UCHAR Instrumented:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR Reserved2:4",
+   "base": "UCHAR Reserved2:4",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR UmsScheduled:1",
+   "base": "UCHAR UmsScheduled:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "(anon)",
+   "offset": 3,
+   "decl": "UCHAR UmsPrimary:1",
+   "base": "UCHAR UmsPrimary:1",
+   "pointer": false,
+   "bitfield": true,
+   "array": null
+  },
+  {
+   "name": "DpcActive",
+   "offset": 3,
+   "decl": "UCHAR DpcActive",
+   "base": "UCHAR",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Lock",
+   "offset": 0,
+   "decl": "volatile LONG Lock",
+   "base": "volatile LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "SignalState",
+   "offset": 4,
+   "decl": "LONG SignalState",
+   "base": "LONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "WaitListHead",
+   "offset": 8,
+   "decl": "struct _LIST_ENTRY WaitListHead",
+   "base": "struct _LIST_ENTRY",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ ]
+}

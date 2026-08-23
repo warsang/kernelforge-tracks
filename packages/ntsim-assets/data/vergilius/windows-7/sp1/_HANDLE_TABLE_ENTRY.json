@@ -1,0 +1,153 @@
+{
+ "name": "HANDLE_TABLE_ENTRY",
+ "totalSize": 16,
+ "fieldCount": 8,
+ "fieldsByName": {
+  "Object": {
+   "name": "Object",
+   "offset": 0,
+   "decl": "VOID* Object",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "ObAttributes": {
+   "name": "ObAttributes",
+   "offset": 0,
+   "decl": "ULONG ObAttributes",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "InfoTable": {
+   "name": "InfoTable",
+   "offset": 0,
+   "decl": "struct _HANDLE_TABLE_ENTRY_INFO* InfoTable",
+   "base": "struct _HANDLE_TABLE_ENTRY_INFO*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  "Value": {
+   "name": "Value",
+   "offset": 0,
+   "decl": "ULONGLONG Value",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "GrantedAccess": {
+   "name": "GrantedAccess",
+   "offset": 8,
+   "decl": "ULONG GrantedAccess",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "GrantedAccessIndex": {
+   "name": "GrantedAccessIndex",
+   "offset": 8,
+   "decl": "USHORT GrantedAccessIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "CreatorBackTraceIndex": {
+   "name": "CreatorBackTraceIndex",
+   "offset": 10,
+   "decl": "USHORT CreatorBackTraceIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  "NextFreeTableEntry": {
+   "name": "NextFreeTableEntry",
+   "offset": 8,
+   "decl": "ULONG NextFreeTableEntry",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ },
+ "fields": [
+  {
+   "name": "Object",
+   "offset": 0,
+   "decl": "VOID* Object",
+   "base": "VOID*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "ObAttributes",
+   "offset": 0,
+   "decl": "ULONG ObAttributes",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "InfoTable",
+   "offset": 0,
+   "decl": "struct _HANDLE_TABLE_ENTRY_INFO* InfoTable",
+   "base": "struct _HANDLE_TABLE_ENTRY_INFO*",
+   "pointer": true,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "Value",
+   "offset": 0,
+   "decl": "ULONGLONG Value",
+   "base": "ULONGLONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "GrantedAccess",
+   "offset": 8,
+   "decl": "ULONG GrantedAccess",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "GrantedAccessIndex",
+   "offset": 8,
+   "decl": "USHORT GrantedAccessIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "CreatorBackTraceIndex",
+   "offset": 10,
+   "decl": "USHORT CreatorBackTraceIndex",
+   "base": "USHORT",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  },
+  {
+   "name": "NextFreeTableEntry",
+   "offset": 8,
+   "decl": "ULONG NextFreeTableEntry",
+   "base": "ULONG",
+   "pointer": false,
+   "bitfield": false,
+   "array": null
+  }
+ ]
+}
