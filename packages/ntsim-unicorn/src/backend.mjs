@@ -1,0 +1,382 @@
+/**
+ * UnicornCpuBackend — high-fidelity CPU backend for ntsim over a WASM build of
+ * the Unicorn engine (QEMU TCG). Implements the CpuBackend contract documented
+ * in packages/ntsim/src/cpu.mjs; JsInterpreter remains the reference/default.
+ *
+ * Design notes (validated in spike, see docs/spike-unicorn.md):
+ * - The upstream JS wrapper marshals 64-bit addresses through f64 ("number"),
+ *   which silently corrupts values > 2^53. Every address-bearing API here goes
+ *   through raw ccall with Emscripten 'i64' types instead (BigInt-safe).
+ * - Registers are exposed through a Proxy so `cpu.regs.rcx = v` keeps working;
+ *   only BigInt ever crosses the boundary.
+ * - SparseMemory stays the source of truth: pages sync IN before execution and
+ *   OUT after it. Reads of never-touched memory behave as zeros on both
+ *   backends because drivers only touch mapped regions in our labs.
+ * - Kernel API thunks are intercepted with range-limited UC_HOOK_CODE hooks;
+ *   the handler mutates regs/RIP and stops emulation, and the outer loop
+ *   resumes from the synthetic `ret` target.
+ *
+ * Known limitation: guest VAs at or above bit 63 (real Windows kernel-space)
+ * trip a softmmu physical-address limit in unicorn <= 2.1.x (upstream issue
+ * #2010). Scenarios that must execute at true kernel VAs should keep the
+ * default JsInterpreter until the guest-paging bootstrap lands; low-memory
+ * layouts via NtKernel({bases}) run identically under both backends.
+ */
+
+import { CpuError } from "@kernelforge/ntsim/src/cpu.mjs";
+
+// Single shared wasm module instance; initialization is async and idempotent.
+let modulePromise = null;
+async function loadModule() {
+  if (!modulePromise) {
+    modulePromise = import("../vendor/unicorn_x86.cjs").then((m) => m.default());
+  }
+  return modulePromise;
+}
+
+const M64 = 0xffffffffffffffffn;
+// Low sentinel: hooks over >2^53 ranges don't fire in unicorn<=2.1 wasm
+// (same softmmu limit as upstream issue #2010), so the ABI return marker
+// lives at a mapped low address instead of JsInterpreter's high magic.
+// must stay below 2^31: wrapper marshals hook ranges through signed i32
+const RET_MARKER = 0x0badf00dn;
+const CHUNK_INSTRUCTIONS = 200_000;
+
+/** u64 <-> signed i64 helpers for the wasm ABI. */
+const toI64 = (v) => BigInt.asIntN(64, BigInt(v));
+const toU64 = (v) => BigInt.asUintN(64, BigInt(v));
+
+export class UnicornCpuBackend {
+  /**
+   * Use createUnicornBackend(); the constructor is sync-internal.
+   * @param {object} mem SparseMemory-like (read/write pages as Uint8Array ops)
+   * @param {object} uc initialized unicorn module namespace
+   */
+  #dirty = new Set();
+  #arenaEnd = null;
+  #pendingRip = null;
+
+  constructor(mem, uc, opts = {}) {
+    this.mem = mem;
+    this.uc = uc;
+    this.engine = new uc.Unicorn(uc.ARCH_X86, uc.MODE_64);
+    this.handle = uc.getValue(this.engine.handle_ptr, "*");
+    this.steps = 0;
+    this.fault = null;
+    this.halted = false;
+
+    /** @type {Set<string>} page bases mapped inside unicorn (hex strings) */
+    this.#mapped = new Set();
+    /**
+     * Flat low arena so guests can touch never-materialized memory without
+     * faulting (SparseMemory reads-as-zeros semantics). Lab layouts live here;
+     * real kernel VAs stay unsupported until the paging bootstrap lands.
+     */
+    const arenaSize = Number(opts?.arenaSize ?? 0x2000000);
+    if (arenaSize > 0) {
+      const rc = this.#rawMap(0n, BigInt(arenaSize), uc.PROT_ALL);
+      if (rc === 0) {
+        this.#arenaEnd = BigInt(arenaSize);
+        // arena is managed wholesale: never per-page map/write it in syncIn,
+        // but DO record writes inside it as dirty for pull-back.
+      }
+    }
+    engine_hook_init(this);
+
+    function engine_hook_init(self) {
+      // dirty-page tracker: record every written page during execution
+      self.engine.hook_add(uc.HOOK_MEM_WRITE, (_h, _type, address) => {
+        self.#dirty.add(toU64(address).toString(16));
+      }, 0, 1, 0);
+    }
+
+    this.regs = new Proxy({}, {
+      get: (_t, prop) => {
+        if (prop === "rip") {
+          if (this.#pendingRip !== null) return this.#pendingRip;
+          return toU64(this.engine.reg_read_i64(uc.X86_REG_RIP));
+        }
+        const id = GPR_IDS.get(prop);
+        if (id === undefined) return undefined;
+        return toU64(this.engine.reg_read_i64(id));
+      },
+      set: (_t, prop, v) => {
+        if (typeof v !== "bigint") throw new TypeError("registers are BigInt-only");
+        if (prop === "rip") {
+          // QEMU resyncs its internal IP on emu_stop, clobbering reg writes
+          // made from inside hook callbacks — remember our intent instead.
+          this.#pendingRip = toU64(v);
+          this.engine.reg_write_i64(uc.X86_REG_RIP, toI64(v));
+          return true;
+        }
+        const id = GPR_IDS.get(prop);
+        if (id === undefined) throw new TypeError(`unknown register ${String(prop)}`);
+        this.engine.reg_write_i64(id, toI64(v));
+        return true;
+      },
+    });
+  }
+
+  #mapped;
+  /** rip lives in the proxy-friendly register file too. */
+  get rip() { return this.regs.rip; }
+  set rip(v) { this.regs.rip = v; }
+
+  // ------------------------------------------------------------- raw ccalls
+
+  #rawMap(base, size, perms) {
+    return this.uc.ccall("uc_mem_map", "number",
+      ["pointer", "i64", "i64", "number"],
+      [this.handle, toI64(base), toI64(size), perms]);
+  }
+  #rawWrite(addr, bytes) {
+    const p = this.uc._malloc(bytes.length);
+    this.uc.writeArrayToMemory(bytes, p);
+    const r = this.uc.ccall("uc_mem_write", "number",
+      ["pointer", "i64", "pointer", "i64"],
+      [this.handle, toI64(addr), p, toI64(bytes.length)]);
+    this.uc._free(p);
+    if (r !== 0) throw new CpuError(`uc_mem_write failed (${r})`, addr);
+  }
+  #rawRead(addr, len) {
+    const p = this.uc._malloc(len);
+    try {
+      const r = this.uc.ccall("uc_mem_read", "number",
+        ["pointer", "i64", "pointer", "i64"],
+        [this.handle, toI64(addr), p, toI64(len)]);
+      if (r !== 0) throw new CpuError(`uc_mem_read failed (${r})`, addr);
+      return this.uc.HEAPU8.slice(p, p + len);
+    } finally {
+      this.uc._free(p);
+    }
+  }
+  #rawStart(begin, count) {
+    return this.uc.ccall("uc_emu_start", "number",
+      ["pointer", "i64", "i64", "i64", "number"],
+      [this.handle, toI64(begin), 0n, 0n, count]);
+  }
+
+  // ---------------------------------------------------------- memory bridge
+
+  PAGE = 4096;
+
+  #ensurePageMapped(base) {
+    base = toU64(BigInt(base)) & ~0xfffn;
+    const key = base.toString(16);
+    if (!this.#mapped.has(key)) {
+      if (this.#arenaEnd !== null && base < this.#arenaEnd) {
+        this.#mapped.add(key); // covered by the flat arena already
+      } else {
+        const rc = this.#rawMap(base, BigInt(this.PAGE), this.uc.PROT_ALL);
+        if (rc !== 0) throw new CpuError(`uc_mem_map failed (${rc}) @ ${base.toString(16)}`, base);
+        this.#mapped.add(key);
+      }
+    }
+    return base;
+  }
+
+  /** Pull every unicorn-mapped page into SparseMemory (uc becomes readable). */
+  #pullAll() {
+    for (const key of this.#mapped) {
+      const base = BigInt(parseInt(key, 16));
+      this.mem.write(base, this.#rawRead(base, this.PAGE));
+    }
+  }
+
+  /** Push every materialized SparseMemory page into unicorn. */
+  #syncIn() {
+    for (const [key, page] of this.mem.pages) {
+      const base = BigInt(parseInt(key, 16));
+      this.#ensurePageMapped(base);
+      this.#rawWrite(base, page);
+    }
+  }
+  /** Pull guest-written pages (plus anything sparse tracks) into SparseMemory. */
+  #syncOut() {
+    for (const key of this.#dirty) {
+      const base = BigInt(parseInt(key, 16));
+      this.mem.write(base, this.#rawRead(base, this.PAGE));
+    }
+    this.#dirty.clear();
+  }
+
+  // ----------------------------------------------------------- stack access
+
+  #takePendingRip() {
+    const v = this.#pendingRip;
+    this.#pendingRip = null;
+    return v;
+  }
+
+  popVal() {
+    const v = this.mem.u64(this.regs.rsp);
+    this.regs.rsp = (this.regs.rsp + 8n) & M64;
+    return v;
+  }
+  pushVal(v) {
+    this.regs.rsp = (this.regs.rsp - 8n) & M64;
+    this.mem.w64(this.regs.rsp, v & M64);
+  }
+
+  // ------------------------------------------------------------------ hooks
+
+  /**
+   * Range-limited code hook (CpuBackend contract). Handlers return true when
+   * they rewired state themselves; emulation then resumes from the new RIP.
+   *
+   * Uses the wrapper-managed hook path (spike-proven: fire → mutate state →
+   * emu_stop → outer loop restarts at the rewritten RIP). Note the wrapper
+   * marshals begin/end through f64: ranges above 2^53 are unreliable, which
+   * is why callFunction keeps its return marker at a LOW sentinel address.
+   * @param {(addr: bigint) => boolean|null} fn
+   * @param {bigint} [begin] inclusive
+   * @param {bigint} [end] inclusive
+   */
+  addCodeHook(fn, begin = 1n, end = 0n) {
+    const engine = this.engine;
+    const wrapped = (u, address) => {
+      // uc holds the live state mid-run; surface it to the JS handler, then
+      // push any handler writes back so the guest observes side effects.
+      this.#pullAll();
+      if (fn(toU64(address)) === true) {
+        this.#syncIn();
+        engine.emu_stop();
+      }
+    };
+    // default open range matches JsInterpreter.addCodeHook semantics
+    const b = begin === 1n && end === 0n ? 0n : toI64(begin);
+    const e = begin === 1n && end === 0n ? 0n : toI64(end);
+    return engine.hook_add(this.uc.HOOK_CODE, wrapped, 0, b, e);
+  }
+
+  /** Delete a previously registered hook (wrapper handle object). */
+  hook_del(handle) {
+    try {
+      this.engine.hook_del(handle);
+    } catch {
+      /* already removed */
+    }
+  }
+
+  reset() {
+    for (const [name] of GPR_IDS) this.regs[name] = 0n;
+    this.steps = 0;
+    this.fault = null;
+    this.halted = false;
+  }
+
+  // -------------------------------------------------------------- exec loop
+
+  /**
+   * Shared execution pump. Runs until isDone() (a hook completed the mission),
+   * an error, or the step budget.
+   * @param {number} maxSteps
+   * @param {() => boolean} isDone
+   * @returns {"ok"|"fault"|"timeout"} and sets this.fault on fault
+   */
+  #pump(maxSteps, isDone) {
+    while (!isDone() && this.steps < maxSteps && !this.fault) {
+      const chunk = Math.min(CHUNK_INSTRUCTIONS, maxSteps - this.steps);
+      const pending = this.#takePendingRip();
+      const begin = pending ?? toU64(this.regs.rip);
+      const rc = this.#rawStart(begin, chunk);
+      if (process.env.KF_DEBUG_PUMP) console.error(`[pump] iter rip=${toU64(this.regs.rip).toString(16)} rc=${rc} steps=${this.steps}`);
+      // hook-stopped runs exit early: charge nothing (count is a cap, not actual)
+      const stoppedByHook = rc === 0 && isDone();
+      if (!stoppedByHook) this.steps += chunk;
+      if (rc === 0) continue;
+      this.fault = this.#classify(rc);
+      return this.fault ? "fault" : "ok";
+    }
+    return !isDone() && this.steps >= maxSteps ? "timeout" : "ok";
+  }
+
+  #classify(rc) {
+    const names = {
+      1: "UC_ERR_NOMEM", 2: "UC_ERR_ARCH", 3: "UC_ERR_HANDLE", 4: "UC_ERR_MODE",
+      6: "read of unmapped memory", 7: "write to unmapped memory",
+      8: "fetch from unmapped memory", 9: "hook error", 11: "bad mapping",
+      21: "unhandled CPU exception",
+    };
+    const what = names[rc] ?? `unicorn error ${rc}`;
+    return new CpuError(`${what} @ rip=0x${toU64(this.regs.rip).toString(16)}`, toU64(this.regs.rip));
+  }
+
+  /** Run until halted/budget — mirrors JsInterpreter.run() semantics. */
+  run(maxSteps = 10_000_000) {
+    this.#ensureDefaultStack();
+    this.#syncIn();
+    const outcome = this.#pump(maxSteps, () => this.halted);
+    this.#syncOut();
+    if (outcome === "fault") return "error";
+    if (outcome === "timeout") return "timeout";
+    return this.halted ? "halted" : "ok";
+  }
+
+  /** JsInterpreter lets the stack wrap below address 0; unicorn needs real pages. */
+  #ensureDefaultStack() {
+    const rsp = toU64(this.regs.rsp);
+    if (rsp > 0x1000n && rsp < M64 - 0x1000n) return;
+    const base = 0x70000n;
+    this.#ensurePageMapped(base);
+    this.#ensurePageMapped(base + 0x1000n);
+    this.regs.rsp = 0x7ff00n;
+  }
+
+  /**
+   * Call a function using the Windows x64 ABI — prologue byte-for-byte
+   * equivalent to JsInterpreter.callFunction().
+   */
+  callFunction(funcAddr, args = [], shadowSpace = 32) {
+    this.#ensureDefaultStack();
+
+    this.regs.rsp = (this.regs.rsp & ~0xfn) - 8n;
+    const regsOrder = ["rcx", "rdx", "r8", "r9"];
+    args.slice(0, 4).forEach((a, i) => { this.regs[regsOrder[i]] = a & M64; });
+    if (args.length > 4) {
+      for (let i = args.length - 1; i >= 4; i--) this.pushVal(args[i]);
+    }
+    for (let i = 0; i < shadowSpace; i += 8) this.pushVal(0n);
+    this.pushVal(RET_MARKER);
+
+    // native sentinel: hook fires exactly at the marker address
+    let returned = false;
+    const markerHook = this.addCodeHook(() => { returned = true; return true; }, RET_MARKER, RET_MARKER);
+    // the marker page must be mapped/translatable for the hook to ever fire
+    this.#ensurePageMapped(RET_MARKER & ~0xfffn);
+    this.mem.write(RET_MARKER & ~0xfffn, new Uint8Array(0x1000).fill(0xf4));
+
+    this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn
+
+    this.rip = funcAddr & M64;
+    const outcome = this.#pump(10_000_000, () => returned);
+    this.hook_del(markerHook);
+
+    this.#syncOut();
+
+    if (outcome === "fault") return { status: "fault", error: this.fault };
+    if (outcome === "timeout") return { status: "timeout" };
+    if (!returned) return { status: "halted", rip: this.regs.rip };
+    return { status: "ok", retval: this.regs.rax };
+  }
+}
+
+// GPR name -> unicorn register id, resolved once per module instance.
+let GPR_IDS = new Map();
+const NAMES = [
+  "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+  "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+];
+function bindRegisterIds(uc) {
+  GPR_IDS = new Map(NAMES.map((n) => [n, uc[`X86_REG_${n.toUpperCase()}`]]));
+}
+
+/**
+ * Async factory — wasm init + register binding.
+ * @param {object} mem SparseMemory-like instance
+ */
+export async function createUnicornBackend(mem) {
+  const uc = await loadModule();
+  if (GPR_IDS.size === 0) bindRegisterIds(uc);
+  return new UnicornCpuBackend(mem, uc);
+}

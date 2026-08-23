@@ -11,10 +11,12 @@ import { SparseMemory } from "./memory.mjs";
 import { StructTables, StructRef } from "./structs.mjs";
 import { JsInterpreter, M64 } from "./cpu.mjs";
 
-const KVA_BASE = 0xfffff80000000000n;
-const POOL_BASE = 0xfffff90000000000n; // synthetic "NonPaged" pool region
-const THUNK_BASE = 0xfffff80100000000n; // kernel API thunks
-const EPROC_BASE = 0xffffb80000000000n; // synthesized EPROCESS blocks
+const DEFAULT_BASES = {
+  kva: 0xfffff80000000000n,
+  pool: 0xfffff90000000000n, // synthetic "NonPaged" pool region
+  thunk: 0xfffff80100000000n, // kernel API thunks
+  eproc: 0xffffb80000000000n, // synthesized EPROCESS blocks
+};
 
 const DEFAULT_PROCESSES = [
   { pid: 4, name: "System", ppl: null },
@@ -29,25 +31,36 @@ const DEFAULT_PROCESSES = [
 export class NtKernel {
   /**
    * @param {{tables?: object, tablesDir?: string, buildName?: string,
-   *          cpu?: import("./cpu.mjs").CpuBackend}} opts
+   *          cpu?: import("./cpu.mjs").CpuBackend,
+   *          bases?: {kva?: bigint, pool?: bigint, thunk?: bigint, eproc?: bigint}}} opts
    *   `cpu`: inject a pre-built backend (e.g. UnicornCpuBackend bound to the
    *   same SparseMemory). Defaults to the deterministic JsInterpreter.
+   *   `bases`: override synthetic VA regions (tests use low-memory layouts;
+   *   defaults mirror real Windows kernel VAs).
    */
   constructor(opts = {}) {
     this.mem = new SparseMemory();
     this.tables = opts.tables ?? new StructTables();
     this.cpu = opts.cpu ?? new JsInterpreter(this.mem);
     if (!this.cpu.mem) this.cpu.mem = this.mem;
+    const B = opts.bases ?? {};
+    /** @type {typeof DEFAULT_BASES} */
+    this.bases = {
+      kva: B.kva ?? DEFAULT_BASES.kva,
+      pool: B.pool ?? DEFAULT_BASES.pool,
+      thunk: B.thunk ?? DEFAULT_BASES.thunk,
+      eproc: B.eproc ?? DEFAULT_BASES.eproc,
+    };
     this.buildName = opts.buildName ?? "synthetic-22h2";
 
     /** @type {Map<string, bigint>} export name -> thunk VA */
     this.apiThunks = new Map();
-    this.nextThunk = THUNK_BASE;
+    this.nextThunk = this.bases.thunk;
     /** @type {Map<string, Function>} export name -> js impl */
     this.apiImpls = new Map();
 
     // pool
-    this.nextPool = POOL_BASE;
+    this.nextPool = this.bases.pool;
     /** @type {Array<{addr:bigint,size:number,tag:string}>} */
     this.poolAllocs = [];
 
@@ -87,7 +100,7 @@ export class NtKernel {
     const linksOff = t.offsetOf("_EPROCESS", "ActiveProcessLinks");
 
     // layout: [head LIST_ENTRY][eproc0][eproc1]...
-    const headAddr = EPROC_BASE;
+    const headAddr = this.bases.eproc;
     let nextEproc = headAddr + 16n;
 
     const linkAddrs = [];
@@ -216,7 +229,8 @@ export class NtKernel {
 
   _installCpuHook() {
     const handler = (rip) => {
-      if (rip < THUNK_BASE || rip >= THUNK_BASE + 0x10000000n) return false;
+      const T = this.bases.thunk;
+      if (rip < T || rip >= T + 0x10000000n) return false;
       // find which api
       for (const [name, addr] of this.apiThunks) {
         if (addr === rip) {
@@ -235,7 +249,7 @@ export class NtKernel {
       return false;
     };
     if (typeof this.cpu.addCodeHook === "function") {
-      this.cpu.addCodeHook(handler, THUNK_BASE, THUNK_BASE + 0x10000000n);
+      this.cpu.addCodeHook(handler, this.bases.thunk, this.bases.thunk + 0x10000000n);
     } else {
       this.cpu.onCodeHook = handler;
     }
