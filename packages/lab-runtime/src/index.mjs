@@ -1,7 +1,5 @@
 /** Local-first persistence + CTF flag checking + lesson progression. */
 
-import { createHash } from "node:crypto"; // replaced by WebCrypto in browser via shim below
-
 // ---------------------------------------------------------------------------
 // Hashing — works in Node (tests) and browser (WebCrypto fallback)
 // ---------------------------------------------------------------------------
@@ -94,3 +92,5 @@ export function submitFlagForProgress(progress, lesson, flagId, correct) {
   }
   return { progress: next, events };
 }
+
+export * from "./backends.mjs";

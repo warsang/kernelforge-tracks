@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KernelForge — Windows Kernel Labs</title>
+  <script>
+    // Dev flag defaults: catalog hashes these at module load. Override per
+    // environment (real deployments inject hashed flags at content build).
+    window.process = {
+      env: {
+        KF_FLAG_M1L1F1: "FLAG{kfprobe}",
+        KF_FLAG_M1L1F2: "FLAG{312}",
+        KF_FLAG_M1L2F1: "FLAG{0x40003d90}",
+      },
+    };
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.mjs",
+    "./storage.browser": "./src/storage.browser.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
