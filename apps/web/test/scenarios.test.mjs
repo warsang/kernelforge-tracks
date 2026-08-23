@@ -76,3 +76,34 @@ test("FullDllName of every module round-trips as UTF-16", async () => {
   }
   assert.ok(all.some((s) => s.includes(PROBE_FLAG)));
 });
+
+test("real-dump world: fixture loads with authentic processes", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  assert.ok(raw.processes.length >= 40, "expected a real machine's process list");
+
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem),
+    loadTables,
+    dumpWorld: raw,
+  });
+
+  const procs = kernel.listProcesses();
+  const byName = (n) => procs.find((p) => p.name === n);
+  // authentic entries
+  assert.equal(byName("System").pid, 4n);
+  assert.ok(byName("lsass.exe"));
+  assert.ok(procs.length >= 80);
+  // lab fixtures injected on top of the real machine
+  assert.ok(byName("kftarget.exe"));
+  assert.ok(kernel.loadedModules.some((m) => m.full.includes(PROBE_FLAG)));
+  // token blob bytes landed at the decoded fastref target
+  const lsass = kernel.processesByName.get("lsass.exe");
+  const tokRaw = kernel.mem.u64(lsass + kernel.tables.offsetOf("_EPROCESS", "Token"));
+  const target = tokRaw & ~0xfn;
+  const blob = kernel.mem.read(target, 8);
+  assert.equal(blob[0], 0x2a); // '*SYSTEM*' magic from the real dump
+});

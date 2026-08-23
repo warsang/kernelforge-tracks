@@ -5,7 +5,7 @@ import {
   emptyProgress, resolveBackend,
 } from "@kernelforge/lab-runtime";
 import { loadProgress, saveProgress } from "@kernelforge/lab-runtime/storage.browser";
-import { getScenario } from "./scenarios.js";
+import { getScenario, tryLoadDumpWorld } from "./scenarios.js";
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
 
@@ -115,10 +115,18 @@ function renderLesson(lesson) {
         try {
           const scenario = getScenario(lab.scenario);
           const factory = await resolveBackend(backendSel.value);
+          const dumpWorld = await tryLoadDumpWorld();
           const session = await scenario.boot({
             makeBackend: (mem) => factory(mem),
             loadTables: () => loadTables(),
+            dumpWorld,
           });
+          if (dumpWorld) {
+            currentDebugger.write(
+              `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +
+              `${dumpWorld.meta.moduleCount} modules extracted from a genuine ` +
+              `Windows kernel dump (${dumpWorld.meta.source}).`);
+          }
           consoleOut.innerHTML = "";
           currentDebugger = createDebugger(session.kernel, consoleOut);
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
