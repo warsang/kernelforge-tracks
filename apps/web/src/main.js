@@ -22,9 +22,10 @@ const totalPoints = () => progress.points ?? 0;
 
 // ---------------------------------------------------------------- rendering
 
-function h(tag, attrs = {}, ...children) {
+function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
+  // NB: defaults don't cover explicit `null` callers — normalize instead.
+  for (const [k, v] of Object.entries(attrs ?? {})) {
     if (k === "class") el.className = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (v !== undefined && v !== null) el.setAttribute(k, String(v));
