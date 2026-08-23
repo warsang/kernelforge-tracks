@@ -102,5 +102,5 @@ export function createDebugger(kernel, out) {
     else try { fn(args); } catch (e) { write(`error: ${e.message}`, "err"); }
   }
 
-  return { exec };
+  return { exec, write };
 }

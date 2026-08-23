@@ -29,7 +29,7 @@ import { CpuError } from "@kernelforge/ntsim/src/cpu.mjs";
 let modulePromise = null;
 async function loadModule() {
   if (!modulePromise) {
-    modulePromise = import("../vendor/unicorn_x86.cjs").then((m) => m.default());
+    modulePromise = import("../vendor/unicorn_x86.mjs").then((m) => (m.default ?? m)());
   }
   return modulePromise;
 }

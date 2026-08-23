@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { Window } from "happy-dom";
 import { createServer } from "vite";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +32,24 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
     KF_FLAG_M1L2F1: "FLAG{0x40003d90}",
   } };
 
+  // File-backed fetch shim: serves /tables/** from public/ so the scenario's
+  // table loader works identically without a network.
+  const fetchShim = async (url) => {
+    const u = typeof url === "string" ? url : url.url;
+    if (u.startsWith("/tables/") || u.includes("/tables/")) {
+      const rel = u.slice(u.indexOf("/tables/"));
+      try {
+        const data = await readFile(path.join(webRoot, "public", rel));
+        return { ok: true, status: 200, json: async () => JSON.parse(data) };
+      } catch {
+        return { ok: false, status: 404 };
+      }
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.fetch = fetchShim;
+  window.fetch = fetchShim;
+
   const server = await createServer({
     root: webRoot,
     server: { middlewareMode: true },
@@ -50,6 +69,36 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
     assert.ok(doc.body.textContent.includes("Boot / Reset"), "lab runner not rendered");
     assert.ok(doc.querySelector("select"), "backend picker missing");
     assert.ok(doc.querySelectorAll(".flag").length >= 2, "flag prompts missing");
+
+    // Boot on BOTH backends; console must report success, never 'boot failed'
+    for (const backend of ["js", "unicorn"]) {
+      const sel = doc.querySelector("select");
+      sel.value = backend;
+      sel.dispatchEvent(new window.Event("change"));
+      const bootBtn = [...doc.querySelectorAll("button")].find((b) => b.textContent === "Boot / Reset");
+      // emscripten picks its NODE branch when process.versions is visible,
+      // then dies on missing require() inside an ESM bundle. Under the DOM
+      // shim we want the BROWSER branch even though we run in Node.
+      let savedVersions;
+      if (backend === "unicorn") {
+        savedVersions = globalThis.process.versions;
+        Object.defineProperty(globalThis.process, "versions", { value: {}, configurable: true });
+      }
+      bootBtn.click();
+      try {
+        await new Promise((r) => setTimeout(r, backend === "unicorn" ? 4000 : 300));
+      } finally {
+        if (savedVersions) {
+          Object.defineProperty(globalThis.process, "versions", { value: savedVersions, configurable: true });
+        }
+      }
+      const text = doc.querySelector(".console").textContent;
+      assert.ok(!text.includes("boot failed"), `[${backend}] boot failed: ${text.slice(0, 300)}`);
+      assert.ok(
+        text.includes("Booted") && text.includes("boot-default") && text.includes(`${backend} backend`),
+        `[${backend}] no success line: ${text.slice(0, 200)}`,
+      );
+    }
   } finally {
     await server.close();
   }
