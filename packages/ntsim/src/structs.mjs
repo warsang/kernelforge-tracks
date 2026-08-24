@@ -4,7 +4,6 @@
  * hardcoded in ntsim logic — everything flows through the active build's tables.
  */
 
-import { readFile } from "node:fs/promises";
 
 export class StructTables {
   constructor() {
@@ -13,10 +12,11 @@ export class StructTables {
   }
 
   /**
-   * @param {string} dirPath directory containing <Type>.json files
-   * @param {string[]} names types to load
+   * Load tables from a directory (Node/build-time convenience; browsers use
+   * register() with fetched JSON instead).
    */
   static async loadDir(dirPath, names) {
+    const { readFile } = await import("node:fs/promises");
     const t = new StructTables();
     for (const n of names) {
       try {

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KERNELFORGE — Browser-Native Kernel & Game Hacking Course</title>
+  <link rel="stylesheet" href="/src/ui.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "@kernelforge/ntsim": "/packages/ntsim/src/index.mjs",
+        "@kernelforge/windbg-web/engine": "/packages/windbg-web/src/engine.mjs",
+        "@kernelforge/compiler-worker/": "/packages/compiler-worker/src/",
+        "@kernelforge/course-content": "/packages/course-content/src/index.mjs",
+        "@kernelforge/lab-runtime": "/packages/lab-runtime/src/index.mjs"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="logo">KERNELFORGE</span>
+    <nav id="tabs">
+      <button data-tab="course" class="active">Course</button>
+      <button data-tab="lab">Lab</button>
+      <button data-tab="windbg">WinDbg</button>
+      <button data-tab="ide">IDE</button>
+    </nav>
+    <span id="points" class="points">0 pts</span>
+  </header>
+
+  <main>
+    <section id="tab-course" class="tab active">
+      <div id="lesson-list"></div>
+      <article id="lesson-body"></article>
+    </section>
+
+    <section id="tab-lab" class="tab">
+      <div class="lab-toolbar">
+        <select id="scenario">
+          <option value="boot-default">Scenario: boot-default</option>
+          <option value="dkom-hide">Scenario: dkom-hide</option>
+        </select>
+        <button id="btn-boot">Boot kernel</button>
+        <button id="btn-run-lab">Run lab checks</button>
+        <span id="lab-status"></span>
+      </div>
+      <pre id="lab-log"></pre>
+    </section>
+
+    <section id="tab-windbg" class="tab">
+      <div class="kd-wrap">
+        <div id="kd-out"></div>
+        <div class="kd-input-row">
+          <span class="kd-prompt">kd&gt;</span>
+          <input id="kd-in" autocomplete="off" spellcheck="false"
+                 placeholder="!process 0 0   |   dt nt!_EPROCESS   |   help">
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-ide" class="tab">
+      <div class="ide-toolbar">
+        <button id="btn-compile">Compile driver (.obj → link → load)</button>
+        <span id="compile-status"></span>
+      </div>
+      <textarea id="editor" spellcheck="false"></textarea>
+    </section>
+  </main>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

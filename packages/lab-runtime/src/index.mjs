@@ -1,6 +1,5 @@
 /** Local-first persistence + CTF flag checking + lesson progression. */
-
-import { createHash } from "node:crypto"; // replaced by WebCrypto in browser via shim below
+// Browser-safe: uses WebCrypto (present in Node 18+ and all browsers).
 
 // ---------------------------------------------------------------------------
 // Hashing — works in Node (tests) and browser (WebCrypto fallback)
@@ -11,9 +10,7 @@ export async function sha256Hex(text, cryptoImpl = globalThis.crypto) {
     const buf = await cryptoImpl.subtle.digest("SHA-256", new TextEncoder().encode(text));
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
-  // Node fallback for tests without global webcrypto
-  const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(text, "utf8").digest("hex");
+  throw new Error("WebCrypto unavailable: cannot hash flags");
 }
 
 // ---------------------------------------------------------------------------

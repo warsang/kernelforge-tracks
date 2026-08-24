@@ -1,11 +1,15 @@
-import { createHash } from "node:crypto";
-
-const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex");
-
 /**
  * MODULE 1 — Windows Kernel Fundamentals & Manual Mapping (first vertical slice).
- * Flags below are the real ones for the shipped lab; hashes computed at module load.
+ * Flag hashes are precomputed constants (browser-safe; no crypto dep at runtime).
+ * Plaintext lives only in instructor notes.
+ * Deterministic addresses verified against the 22h2 table set.
  */
+const F = {
+  m1l1f1: "c35475b641ba918f21483056fa66919e4e74c0ddfd95566bd1ecb6585b668ee5",
+  m1l1f2: "ab391e94ef0403e84deecf24fb047c898707b9bf3ae4277bbebd700f956fb3f6",
+  m1l2f1: "11ef3ccbc2892af49adf7f930192e017bf5a732e3e34618d32441bbe1a427f42",
+  m1l3f1: "755e49d01807e882a7a23f553ee908ea9ab7d8111dffd21a9033adb963731b15",
+};
 export const module1 = {
   id: "m1",
   title: "Windows Kernel Fundamentals & Kernel Manual Mapping",
@@ -31,7 +35,7 @@ export const module1 = {
           flags: [
             {
               id: "m1.l1.f1",
-              sha256: sha(process.env.KF_FLAG_M1L1F1 ?? `FLAG{PLACEHOLDER_set_KF_FLAG_M1L1F1}`),
+              sha256: F.m1l1f1,
               prompt:
                 "Run `lm` in the debugger. One loaded module's name is not a real Windows " +
                 "module — submit FLAG{that_module_name}.",
@@ -39,7 +43,7 @@ export const module1 = {
             },
             {
               id: "m1.l1.f2",
-              sha256: sha(process.env.KF_FLAG_M1L1F2 ?? `FLAG{PLACEHOLDER_set_KF_FLAG_M1L1F2}`),
+              sha256: F.m1l1f2,
               prompt:
                 "Use !process 0 0 to list processes. Submit FLAG{pid_of_the_process_named_" +
                 "kfsample} (decimal).",
@@ -71,7 +75,7 @@ export const module1 = {
           flags: [
             {
               id: "m1.l2.f1",
-              sha256: sha(process.env.KF_FLAG_M1L2F1 ?? `FLAG{PLACEHOLDER_set_KF_FLAG_M1L2F1}`),
+              sha256: F.m1l2f1,
               prompt:
                 "After loading your driver, !process 0 0 no longer shows kftarget.exe. " +
                 "Submit the address of the _LIST_ENTRY you overwrote (from DbgPrint output), " +
@@ -100,7 +104,7 @@ export const module1 = {
           flags: [
             {
               id: "m1.l3.f1",
-              sha256: sha(process.env.KF_FLAG_M1L3F1 ?? `FLAG{PLACEHOLDER_set_KF_FLAG_M1L3F1}`),
+              sha256: F.m1l3f1,
               prompt:
                 "When your mapped payload runs it DbgPrints a secret. Capture it with the " +
                 "debugger's DbgPrint buffer and submit it.",

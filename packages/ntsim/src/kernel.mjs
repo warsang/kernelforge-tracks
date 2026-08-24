@@ -112,6 +112,13 @@ export class NtKernel {
     }
     this.mem.w64(headAddr, linkAddrs[0]);
     this.mem.w64(headAddr + 8n, linkAddrs[linkAddrs.length - 1]);
+
+    // scenario modules visible via `lm` — kfbootkit.sys is the L1 flag target
+    this.loadedDrivers.push(
+      { name: "ntoskrnl.exe", base: 0xfffff8052b800000n, imageSize: 0x800000 },
+      { name: "HAL.dll", base: 0xfffff8052b000000n, imageSize: 0x40000 },
+      { name: "kfbootkit.sys", base: 0xfffff80539000000n, imageSize: 0x8000 },
+    );
   }
 
   // -------------------------------------------------------------- pool

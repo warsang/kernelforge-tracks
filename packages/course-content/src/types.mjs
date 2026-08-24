@@ -1,55 +1,38 @@
 /**
- * Core content types: modules -> lessons -> labs -> flags.
- * Progression is a DAG over lesson ids; a lesson unlocks when all its flags are solved.
+ * Core content shapes (JSDoc — runtime is plain ESM):
+ *
+ * @typedef  {Object} FlagDef
+ * @property {string} id            stable id, e.g. "m1.eprocess.pid"
+ * @property {string} sha256        sha256 hex of the exact accepted flag string
+ * @property {string} prompt        shown before solving
+ * @property {number} points        CTF scoring
+ *
+ * @typedef {"ntsim"|"compiler"|"windbg"|"quiz"} LabKind
+ *
+ * @typedef {Object} LabDef
+ * @property {string} id
+ * @property {LabKind} kind
+ * @property {string} title
+ * @property {string} brief
+ * @property {string} [scenario]    scenario/fixture id in the track runtime
+ * @property {{path: string, content: string}[]} [starterFiles]
+ * @property {FlagDef[]} flags
+ *
+ * @typedef {Object} LessonDef
+ * @property {string} id
+ * @property {string} title
+ * @property {string} body          MDX body reference within the content package
+ * @property {LabDef[]} labs
+ * @property {string[]} requires    lesson ids that must complete first
+ *
+ * @typedef {Object} CourseModule
+ * @property {string} id
+ * @property {string} title
+ * @property {"windows-user"|"windows-kernel"|"linux"|"hypervisor"|"uefi"|"misc"} track
+ * @property {string} summary
+ * @property {LessonDef[]} lessons
+ *
+ * @typedef {Object} CourseCatalog
+ * @property {number} version
+ * @property {CourseModule[]} modules
  */
-
-export interface FlagDef {
-  /** Stable id, e.g. "m1.eprocess.pid" */
-  id: string;
-  /** sha256 hex of the exact accepted flag string (case-sensitive) */
-  sha256: string;
-  /** Shown before solving */
-  prompt: string;
-  /** Points awarded (CTF scoring) */
-  points: number;
-}
-
-export type LabKind =
-  | "ntsim"        // emulated Windows kernel scenario
-  | "compiler"     // browser IDE compile task
-  | "windbg"       // debugger interaction task
-  | "quiz";        // pure question, answer is the flag
-
-export interface LabDef {
-  id: string;
-  kind: LabKind;
-  title: string;
-  brief: string;
-  /** Scenario/fixture id inside the track runtime, e.g. ntsim boot scenario */
-  scenario?: string;
-  /** Files preloaded into the student IDE for this lab */
-  starterFiles?: { path: string; content: string }[];
-  flags: FlagDef[];
-}
-
-export interface LessonDef {
-  id: string;
-  title: string;
-  /** MDX body file reference within the content package */
-  body: string;
-  labs: LabDef[];
-  requires: string[];
-}
-
-export interface CourseModule {
-  id: string;
-  title: string;
-  track: "windows-user" | "windows-kernel" | "linux" | "hypervisor" | "uefi" | "misc";
-  summary: string;
-  lessons: LessonDef[];
-}
-
-export interface CourseCatalog {
-  version: number;
-  modules: CourseModule[];
-}

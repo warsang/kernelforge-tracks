@@ -82,9 +82,10 @@ export function parseCoff(bytes) {
   }
 
   const symbols = [];
+  const symbolsByIndex = new Array(numSymbols).fill(null);
   let so = symTableOff;
   for (let i = 0; i < numSymbols; ) {
-    symbols.push({
+    const rec = {
       index: i,
       name: nameAt(so),
       value: u32(bytes, so + 8),
@@ -92,13 +93,15 @@ export function parseCoff(bytes) {
       type: u16(bytes, so + 14),
       storageClass: bytes[so + 16],
       auxCount: bytes[so + 17],
-    });
-    const skip = bytes[so + 17] + 1;
+    };
+    symbols.push(rec);
+    symbolsByIndex[i] = rec;
+    const skip = rec.auxCount + 1;
     so += skip * 18;
     i += skip;
   }
 
-  return { machine, sections, symbols };
+  return { machine, sections, symbols, symbolsByIndex };
 }
 
 /**

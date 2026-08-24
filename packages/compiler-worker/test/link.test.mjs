@@ -30,6 +30,9 @@ test("full pipeline: clang .obj -> linked .sys -> ntsim runs DriverEntry", async
   const objBytes = readFileSync(fixture);
   let dbgThunk = null;
 
+  // map the produced image into kernel memory — MUST use the same base the
+  // linker relocated against (position-dependent encodings)
+  const base = 0xfffff80120000000n;
   const { image, entryRva } = linkDriver(
     [objBytes],
     (name) => {
@@ -38,11 +41,10 @@ test("full pipeline: clang .obj -> linked .sys -> ntsim runs DriverEntry", async
         return dbgThunk;
       }
       return null;
-    }
+    },
+    base
   );
 
-  // map the produced image into kernel memory
-  const base = 0xfffff80120000000n;
   const mapping = mapPe(image, k.mem, base, () => null); // imports already resolved (ABS relocs)
 
   // entry RVA must point at our linked DriverEntry
