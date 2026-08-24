@@ -162,6 +162,7 @@ int main(int argc, char **argv) {
   // ---- processes ----
   struct Proc { uint64_t eproc; uint64_t pid; std::string name;
                 uint64_t tokenRaw, tokenTarget; std::string tokenHex;
+                std::string eprocessHex;
                 int protByte; bool hasProt; };
   std::vector<Proc> procs;
   {
@@ -180,6 +181,16 @@ int main(int argc, char **argv) {
     Proc p{};
     p.eproc = eproc;
     if (!virtRead(eproc + a.pid, &p.pid, 8)) break;
+    { // full _EPROCESS image — authentic dt walks downstream
+      static constexpr int EPROC_SZ = 0xa40;
+      std::vector<char> blob(EPROC_SZ, 0);
+      virtRead(eproc, blob.data(), EPROC_SZ);
+      char tmp[3];
+      for (int i = 0; i < EPROC_SZ; i++) {
+        snprintf(tmp, sizeof tmp, "%02x", (unsigned char)blob[i]);
+        p.eprocessHex += tmp;
+      }
+    }
     char nm[16] = {};
     virtRead(eproc + a.name, nm, 15);
     p.name = nm;
@@ -203,7 +214,8 @@ int main(int argc, char **argv) {
   }
 
   // ---- modules ----
-  struct Mod { uint64_t base; uint64_t size; std::string full, baseName; };
+  struct Mod { uint64_t base; uint64_t size; std::string full, baseName;
+                std::string headerHex; };
 auto readUs = [&](uint64_t va, std::string &out) {
       uint16_t len = 0; uint64_t buf = 0;
       if (!virtRead(va, &len, 2)) return;
@@ -225,6 +237,20 @@ auto readUs = [&](uint64_t va, std::string &out) {
       if (a.kldrSize) virtRead(ent + a.kldrSize, &m.size, 8);
       readUs(ent + a.kldrFull, m.full);
       if (a.kldrBaseName) readUs(ent + a.kldrBaseName, m.baseName);
+      { // PE header bytes at DllBase (up to one page)
+        std::vector<char> hdr(0x1000, 0);
+        const bool ok = virtRead(m.base, hdr.data(), 0x1000);
+        const size_t got = ok ? 0x1000 : 0;
+        // virtRead is all-or-nothing per call; partial success means first
+        // page present. Check MZ before keeping.
+        if (got >= 2 && hdr[0] == 'M' && hdr[1] == 'Z') {
+          static char tmp[3];
+          for (size_t i = 0; i < got; i++) {
+            snprintf(tmp, sizeof tmp, "%02x", (unsigned char)hdr[i]);
+            m.headerHex += tmp;
+          }
+        }
+      }
       mods.push_back(m);
       if (!virtRead(flinkM, &flinkM, 8)) break;
     }
@@ -289,6 +315,7 @@ auto readUs = [&](uint64_t va, std::string &out) {
     const auto &p = procs[i];
     fprintf(f, "    { \"pid\": %llu, \"name\": \"%s\", \"eprocess\": \"0x%llx\", ",
             (unsigned long long)p.pid, p.name.c_str(), (unsigned long long)p.eproc);
+    fprintf(f, "\"eprocessHex\": \"%s\", ", p.eprocessHex.c_str());
     if (p.hasProt) fprintf(f, "\"protectionByte\": %d, ", p.protByte);
     fprintf(f, "\"token\": { \"raw\": \"0x%llx\", \"target\": \"0x%llx\"",
             (unsigned long long)p.tokenRaw, (unsigned long long)p.tokenTarget);
@@ -310,9 +337,12 @@ auto readUs = [&](uint64_t va, std::string &out) {
       else if (ch == '\\') escBase += "\\\\";
       else if ((unsigned char)ch >= 32) escBase += ch;
     }
-    fprintf(f, "    { \"base\": \"0x%llx\", \"sizeOfImage\": %llu, \"baseDllName\": \"%s\", \"fullDllName\": \"%s\" }%s\n",
+    fprintf(f, "    { \"base\": \"0x%llx\", \"sizeOfImage\": %llu, \"baseDllName\": \"%s\", \"fullDllName\": \"%s\"",
             (unsigned long long)m.base, (unsigned long long)m.size,
-            escBase.c_str(), esc.c_str(), i + 1 < mods.size() ? "," : "");
+            escBase.c_str(), esc.c_str());
+    if (!m.headerHex.empty())
+      fprintf(f, ", \"headerHex\": \"%s\"", m.headerHex.c_str());
+    fprintf(f, " }%s\n", i + 1 < mods.size() ? "," : "");
   }
   fprintf(f, "  ],\n");
   if (kpcrVa) {

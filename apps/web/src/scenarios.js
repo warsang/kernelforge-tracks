@@ -28,13 +28,17 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
 
   if (dumpWorld) populateFromDump(kernel, tables, dumpWorld);
   if (!dumpWorld) {
+  // searchable probe-module content
+  mem.writeUtf16(0x30000800n, "\\SystemRoot\\system32\\drivers\\kfprobe.sys");
+  mem.writeAnsi(0x30000a00n, "FLAG{kfprobe} kernel probe driver v1.0");
+
   // Synthesize a loaded-module list (what `lm` walks). One entry is not a
   // real Windows module — its FullImageName carries this lab's flag.
   const ldrOff = tables.offsetOf("_KLDR_DATA_TABLE_ENTRY", "FullDllName");
   const modules = [
     { base: 0x10000000n, name: "ntoskrnl.exe", full: "\\SystemRoot\\system32\\ntoskrnl.exe" },
     { base: 0x20000000n, name: "hal.dll", full: "\\SystemRoot\\system32\\hal.dll" },
-    { base: 0x30000000n, name: "kfprobe.sys", full: `\\SystemRoot\\system32\\drivers\\${PROBE_FLAG}.sys` },
+    { base: 0x30000000n, name: "kfprobe.sys", lab: true, full: `\\SystemRoot\\system32\\drivers\\${PROBE_FLAG}.sys` },
     { base: 0x40000000n, name: "dxgkrnl.sys", full: "\\SystemRoot\\system32\\drivers\\dxgkrnl.sys" },
   ];
   let cursor = 0x50000000n;
@@ -165,6 +169,12 @@ function populateFromDump(kernel, tables, world) {
     if (protOff !== null && typeof p.protectionByte === "number") {
       mem.w8(p.eproc + protOff, p.protectionByte);
     }
+    // Authentic full _EPROCESS image extracted from the dump (fields beyond
+    // our planted subset — VadCount, Cookie, QuotaBlock, … — are now real).
+    if (p.eprocessHex) {
+      const bytes = new Uint8Array(p.eprocessHex.match(/.{2}/g).map((x) => parseInt(x, 16)));
+      mem.write(p.eproc, bytes);
+    }
     const isFirst = i === 0;
     const isLast = i === procs.length - 1;
     const flink = isLast ? head : procs[i + 1].eproc + linksOff;
@@ -177,6 +187,12 @@ function populateFromDump(kernel, tables, world) {
     }
     kernel.processesByName.set(p.name, p.eproc);
   });
+  // real PE headers at their DllBases — enables !dh parsing
+  for (const m of world.modules) {
+    if (!m.headerHex || !m.base) continue;
+    const bytes = new Uint8Array(m.headerHex.match(/.{2}/g).map((x) => parseInt(x, 16)));
+    mem.write(BigInt(m.base), bytes);
+  }
   // head must point INTO the new ring
   mem.w64(head, procs[0].eproc + linksOff);            // head.Flink -> first
   mem.w64(head + 8n, procs[procs.length - 1].eproc + linksOff); // head.Blink -> tail
@@ -220,10 +236,21 @@ function populateFromDump(kernel, tables, world) {
   });
   kernel.loadedModules = mods;
 
+  // lab probe module content: flag path as UTF-16 + ANSI, searchable via s/
+  {
+    const probeBase = 0xfffff8055a000000n;
+    const probeFull = "\\SystemRoot\\system32\\drivers\\kfprobe.sys";
+    const u16 = [...probeFull].map((c) => c.charCodeAt(0));
+    mem.write(probeBase + 0x800n, new Uint8Array(new Uint16Array(u16).buffer));
+    mem.writeAnsi(probeBase + 0xa00n,
+      "FLAG{kfprobe} kernel probe driver v1.0 — hello from kernel land");
+  }
+
+  // saved crash-moment CPU context -> seed BOTH backends' register file
   // saved crash-moment CPU context -> seed BOTH backends' register file
   if (world.context) {
     for (const [reg, val] of Object.entries(world.context)) {
-      if (reg in kernel.cpu.regs) kernel.cpu.regs[reg] = BigInt(val);
+      try { kernel.cpu.regs[reg] = BigInt(val); } catch { /* unknown reg */ }
     }
     kernel.contextSource = "dump";
   }
@@ -236,9 +263,8 @@ function populateFromDump(kernel, tables, world) {
     let pid = 0n;
     for (let i = 7; i >= 0; i--) pid = (pid << 8n) | BigInt(pidBytes[i]);
     const owner = kernel.findEprocessByPid(pid);
-    kernel.threads = {
-      [String(world.kpcr.currentThread)]: { pid, process: owner },
-    };
+    kernel.threads = kernel.threads ?? {};
+    kernel.threads[String(world.kpcr.currentThread)] = { pid, process: owner };
   }
 }
 
