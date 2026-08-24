@@ -9,6 +9,7 @@ import { getScenario, tryLoadDumpWorld } from "./scenarios.js";
 import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
+import { createDebugConsole, disposeConsoles } from "./console.js";
 
 const app = document.getElementById("app");
 let progress = emptyProgress();
@@ -136,6 +137,7 @@ function renderWelcome() {
 
 function renderLesson(lesson) {
   const main = document.getElementById("main");
+  disposeConsoles(); // terminals from the previous lesson render
   main.innerHTML = "";
   main.append(
     h("div", { class: "card" },
@@ -145,8 +147,12 @@ function renderLesson(lesson) {
   );
 
   for (const lab of lesson.labs) {
-    const consoleOut = h("div", { class: "console" });
-    let dbg = null;
+    // xterm.js-backed kd> console (div fallback in headless DOMs); input is
+    // inline — every submitted line routes to currentDebugger.exec.
+    const consoleHost = h("div", { class: "console-host" });
+    const consoleReady = createDebugConsole(consoleHost, {
+      onSubmit: (line) => currentDebugger?.exec(line),
+    });
 
     const backendSel = h("select", {},
       h("option", { value: "js" }, "CPU: JsInterpreter (deterministic)"),
@@ -157,6 +163,7 @@ function renderLesson(lesson) {
       onclick: async () => {
         bootBtn.disabled = true;
         bootBtn.textContent = "booting…";
+        const dbg = await consoleReady;
         try {
           const scenario = getScenario(lab.scenario);
           const factory = await resolveBackend(backendSel.value);
@@ -166,9 +173,9 @@ function renderLesson(lesson) {
             loadTables: () => loadTables(),
             dumpWorld,
           });
-          consoleOut.innerHTML = "";
+          dbg.innerHTML = "";
           currentKernel = session.kernel;
-          currentDebugger = createDebugger(session.kernel, consoleOut);
+          currentDebugger = createDebugger(session.kernel, dbg);
           if (dumpWorld) {
             currentDebugger.write(
               `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +
@@ -176,28 +183,16 @@ function renderLesson(lesson) {
               `Windows kernel dump (${dumpWorld.meta.source}).`);
           }
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
+          dbg.focusTarget?.focus?.();
         } catch (e) {
-          consoleOut.innerHTML = "";
-          const line = h("div", { class: "err" }, `boot failed: ${e.message}`);
-          consoleOut.append(line);
+          dbg.innerHTML = "";
+          dbg.write(`boot failed: ${e.message}`, "err");
         } finally {
           bootBtn.disabled = false;
           bootBtn.textContent = "Boot / Reset";
         }
       },
     }, "Boot / Reset");
-
-    const cmdInput = h("input", {
-      class: "cmd",
-      placeholder: "kd> command…  (help, lm, !process 0 0, r, db <addr>, dq <addr>, !eproc <addr|pid>)",
-    });
-    cmdInput.addEventListener("keydown", (ev) => {
-      if (ev.key !== "Enter") return;
-      const line = cmdInput.value;
-      cmdInput.value = "";
-      if (!currentDebugger || !line.trim()) return;
-      currentDebugger.exec(line);
-    });
 
     const card = h("div", { class: "card lab" },
       h("h2", null, lab.title + " ", h("code", { class: "kind" }, lab.kind)),
@@ -262,7 +257,7 @@ function renderLesson(lesson) {
     }
 
     card.append(h("div", { class: "controls" }, backendSel, bootBtn));
-    card.append(cmdInput, consoleOut);
+    card.append(consoleHost);
 
     // ---- flag submission
     for (const f of lab.flags) {

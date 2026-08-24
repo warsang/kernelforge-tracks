@@ -570,6 +570,11 @@ export function createCommands(kernel) {
 export function createDebugger(kernel, out) {
   const commands = createCommands(kernel);
   const write = (text, cls = "") => {
+    // console adapter (xterm/fallback from console.js) — preferred surface
+    if (typeof out?.write === "function" && !out.appendChild) {
+      out.write(text, cls);
+      return;
+    }
     const line = document.createElement("div");
     if (cls) line.className = cls;
     line.textContent = text;
