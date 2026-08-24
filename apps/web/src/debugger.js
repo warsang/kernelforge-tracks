@@ -374,34 +374,21 @@ export function createCommands(kernel) {
     },
 
     dt(args, w) {
-      // dt nt!_EPROCESS UniqueProcessId   → single field info
-      // dt _EPROCESS                      → layout only (symbol-only mode)
-      // dt _EPROCESS 0x1234               → walk fields at address
-      // dt nt!_EPROCESS 0xffff8f8b…       → normalized prefix
       let raw = args[0] ?? "";
       const clean = raw.replace(/^(?:nt|ntoskrnl|ntoskrnl\.exe)!/i, "");
-      const fieldName = args[1] ?? null;
       const tname = clean.startsWith("_") ? clean : `_${clean}`;
+      const second = args[1] ?? null;
+      const sym = kernel.symbolEngine;
 
-      // Field-specific lookup: dt <Type> <Field>
-      if (fieldName && !/^(0x)?[0-9a-f]+$/i.test(fieldName)) {
-        const sym = kernel.symbolEngine;
-        if (!sym) return w("dt: no symbol engine available", "err");
-        const f = sym.getField(tname, fieldName);
-        if (!f) return w(`dt: ${tname}.${fieldName} not found`, "err");
-        w(`${tname}.${fieldName}`, "hdr");
-        w(`  +0x${f.offset.toString(16).padStart(3, "0")} ${f.decl || fieldName}`);
-        w(`  offset=0x${f.offset.toString(16)} size=${f.size}`);
-        return;
+      const knownType = !!tables.types.get(tname);
+      if (!knownType) {
+        return w(`dt: unknown type "${tname}"\navailable: ${[...tables.types.keys()].sort().join(", ")}`, "err");
       }
 
-      // Layout-only mode (no address): show all fields from tables
-      if (!args[1]) {
+      // ---- 1. Layout-only mode (no second arg) ----
+      if (!second) {
         const fields = walkableFields(tables, tname);
-        if (!fields) {
-          return w(`dt: unknown type "${tname}"\navailable: ${[...tables.types.keys()].sort().join(", ")}`, "err");
-        }
-        w(`struct ${tname} (${fields.length} walkable fields, layout-only — pass an address for a memory dump)`, "hdr");
+        w(`struct ${tname} (${fields.length} walkable fields, layout-only — pass an address or PID for a memory dump)`, "hdr");
         let shown = 0;
         for (const f of fields) {
           if (shown >= 48) { w(`  ... (${fields.length - shown} more)`); break; }
@@ -413,17 +400,48 @@ export function createCommands(kernel) {
         return;
       }
 
-      // Address-dump mode with memory safety
-      let addr = 0n;
-      try { addr = BigInt(args[1]); } catch { return w("dt: bad address", "err"); }
-      const fields = walkableFields(tables, tname);
-      if (!fields) {
-        return w(`dt: unknown type "${tname}"\navailable: ${[...tables.types.keys()].sort().join(", ")}`, "err");
+      // ---- 2. Field-specific schema query (non-numeric second arg) ----
+      // Try this BEFORE address/PID parsing — a field name like "ActiveProcessLinks"
+      // would fail hex parsing but succeed as a field descriptor.
+      if (!/^(0x)?[0-9]+$/i.test(second)) {
+        if (sym) {
+          const f = sym.getField(tname, second);
+          if (f) {
+            w(`${tname}.${second}`, "hdr");
+            w(`  +0x${f.offset.toString(16).padStart(3, "0")} ${f.decl || second}`);
+            w(`  offset=0x${f.offset.toString(16)} size=${f.size}`);
+            return;
+          }
+          // not a field either → maybe it IS a hex address after all
+        }
+        // fall through to address parsing below
       }
-      const totalSize = Math.max(...fields.map((f) => f.offset + 8));
-      const why = memFault(addr, totalSize);
-      if (why) return w(memErr(addr, why), "err");
-      for (const line of dumpStruct(tname, addr, { max: 96 })) w(line);
+
+      // ---- 3. Parse the value as BigInt (handles dec + hex) ----
+      let val;
+      try { val = BigInt(second); } catch { return w(`dt: bad address "${second}"`, "err"); }
+
+      // ---- 4. PID resolution for process/thread types ----
+      // Small integers (< 2^20 ≈ 1M) that match an active PID are resolved
+      // via the kernel process table rather than dereferenced literally.
+      if (/^_(?:EPROCESS|ETHREAD)$/.test(tname)) {
+        if (val > 0n && val < 0x100000n) {
+          const eproc = kernel.findEprocessByPid(val);
+          if (eproc) {
+            w(`Resolving pid ${val} -> _EPROCESS @ ${fmtAddr(eproc)}`, "dim");
+            for (const line of dumpStruct(tname, eproc, { max: 96 })) w(line);
+            return;
+          }
+          // small value but no matching PID — still treat as address
+        }
+      }
+
+      // ---- 5. Literal address-dump mode with memory safety ----
+      const totalSize = Math.max(
+        ...walkableFields(tables, tname).map((f) => f.offset + 8));
+      const why = memFault(val, totalSize);
+      if (why) return w(memErr(val, why), "err");
+      for (const line of dumpStruct(tname, val, { max: 96 })) w(line);
     },
 
     s(args, w) {
