@@ -124,3 +124,20 @@ test("dt: known type walks fields; unknown type lists available", async () => {
   c2.exec("dt _TOKEN 0x60000000");
   assert.match(c2.text(), /available: .*_EPROCESS/);
 });
+
+test("!pcr walks the REAL KPCR when booted from the dump fixture", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  assert.equal(kernel.kpcr, BigInt(raw.kpcr.va));
+  const c = capture(kernel);
+  c.exec("!pcr");
+  const t = c.text();
+  assert.ok(t.includes("_KPCR @"));
+  const idtLine = c.lines.find((l) => l.includes("IdtBase"));
+  assert.ok(idtLine && !/0x0+$/.test(idtLine.split(":")[1].trim()), "IdtBase null");
+});

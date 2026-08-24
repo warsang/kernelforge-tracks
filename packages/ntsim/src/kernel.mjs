@@ -10,6 +10,7 @@
 import { SparseMemory } from "./memory.mjs";
 import { StructTables, StructRef } from "./structs.mjs";
 import { JsInterpreter, M64 } from "./cpu.mjs";
+import { installWinApi } from "./winapi.mjs";
 
 const DEFAULT_BASES = {
   kva: 0xfffff80000000000n,
@@ -79,6 +80,16 @@ export class NtKernel {
     this.loadedDrivers = [];
 
     this._wireApiHooks();
+    installWinApi(this);
+
+    // Seed a tiny demo hive (Qiling-style virtual registry)
+    this.registrySeed("\\Registry\\Machine\\SOFTWARE\\KernelForge", {
+      Version: "1.0.0",
+    });
+    this.registrySeed(
+      "\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\kfprobe",
+      { Start: "\u0003\u0000\u0000\u0000" });
+
     this._installCpuHook();
   }
 

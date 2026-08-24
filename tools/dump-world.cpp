@@ -31,6 +31,78 @@ struct Args {
   uint64_t maxProcs = 64, maxMods = 256;
 };
 
+static void Probe(kdmpparser::KernelDumpParser &Parser, uint64_t dtb,
+                  uint64_t dbgBlockVa, uint64_t knownLml,
+                  uint64_t knownProcHead, uint64_t kernelBase) {
+  auto pageOf = [&](uint64_t va) -> const uint8_t * {
+    return Parser.GetVirtualPage(va & ~0xfffull, dtb);
+  };
+  auto rdAt = [&](uint64_t va) -> uint64_t {
+    const uint8_t *p = pageOf(va);
+    if (!p) return 0;
+    uint64_t v;
+    memcpy(&v, p + (va & 0xff8ull), 8);
+    return v;
+  };
+  auto tryKpcr = [&](uint64_t k) -> bool {
+    const uint8_t *p = pageOf(k);
+    if (!p) return false;
+    uint64_t self = 0, prcb = 0;
+    memcpy(&self, p + 0x18, 8);
+    memcpy(&prcb, p + 0x20, 8);
+    if (self != k || !prcb || prcb - k != 0x180) return false;
+    const uint8_t *pp = pageOf(prcb);
+    if (!pp) return false;
+    uint64_t ct = 0;
+    memcpy(&ct, pp + 0x8, 8); // PRCB.CurrentThread
+    fprintf(stderr, "[probe] *** KPCR FOUND va=0x%llx prcb=0x%llx CurrentThread=0x%llx\n",
+            (unsigned long long)k, (unsigned long long)prcb, (unsigned long long)ct);
+    return true;
+  };
+
+  fprintf(stderr, "[probe] dbgBlock @ 0x%llx\n", (unsigned long long)dbgBlockVa);
+  for (uint64_t off = 0; off < 0x300; off += 8) {
+    const uint64_t v = rdAt(dbgBlockVa + off);
+    char note[128] = "";
+    if (v == knownLml) snprintf(note, sizeof note, "  <== PsLoadedModuleList");
+    if (v == knownProcHead) snprintf(note, sizeof note, "  <== PsActiveProcessHead");
+    if (kernelBase && v && ((v >> 48) == 0xffff)) {
+      if (tryKpcr(v)) return;
+      if (tryKpcr(v - 0x180)) return;
+      if (tryKpcr(v - 0x1c0)) return;
+    }
+    fprintf(stderr, "  [+0x%03llx] 0x%016llx%s\n",
+            (unsigned long long)off, (unsigned long long)v, note);
+  }
+  // ---- fallback: sweep every mapped physical page for the self-pattern ----
+  fprintf(stderr, "[probe] sweeping physical pages...\n");
+  uint64_t maxPa = 0x200000000ull; // cap: 8 GiB
+  for (uint64_t pa = 0; pa < maxPa; pa += 0x1000) {
+    const uint8_t *pg = Parser.GetPhysicalPage(pa);
+    if (!pg) continue;
+    uint64_t self, prcb;
+    memcpy(&self, pg + 0x18, 8);
+    memcpy(&prcb, pg + 0x20, 8);
+    if ((self >> 48) != 0xffff || !prcb || prcb - self != 0x180) continue;
+    const uint8_t *pp = pageOf(prcb);
+    if (!pp) continue;
+    uint64_t ct = 0;
+    memcpy(&ct, pp + 0x8, 8);
+    if ((ct >> 48) != 0xffff || !ct) continue;
+    // cross-validate: KPCR.CurrentThread? no — validate IdtBase/GdtBase kernel VAs
+    uint64_t idt, gdt;
+    memcpy(&idt, pg + 0x38, 8);
+    memcpy(&gdt, pg + 0x00, 8);
+    if ((idt >> 48) != 0xffff || (gdt >> 48) != 0xffff) continue;
+    fprintf(stderr, "[probe] *** KPCR FOUND va=0x%llx (phys=0x%llx) prcb=0x%llx CurrentThread=0x%llx Idt=0x%llx\n",
+            (unsigned long long)self, (unsigned long long)pa,
+            (unsigned long long)prcb, (unsigned long long)ct,
+            (unsigned long long)idt);
+    return;
+  }
+  fprintf(stderr, "[probe] no KPCR found\n");
+}
+
 int main(int argc, char **argv) {
   Args a;
   std::map<std::string, uint64_t *> numArgs = {
@@ -61,8 +133,12 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Parse failed\n");
     return 1;
   }
+  const char *probeEnv = getenv("KD_PROBE");
+  const char *dbgEnv = getenv("KD_DBGBLOCK");
+  (void)probeEnv; (void)dbgEnv;
   const uint64_t DTB = Parser.GetDirectoryTableBase();
   fprintf(stderr, "[+] dtb=0x%llx\n", (unsigned long long)DTB);
+
 
   auto virtRead = [&](uint64_t va, void *dst, size_t len) -> bool {
     uint8_t *d = (uint8_t *)dst;
@@ -154,6 +230,52 @@ auto readUs = [&](uint64_t va, std::string &out) {
     }
   }
 
+  // ---- KPCR discovery: physical sweep validating Self/CurrentPrcb pattern ----
+  uint64_t kpcrVa = 0, prcbVa = 0, currentThreadVa = 0;
+  {
+    const uint8_t *kpage = nullptr;
+    for (uint64_t pa = 0; pa < 0x200000000ull && !kpage; pa += 0x1000) {
+      const uint8_t *pg = Parser.GetPhysicalPage(pa);
+      if (!pg) continue;
+      uint64_t self, prcb;
+      memcpy(&self, pg + 0x18, 8);
+      memcpy(&prcb, pg + 0x20, 8);
+      if ((self >> 48) != 0xffff || !prcb || prcb - self != 0x180) continue;
+      const uint8_t *pp = Parser.GetVirtualPage(prcb & ~0xfffull, DTB);
+      if (!pp) continue;
+      uint64_t ct = 0;
+      memcpy(&ct, pp + (prcb & 0xfffull) + 8, 8);
+      if ((ct >> 48) != 0xffff || !ct) continue;
+      uint64_t idt, gdt;
+      memcpy(&idt, pg + 0x38, 8);
+      memcpy(&gdt, pg + 0x00, 8);
+      if ((idt >> 48) != 0xffff || (gdt >> 48) != 0xffff) continue;
+      kpcrVa = self; prcbVa = prcb; currentThreadVa = ct;
+      kpage = pg;
+      fprintf(stderr, "[+] KPCR @ va=0x%llx prcb=0x%llx thread=0x%llx\n",
+              (unsigned long long)kpcrVa, (unsigned long long)prcbVa,
+              (unsigned long long)currentThreadVa);
+    }
+  }
+
+  auto dumpHex = [&](uint64_t va, size_t len) {
+    std::string hex;
+    char tmp[3];
+    for (size_t done = 0; done < len; ) {
+      const uint64_t cur = va + done;
+      const uint8_t *page = Parser.GetVirtualPage(cur & ~0xfffull, DTB);
+      if (!page) break;
+      const size_t inPage = (size_t)(cur & 0xfffull);
+      const size_t chunk = std::min(len - done, (size_t)0x1000 - inPage);
+      for (size_t i = 0; i < chunk; i++) {
+        snprintf(tmp, sizeof tmp, "%02x", page[inPage + i]);
+        hex += tmp;
+      }
+      done += chunk;
+    }
+    return hex;
+  };
+
   // ---- emit ----
   FILE *f = fopen(a.out.c_str(), "w");
   fprintf(f, "{\n  \"meta\": {\n");
@@ -192,7 +314,18 @@ auto readUs = [&](uint64_t va, std::string &out) {
             (unsigned long long)m.base, (unsigned long long)m.size,
             escBase.c_str(), esc.c_str(), i + 1 < mods.size() ? "," : "");
   }
-  fprintf(f, "  ]\n}\n");
+  fprintf(f, "  ],\n");
+  if (kpcrVa) {
+    fprintf(f, "  \"kpcr\": {\n");
+    fprintf(f, "    \"va\": \"0x%llx\",\n", (unsigned long long)kpcrVa);
+    fprintf(f, "    \"prcb\": \"0x%llx\",\n", (unsigned long long)prcbVa);
+    fprintf(f, "    \"currentThread\": \"0x%llx\",\n", (unsigned long long)currentThreadVa);
+    fprintf(f, "    \"kpcrHex\": \"%s\",\n", dumpHex(kpcrVa, 0x178).c_str());
+    fprintf(f, "    \"prcbHex\": \"%s\",\n", dumpHex(prcbVa, 0x800).c_str());
+    fprintf(f, "    \"threadHex\": \"%s\"\n", dumpHex(currentThreadVa, 0x898).c_str());
+    fprintf(f, "  },\n");
+  }
+  fprintf(f, "  \"threads\": []\n}\n");
   fclose(f);
   fprintf(stderr, "[+] wrote %s (%zu procs, %zu mods)\n", a.out.c_str(), procs.size(), mods.size());
   return 0;

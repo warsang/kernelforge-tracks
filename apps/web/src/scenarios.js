@@ -67,6 +67,7 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
   kernel.tokens = tokens;
   }
 
+  if (!dumpWorld) {
   // Synthesize the processor control chain: KPCR -> PRCB -> CurrentThread.
   // Offsets come from the active build's tables; only CLIENT_ID's stable
   // {UniqueProcess; UniqueThread} pair is written by fixed sub-offsets.
@@ -92,8 +93,9 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
   mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
 
   kernel.kpcr = kpcr;
-  kernel.prcb = prcb;
-  kernel.currentThread = ethread;
+    kernel.prcb = prcb;
+    kernel.currentThread = ethread;
+  }
 
   return { kernel, kind: "boot-default" };
 }
@@ -169,6 +171,19 @@ function populateFromDump(kernel, tables, world) {
   // head must point INTO the new ring
   mem.w64(head, procs[0].eproc + linksOff);            // head.Flink -> first
   mem.w64(head + 8n, procs[procs.length - 1].eproc + linksOff); // head.Blink -> tail
+
+  // Real KPCR / PRCB / CurrentThread extracted from the same dump
+  if (world.kpcr) {
+    const put = (vaHex, hex) => {
+      const va = BigInt(vaHex);
+      const bytes = new Uint8Array(hex.match(/.{2}/g).map((x) => parseInt(x, 16)));
+      mem.write(va, bytes);
+      return va;
+    };
+    kernel.kpcr = put(world.kpcr.va, world.kpcr.kpcrHex);
+    kernel.prcb = put(world.kpcr.prcb, world.kpcr.prcbHex);
+    kernel.currentThread = put(world.kpcr.currentThread, world.kpcr.threadHex);
+  }
 
   // loaded modules: real bases/sizes/ordering (+ our probe module appended)
   kernel.loadedModules = [
