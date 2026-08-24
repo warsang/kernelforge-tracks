@@ -197,6 +197,14 @@ function populateFromDump(kernel, tables, world) {
   mem.w64(head, procs[0].eproc + linksOff);            // head.Flink -> first
   mem.w64(head + 8n, procs[procs.length - 1].eproc + linksOff); // head.Blink -> tail
 
+  // Wire dump globals into the symbol engine
+  if (kernel.symbolEngine) {
+    kernel.symbolEngine.loadDumpGlobals({
+      psActiveProcessHead: kernel.PsActiveProcessHead,
+      directoryTableBase: world.meta?.directoryTableBase,
+    });
+  }
+
   // Real KPCR / PRCB / CurrentThread extracted from the same dump
   if (world.kpcr) {
     const put = (vaHex, hex) => {
