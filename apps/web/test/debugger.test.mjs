@@ -336,3 +336,64 @@ test("unicorn backend: rsp readable after dump-mode seeding", async () => {
   assert.equal(cpu.regs.rsp, BigInt(raw.context.rsp));
   assert.equal(cpu.regs.rip, BigInt(raw.context.rip));
 });
+
+test("dt <Type> <Field> works with nt! prefix", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("dt nt!_EPROCESS ActiveProcessLinks");
+  assert.match(c.text(), /ActiveProcessLinks/);
+  assert.match(c.text(), /offset=0x448|offset=0x1b0/);
+});
+
+test("dt _EPROCESS <pid> resolves PID to EPROCESS", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  // lsass pid = 672 in the real dump
+  const lsassEproc = kernel.processesByName.get("lsass.exe");
+  const c = capture(kernel);
+  c.exec("dt _EPROCESS 672");
+  const t = c.text();
+  assert.match(t, /Resolving pid 672/);
+  assert.match(t, /UniqueProcessId\s+: 0x00000000000002a0.*\(dec 672\)/);
+});
+
+test("dt _EPROCESS <hex_pid> resolves hex PID", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("dt _EPROCESS 0x14c0"); // 5312 decimal — a real svchost pid
+  assert.match(c.text(), /Resolving pid 5312/);
+});
+
+test("dt _EPROCESS <large_va> still treated as literal address", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const lsass = kernel.processesByName.get("lsass.exe");
+  const c = capture(kernel);
+  c.exec(`dt _EPROCESS ${lsass}`);
+  assert.doesNotMatch(c.text(), /Resolving pid/); // NOT treated as PID
+  assert.match(c.text(), /UniqueProcessId/);
+});
+
+test("dt _EPROCESS <small_nonpid> falls through to address", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  // pid=9999 doesn't exist → treated as literal address (which will fault)
+  c.exec("dt _EPROCESS 9999");
+  assert.match(c.text(), /Memory read error/);
+});
