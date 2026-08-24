@@ -28,11 +28,9 @@ export function parsePe(bytes) {
   if (magic !== 0x20b) throw new PeError("not PE32+ (64-bit)");
 
   const entryRva = u32(bytes, optHeaderOff + 16);
-  const imageBase = Number(
-    (BigInt(u32(bytes, optHeaderOff + 32)) |
-      (BigInt(u32(bytes, optHeaderOff + 36)) << 32n))
-  );
-  const sectionAlign = u32(bytes, optHeaderOff + 32 - 8); // 28: section align
+  const imageBase =
+    BigInt(u32(bytes, optHeaderOff + 24)) |
+    (BigInt(u32(bytes, optHeaderOff + 28)) << 32n);
   const sizeOfImage = u32(bytes, optHeaderOff + 56);
   const numDirsOff = optHeaderOff + 108;
   const numDirs = u32(bytes, numDirsOff);

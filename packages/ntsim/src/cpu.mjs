@@ -38,7 +38,8 @@ const R64 = [
   "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
 ];
 
-/** Full 64-bit mask. Kernel VAs live at 0xffff8000'00000000+ — never shrink this. */
+/** Full 64-bit mask. Kernel VAs live at 0xffff8000'00000000+ — never shrink this.
+ *  (identical fix landed independently on both branches) */
 const M64 = 0xffffffffffffffffn;
 
 function sx(v, bits) {

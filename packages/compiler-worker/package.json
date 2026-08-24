@@ -1,14 +1,16 @@
 {
-  "name": "@kernelforge/ntsim",
+  "name": "@kernelforge/compiler-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
-    ".": "./src/index.mjs",
-    "./src/*": "./src/*"
+    ".": "./src/index.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@kernelforge/ntsim": "*"
   }
 }
