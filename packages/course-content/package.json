@@ -9,6 +9,7 @@
     ".": "./src/index.mjs"
   },
   "scripts": {
-    "hashflag": "node ./scripts/hash-flag.mjs"
+    "hashflag": "node ./scripts/hash-flag.mjs",
+    "test": "node --test test/*.test.mjs"
   }
 }

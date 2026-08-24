@@ -72,7 +72,7 @@ export function linkDriver(objFiles, resolveExternal, preferredImageBase = 0x140
       for (const rel of s.relocs) {
         const sym = obj.byOrdinal
           ? obj.byOrdinal.get(rel.symIndex)
-          : obj.symbols[rel.symIndex];
+          : obj.symbolsByIndex[rel.symIndex];
         let targetAddr = null;
 
         if (sym && sym.sectionNumber > 0) {
@@ -86,10 +86,11 @@ export function linkDriver(objFiles, resolveExternal, preferredImageBase = 0x140
             BigInt(tOff + sym.value);
         } else if (sym) {
           targetAddr = symAddr(sym.name);
-          if (targetAddr == null) {
-            unresolved.push(sym.name);
-            continue;
-          }
+        }
+        if (targetAddr == null) {
+          // unresolved external or dangling reference — record and skip
+          unresolved.push(sym?.name ?? `<symidx ${rel.symIndex}>`);
+          continue;
         }
         void baseOff;
         const patchAt = BigInt(secRva) + BigInt(rel.va); // RVA of field within section

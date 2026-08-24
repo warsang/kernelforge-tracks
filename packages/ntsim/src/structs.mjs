@@ -11,8 +11,8 @@ export class StructTables {
   }
 
   /**
-   * @param {string} dirPath directory containing <Type>.json files
-   * @param {string[]} names types to load
+   * Load tables from a directory (Node/build-time convenience; browsers use
+   * register() with fetched JSON instead).
    */
   static async loadDir(dirPath, names) {
     const { readFile } = await import("node:fs/promises"); // Node-only path

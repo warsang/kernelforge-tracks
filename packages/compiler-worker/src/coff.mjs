@@ -81,14 +81,12 @@ export function parseCoff(bytes) {
     sections.push({ index: i, name, data, vsize, relocs, chars });
   }
 
-  // NB: relocs reference COFF *ordinals*; aux records make ordinals sparse,
-  // so track them explicitly instead of using array positions.
   const symbols = [];
-  const byOrdinal = new Map();
+  const symbolsByIndex = new Array(numSymbols).fill(null);
   let so = symTableOff;
   for (let i = 0; i < numSymbols; ) {
     const rec = {
-      ordinal: i,
+      index: i,
       name: nameAt(so),
       value: u32(bytes, so + 8),
       sectionNumber: (bytes[so + 12] | (bytes[so + 13] << 8)) | 0,
@@ -97,13 +95,13 @@ export function parseCoff(bytes) {
       auxCount: bytes[so + 17],
     };
     symbols.push(rec);
-    byOrdinal.set(i, rec);
+    symbolsByIndex[i] = rec;
     const skip = rec.auxCount + 1;
     so += skip * 18;
     i += skip;
   }
 
-  return { machine, sections, symbols, byOrdinal };
+  return { machine, sections, symbols, symbolsByIndex };
 }
 
 /**

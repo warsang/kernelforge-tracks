@@ -12,7 +12,6 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@kernelforge/course-content": "*",
-    "idb-keyval": "^6.2.1"
+    "@kernelforge/course-content": "*"
   }
 }

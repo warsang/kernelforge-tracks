@@ -1,21 +1,35 @@
 /**
- * Browser storage adapter (IndexedDB via idb-keyval).
- * Kept separate from core logic so tests run in plain Node.
+ * Browser storage adapter — dependency-free IndexedDB key/value store.
  */
 
-import { createStore, get, set } from "idb-keyval";
+const DB_NAME = "kernelforge";
+const STORE = "progress";
 
-let store;
-
-function getStore() {
-  if (!store) store = createStore("kernelforge", "progress");
-  return store;
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
 export async function loadProgress() {
-  return (await get("progress", getStore())) ?? null;
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const r = tx.objectStore(STORE).get("progress");
+    r.onsuccess = () => resolve(r.result ?? null);
+    r.onerror = () => reject(r.error);
+  });
 }
 
 export async function saveProgress(p) {
-  await set("progress", p, getStore());
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(p, "progress");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
