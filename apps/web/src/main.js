@@ -7,8 +7,11 @@ import {
 import { loadProgress, saveProgress } from "@kernelforge/lab-runtime/storage.browser";
 import { getScenario, tryLoadDumpWorld } from "./scenarios.js";
 import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
+import { compileDriverSource, warmupCompiler } from "@kernelforge/compiler-worker/index.browser.mjs";
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
+
+warmupCompiler(); // preload the wasm toolchain in the background
 
 const app = document.getElementById("app");
 let progress = emptyProgress();
@@ -210,7 +213,7 @@ function renderLesson(lesson) {
       }, getStarterCode(lab));
       const compileBtn = h("button", { class: "primary" }, "Compile & Load Driver");
       const compileStatus = h("div", { class: "compile-status" });
-      compileBtn.addEventListener("click", () => {
+      compileBtn.addEventListener("click", async () => {
         compileStatus.innerHTML = "";
         const src = editor.value;
         const validation = validateDriverSource(src, "dkom-hide");
@@ -239,7 +242,19 @@ function renderLesson(lesson) {
           return;
         }
 
-        compileStatus.append(h("div", { class: "good" }, "✓ Compiled and loaded. Executing DriverEntry..."));
+        // Real compilation: in-browser wasm clang first, server bridge fallback.
+        try {
+          const { objBytes, via } = await compileDriverSource(src);
+          const viaMsg = via === "wasm"
+            ? "compiled in-browser (wasm clang)"
+            : "compiled via server fallback";
+          compileStatus.append(h("div", { class: "good" }, `✓ ${viaMsg} (${objBytes.length} bytes)`));
+        } catch (err) {
+          compileStatus.append(h("div", { class: "err" }, "✗ compile failed: " + err.message));
+          return;
+        }
+
+        compileStatus.append(h("div", { class: "good" }, "✓ Loaded. Executing DriverEntry..."));
 
         // Run the DKOM unlink
         const linksOff = currentKernel.tables.offsetOf("_EPROCESS", "ActiveProcessLinks");
