@@ -11,6 +11,7 @@ import { SparseMemory } from "./memory.mjs";
 import { StructTables, StructRef } from "./structs.mjs";
 import { JsInterpreter, M64 } from "./cpu.mjs";
 import { installWinApi } from "./winapi.mjs";
+import { SymbolEngine } from "./symbols.mjs";
 
 const DEFAULT_BASES = {
   kva: 0xfffff80000000000n,
@@ -89,6 +90,10 @@ export class NtKernel {
     /** @type {Array<{driverObj:bigint, name:string}>} */
     this.loadedDrivers = [];
 
+    // Tier 2 Micro-Symbol Service
+    this.symbolEngine = new SymbolEngine();
+    if (this.tables) this.symbolEngine.loadFromTables(this.tables);
+
     this._wireApiHooks();
     installWinApi(this);
 
@@ -104,6 +109,15 @@ export class NtKernel {
   }
 
   // ------------------------------------------------------------------ boot
+
+  /** Wire dump-derived globals into the SymbolEngine (call after bootstrap). */
+  loadDumpGlobals(headerFields = {}) {
+    if (!this.symbolEngine) return;
+    this.symbolEngine.loadDumpGlobals({
+      psActiveProcessHead: "0x" + this.PsActiveProcessHead?.toString(16),
+      ...headerFields,
+    });
+  }
 
   async loadTablesFromDir(dir) {
     const names = [

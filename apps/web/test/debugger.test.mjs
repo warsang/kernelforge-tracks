@@ -274,3 +274,65 @@ test("!process <threadAddr> routes to !thread hint", async () => {
   c.exec(`!process ${raw.kpcr.currentThread}`);
   assert.match(c.text(), /is an _ETHREAD — use !thread/);
 });
+
+test("dt symbol-only mode shows layout without address", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("dt _EPROCESS");
+  const t = c.text();
+  assert.match(t, /struct _EPROCESS/);
+  assert.match(t, /UniqueProcessId/);
+  assert.match(t, /layout-only/);
+});
+
+test("dt nt!_EPROCESS normalizes module prefix", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("dt nt!_EPROCESS");
+  assert.match(c.text(), /struct _EPROCESS/);
+});
+
+test("dt <Type> <Field> returns single field info", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("dt _EPROCESS UniqueProcessId");
+  const t = c.text();
+  assert.match(t, /UniqueProcessId/);
+  assert.match(t, /offset=0x440|offset=0x1b0/); // varies by build
+});
+
+test("!ps aliases !process 0 0", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("!ps");
+  assert.match(c.text(), /System/);
+  assert.match(c.text(), /lsass\.exe|services\.exe/);
+});
+
+test("!kpcr aliases !pcr", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("!kpcr");
+  assert.match(c.text(), /_KPCR @ /);
+});
+
+test("unicorn backend: rsp readable after dump-mode seeding", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const { createUnicornBackend } = await import("@kernelforge/ntsim-unicorn");
+  const { SparseMemory } = await import("@kernelforge/ntsim/src/memory.mjs");
+  const mem = new SparseMemory();
+  const cpu = await createUnicornBackend(mem);
+  // seed like populateFromDump does
+  cpu.regs.rsp = BigInt(raw.context.rsp);
+  cpu.regs.rip = BigInt(raw.context.rip);
+  assert.equal(cpu.regs.rsp, BigInt(raw.context.rsp));
+  assert.equal(cpu.regs.rip, BigInt(raw.context.rip));
+});

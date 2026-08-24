@@ -126,27 +126,22 @@ export function createCommands(kernel) {
   const kindNote = (k) => `ChildSP               RetAddr               Call Site`;
 
   const stack = (args, w, header) => {
-    const regs = kernel.cpu.regs;
-    let sp = regs.rsp;
-    let spNote = "";
-    if (!sp) {
-      // fall back to the processor kernel stack (PRCB.RspBase @ +0x28)
+    let sp;
+    try { sp = kernel.cpu.kernel.cpu.regs.rsp; } catch { sp = undefined; }
+    // fall back to PRCB.RspBase when kernel.cpu.regs.rsp is zero
+    if (!sp && kernel.prcb) {
       try {
-        const prcb = kernel.prcb ?? (kernel.kpcr ? mem.u64(kernel.kpcr + tables.offsetOf("_KPCR", "CurrentPrcb")) : 0n);
-        if (prcb) {
-          sp = mem.u64(prcb + 0x28n);
-          spNote = "   ; ChildSP from PRCB.RspBase";
-        }
-      } catch { /* none */ }
+        sp = mem.u64(kernel.prcb + 0x28n);
+        w("   ; ChildSP from PRCB.RspBase", "dim");
+      } catch { sp = 0n; }
     }
-    const ripSym = sym(regs.rip) ?? "<unknown>";
+    const ripSym = sym(kernel.cpu.regs.rip) ?? "<unknown>";
     w(header, "hdr");
-    w(`00 ${fmtAddr(sp ?? 0n)}  ${fmtAddr(regs.rip)}  ${ripSym}`);
-    if (spNote) w(spNote, "dim");
-    // nearest-module annotation for rsp too (stack region attribution)
+    w(`00 ${fmtAddr(sp)}  ${fmtAddr(kernel.cpu.regs.rip)}  ${ripSym}`);
+    // nearest-module annotation
     for (const m of kernel.loadedModules ?? []) {
       const base = m.base;
-      if (regs.rsp >= base && regs.rsp < base + BigInt(m.sizeOfImage ?? 0x100000)) {
+      if (kernel.cpu.regs.rsp >= base && kernel.cpu.regs.rsp < base + BigInt(m.sizeOfImage ?? 0x100000)) {
         w(`   ^ stack inside ${m.name} mapping`, "dim");
         break;
       }
@@ -162,11 +157,17 @@ export function createCommands(kernel) {
       w("  !process <addr|pid> [n]   detailed _EPROCESS field walk");
       w("  !eproc <addr|pid>         short summary");
       w("  !token <addr|pid>         decode Token EX_FAST_REF + raw dump");
-      w("  !pcr [addr]               KPCR -> PRCB -> CurrentThread chain");
+      w("  !pcr [addr] / !kpcr       KPCR -> PRCB -> CurrentThread chain");
+      w("  !ps                       alias for !process 0 0");
+      w("  !pt                       current thread summary");
       w("  !prcb [addr]              _KPRCB field walk");
+      w("  dt <Type>                 layout-only mode (symbol-only)");
+      w("  dt <Type> <Field>         single field lookup");
       w("  !dh <module|base>         parse PE headers from memory");
       w("  s [-a] <start> <len> <pat> search memory (hex bytes or \"text\" w/ -a)");
       w("  !prcb [addr]              _KPRCB field walk");
+      w("  dt <Type>                 layout-only mode (symbol-only)");
+      w("  dt <Type> <Field>         single field lookup");
       w("  k | kp | kv | ks          stack (rip frame + module+offset; no unwind data)");
       w("  !analyze [-v]             modeled crash/state analysis");
       w("  sym <addr>                resolve module+offset");
@@ -336,6 +337,23 @@ export function createCommands(kernel) {
       }
     },
 
+    "!ps"(args, w) {
+      commands["!process"](["0", "0"], w);
+    },
+    "!pt"(args, w) {
+      // Walk threads of the current process
+      const ct = kernel.currentThread ?? (kernel.kpcr ? (() => {
+        try { return mem.u64(mem.u64(kernel.kpcr + tables.offsetOf("_KPCR", "CurrentPrcb")) +
+          tables.offsetOf("_KPRCB", "CurrentThread")); } catch { return null; }
+      })() : null);
+      if (!ct) return w("!pt: no current thread", "err");
+      w(`THREAD @ ${fmtAddr(ct)}`, "hdr");
+      for (const line of dumpStruct("_ETHREAD", ct, { max: 24 })) w(line);
+      w("  (use !thread <addr> for full walk)", "dim");
+    },
+    "!kpcr"(args, w) {
+      commands["!pcr"](args, w);
+    },
     "!prcb"(args, w) {
       const prcb = args[0] ? BigInt(args[0]) : kernel.prcb;
       if (!prcb) return w("!prcb: no PRCB (boot a scenario first)", "err");
@@ -356,19 +374,55 @@ export function createCommands(kernel) {
     },
 
     dt(args, w) {
-      const [typeName, addrTok] = args;
-      if (!typeName) return w("usage: dt <Type> [addr]", "err");
-      const tname = typeName.startsWith("_") ? typeName : `_${typeName}`;
-      let addr = 0n;
-      try { addr = addrTok ? BigInt(addrTok) : 0n; } catch { return w("dt: bad address", "err"); }
-      if (!addr && !addrTok) { w(`(address 0x0 — unpopulated; showing zeroed layout for ${tname})`, "dim"); }
-      else {
-        if (!tables.types.get(tname)) {
+      // dt nt!_EPROCESS UniqueProcessId   → single field info
+      // dt _EPROCESS                      → layout only (symbol-only mode)
+      // dt _EPROCESS 0x1234               → walk fields at address
+      // dt nt!_EPROCESS 0xffff8f8b…       → normalized prefix
+      let raw = args[0] ?? "";
+      const clean = raw.replace(/^(?:nt|ntoskrnl|ntoskrnl\.exe)!/i, "");
+      const fieldName = args[1] ?? null;
+      const tname = clean.startsWith("_") ? clean : `_${clean}`;
+
+      // Field-specific lookup: dt <Type> <Field>
+      if (fieldName && !/^(0x)?[0-9a-f]+$/i.test(fieldName)) {
+        const sym = kernel.symbolEngine;
+        if (!sym) return w("dt: no symbol engine available", "err");
+        const f = sym.getField(tname, fieldName);
+        if (!f) return w(`dt: ${tname}.${fieldName} not found`, "err");
+        w(`${tname}.${fieldName}`, "hdr");
+        w(`  +0x${f.offset.toString(16).padStart(3, "0")} ${f.decl || fieldName}`);
+        w(`  offset=0x${f.offset.toString(16)} size=${f.size}`);
+        return;
+      }
+
+      // Layout-only mode (no address): show all fields from tables
+      if (!args[1]) {
+        const fields = walkableFields(tables, tname);
+        if (!fields) {
           return w(`dt: unknown type "${tname}"\navailable: ${[...tables.types.keys()].sort().join(", ")}`, "err");
         }
-        const why = memFault(addr, Number(tables.sizeOf?.(tname) ?? 8));
-        if (why) return w(memErr(addr, why), "err");
+        w(`struct ${tname} (${fields.length} walkable fields, layout-only — pass an address for a memory dump)`, "hdr");
+        let shown = 0;
+        for (const f of fields) {
+          if (shown >= 48) { w(`  ... (${fields.length - shown} more)`); break; }
+          const base = String(f.base ?? "");
+          const sz = /\*$/.test(base) ? 8 : byteSizeOf(base);
+          w(`  +0x${f.offset.toString(16).padStart(3, "0")} ${f.name.padEnd(28)} : ${base || "?"} (${sz} bytes)`);
+          shown++;
+        }
+        return;
       }
+
+      // Address-dump mode with memory safety
+      let addr = 0n;
+      try { addr = BigInt(args[1]); } catch { return w("dt: bad address", "err"); }
+      const fields = walkableFields(tables, tname);
+      if (!fields) {
+        return w(`dt: unknown type "${tname}"\navailable: ${[...tables.types.keys()].sort().join(", ")}`, "err");
+      }
+      const totalSize = Math.max(...fields.map((f) => f.offset + 8));
+      const why = memFault(addr, totalSize);
+      if (why) return w(memErr(addr, why), "err");
       for (const line of dumpStruct(tname, addr, { max: 96 })) w(line);
     },
 
