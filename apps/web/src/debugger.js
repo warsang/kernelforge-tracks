@@ -76,6 +76,63 @@ export function createCommands(kernel) {
     return kernel.findEprocessByPid(v);
   };
 
+  /**
+   * Walk _EPROCESS.ThreadListHead (LIST_ENTRY of _ETHREAD.ThreadListEntry
+   * nodes). Returns { addr, backed }[] — `backed` false marks pointers into
+   * non-resident dump images we can still report but not dereference.
+   * Guards: zero head (empty ring), self-loop, visited-set and step cap so
+   * corrupt/unbacked chains always terminate.
+   */
+  const listThreads = (eproc, cap = 64) => {
+    const out = [];
+    let tlhOff, tleOff;
+    try {
+      tlhOff = BigInt(tables.offsetOf("_EPROCESS", "ThreadListHead"));
+      tleOff = BigInt(tables.offsetOf("_ETHREAD", "ThreadListEntry"));
+    } catch { return out; } // build lacks the fields — no enumeration
+    const head = eproc + tlhOff;
+    let cur = mem.u64(head);
+    const seen = new Set();
+    for (let steps = 0; cur && cur !== head && steps < cap * 2; steps++) {
+      if (seen.has(cur)) break; // corrupt ring
+      seen.add(cur);
+      const entry = cur + tleOff;
+      const backed = typeof mem.canRead !== "function" || mem.canRead(entry, 16);
+      out.push({ addr: cur, backed });
+      if (!backed) break;       // cannot follow a chain we cannot read
+      const next = mem.u64(entry);
+      if (!next || next === cur) break;
+      cur = next;
+    }
+    return out;
+  };
+
+  /** One `THREAD <ethread>` output line per walked thread. */
+  const threadLines = (eproc, w) => {
+    const threads = listThreads(eproc);
+    if (!threads.length) return 0;
+    let cidOff = null, tleOff = null;
+    try { cidOff = BigInt(tables.offsetOf("_ETHREAD", "Cid")); } catch { /* optional */ }
+    try { tleOff = BigInt(tables.offsetOf("_ETHREAD", "ThreadListEntry")); } catch { /* optional */ }
+    for (const t of threads) {
+      // walkers carry _LIST_ENTRY addresses; WinDbg prints _ETHREAD bases
+      const base = tleOff !== null ? t.addr - tleOff : t.addr;
+      if (!t.backed) {
+        w(`    THREAD ${fmtAddr(base)}  (thread image not resident — pointer from authentic list)`, "dim");
+        continue;
+      }
+      let note = "";
+      if (cidOff !== null) {
+        try {
+          const tid = mem.u64(base + cidOff + 8n); // CLIENT_ID.UniqueThread
+          note = `  Tid: ${tid}`;
+        } catch { /* optional */ }
+      }
+      w(`    THREAD ${fmtAddr(base)}${note}`);
+    }
+    return threads.length;
+  };
+
   function* dumpStruct(typeName, addr, { max = 96 } = {}) {
     const fields = walkableFields(tables, typeName);
     if (!fields) {
@@ -153,8 +210,8 @@ export function createCommands(kernel) {
     help(args, w) {
       w("commands:");
       w("  lm                        loaded modules");
-      w("  !process 0 0              process list");
-      w("  !process <addr|pid> [n]   detailed _EPROCESS field walk");
+      w("  !process 0 [flags]        process list (flag bit2=0x4 walks threads)");
+      w("  !process <addr|pid> [f]   detail _EPROCESS walk; 0x4 = ThreadListHead");
       w("  !eproc <addr|pid>         short summary");
       w("  !token <addr|pid>         decode Token EX_FAST_REF + raw dump");
       w("  !pcr [addr] / !kpcr       KPCR -> PRCB -> CurrentThread chain");
@@ -175,6 +232,7 @@ export function createCommands(kernel) {
       w("  dt <Type> [addr]          walk any loaded type");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
+    "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
 
     lm(args, w) {
@@ -233,6 +291,7 @@ export function createCommands(kernel) {
               w(`    Token: ${fmtAddr(raw & FAST_REF_MASK)}  ActiveThreads: ${threads}`, "dim");
             } catch { /* optional fields */ }
           }
+          if (bits & 4) threadLines(p.eprocess, w);
         }
         return;
       }
@@ -245,8 +304,12 @@ export function createCommands(kernel) {
       }
       const eproc = resolveProcess(args[0]);
       if (!eproc) return w(`!process: no process for "${args[0]}"`, "err");
-      w(`Dumping _EPROCESS for "${args[0]}" (detail bits ${args[1] ?? "1"}):`, "hdr");
-      for (const line of dumpStruct("_EPROCESS", eproc, { max: Number(args[1] ?? 1) > 1 ? 200 : 140 })) w(line);
+      // second arg is a WinDbg-style flag bitmask: bit1=0x2 wide walk,
+      // bit2=0x4 enumerate ThreadListHead threads beneath this process
+      const flags = Number(args[1] ?? 1);
+      w(`Dumping _EPROCESS for "${args[0]}" (flags ${args[1] ?? "1"}):`, "hdr");
+      for (const line of dumpStruct("_EPROCESS", eproc, { max: flags > 1 ? 200 : 140 })) w(line);
+      if (flags & 4) threadLines(eproc, w);
     },
 
     "!eproc"(args, w) {

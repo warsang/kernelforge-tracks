@@ -87,6 +87,102 @@ test("!process 0 0 lists all processes; clear clears", async () => {
   assert.ok(c.cleared);
 });
 
+test("!help resolves to the standard help text", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("!help");
+  const t = c.text();
+  assert.match(t, /commands:/);
+  assert.match(t, /!process/);
+
+  // identical output to the plain `help` command
+  const c2 = capture(kernel);
+  c2.exec("help");
+  assert.equal(c.text(), c2.text());
+});
+
+test("!process <pid> 7 enumerates ThreadListHead threads (synthetic world)", async () => {
+  const { kernel } = await booted();
+  const tables = kernel.tables;
+  const lsass = kernel.findEprocessByPid(108n);
+  const ethread = kernel.currentThread;
+
+  const c = capture(kernel);
+  c.exec("!process 108 7"); // flags 7 = wide walk + thread bit (0x4)
+  const t = c.text();
+  // the wired lsass thread is enumerated beneath its parent, by ETHREAD base
+  assert.match(t, new RegExp(`THREAD 0x${ethread.toString(16).padStart(16, "0")}`));
+  assert.match(t, /Tid: 408/); // CLIENT_ID.UniqueThread planted by scenario
+  // ActiveThreads count is read from _EPROCESS.ActiveThreads (+0x5f0)
+  assert.ok(Number(tables.offsetOf("_EPROCESS", "ActiveThreads")) === 0x5f0);
+});
+
+test("!process 0 4 lists THREAD entries under their parent process only", async () => {
+  const { kernel } = await booted();
+  const ethread = kernel.currentThread;
+  const c = capture(kernel);
+  c.exec("!process 0 4");
+  const threadLines = c.lines.filter((l) => l.includes("THREAD "));
+  assert.equal(threadLines.length, 1, `expected exactly one resident thread line, got: ${threadLines}`);
+  assert.ok(threadLines[0].includes(ethread.toString(16)));
+  // it must sit BENEATH its parent process line
+  const parentIdx = c.lines.findIndex((l) => l.includes("lsass.exe"));
+  const threadIdx = c.lines.findIndex((l) => l.includes("THREAD "));
+  assert.ok(parentIdx !== -1 && threadIdx > parentIdx, "thread not nested under parent");
+});
+
+test("!process handles empty/corrupt ThreadListHead without hanging", async () => {
+  const { kernel } = await booted();
+  // synthetic System EPROCESS has a zeroed ThreadListHead — must be a no-op
+  const sys = kernel.findEprocessByPid(4n);
+  const c = capture(kernel);
+  c.exec(`!process ${sys} 7`);
+  assert.ok(!c.text().includes("THREAD "), "empty ring must not emit thread lines");
+
+  // corrupt ring pointing at itself must terminate
+  const tleOff = kernel.tables.offsetOf("_ETHREAD", "ThreadListEntry");
+  const tlhOff = kernel.tables.offsetOf("_EPROCESS", "ThreadListHead");
+  kernel.mem.w64(sys + BigInt(tlhOff), sys + BigInt(tlhOff)); // head -> itself
+  const kftarget = kernel.findEprocessByPid(666n);
+  kernel.mem.w64(kftarget + BigInt(tlhOff), kftarget + BigInt(tlhOff) - BigInt(tleOff));
+  const c2 = capture(kernel);
+  c2.exec("!process 0 4"); // walks every process; must return
+  assert.ok(c2.lines.length > 0);
+});
+
+test("!process 0 1 shows real ActiveThreads counts from dump blobs", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("!process 0 1");
+  const t = c.text();
+  // regression: populateFromDump used to drop eprocessHex, so every count
+  // read 0. System carries 151 threads in the authentic blob.
+  assert.match(t, /ActiveThreads: 151/, "System must report its authentic thread count");
+  assert.match(t, /ImageFileName: Registry[\s\S]*?ActiveThreads: 4/,
+    "Registry must report its authentic thread count");
+});
+
+test("!process 0 7 reports the dumped CurrentThread as resident under System", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("!process 0 7");
+  const t = c.text();
+  assert.match(t, /THREAD 0xffff8f8b8eb4d040/); // world.kpcr.currentThread
+  assert.match(t, /Tid: 6760/);                 // its authentic CLIENT_ID
+});
+
 test("!pcr walks KPCR and hints the PRCB -> CurrentThread chain", async () => {
   const { kernel } = await booted();
   const c = capture(kernel);

@@ -105,6 +105,23 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
   // mark lsass EPROCESS so explorers can correlate: stamp StartAddress too
   mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
 
+  // give lsass a live thread list so !process <pid> 4 can enumerate it:
+  // ThreadListHead <-> ethread.ThreadListEntry ring + ActiveThreads = 1
+  const lsassEproc = kernel.findEprocessByPid(lsassPid);
+  if (lsassEproc) {
+    try {
+      const tlhOff = BigInt(tables.offsetOf("_EPROCESS", "ThreadListHead"));
+      const tleOff = BigInt(tables.offsetOf("_ETHREAD", "ThreadListEntry"));
+      const headAddr = lsassEproc + tlhOff;
+      const entry = ethread + tleOff;
+      mem.w64(headAddr, entry);
+      mem.w64(headAddr + 8n, entry);
+      mem.w64(entry, headAddr);
+      mem.w64(entry + 8n, headAddr);
+      mem.w32(lsassEproc + BigInt(tables.offsetOf("_EPROCESS", "ActiveThreads")), 1);
+    } catch { /* build without thread-list fields */ }
+  }
+
   kernel.kpcr = kpcr;
     kernel.prcb = prcb;
     kernel.currentThread = ethread;
@@ -151,6 +168,10 @@ function populateFromDump(kernel, tables, world) {
     tokenTarget: p.token && p.token.target ? BigInt(p.token.target) : 0n,
     tokenBlobHex: p.token?.blob256,
     protectionByte: p.protectionByte,
+    // authentic full _EPROCESS image — MUST be carried through, otherwise
+    // every field beyond the planted subset (ActiveThreads, ThreadListHead,
+    // VadCount, Cookie, …) silently reads as zero
+    eprocessHex: p.eprocessHex,
   }));
 
   // lab fixtures appended (synthetic, clearly ours)
@@ -273,6 +294,23 @@ function populateFromDump(kernel, tables, world) {
     const owner = kernel.findEprocessByPid(pid);
     kernel.threads = kernel.threads ?? {};
     kernel.threads[String(world.kpcr.currentThread)] = { pid, process: owner };
+
+    // Make the resident thread enumerable: rebuild the owner's ThreadListHead
+    // ring around it. The authentic head points at non-resident dump threads,
+    // which !process 0x4 reports as unbacked pointers.
+    if (owner) {
+      try {
+        const tlhOff = BigInt(t.offsetOf("_EPROCESS", "ThreadListHead"));
+        const tleOff = BigInt(t.offsetOf("_ETHREAD", "ThreadListEntry"));
+        const th = BigInt(world.kpcr.currentThread);
+        const headAddr = owner + tlhOff;
+        const entry = th + tleOff;
+        mem.w64(headAddr, entry);
+        mem.w64(headAddr + 8n, entry);
+        mem.w64(entry, headAddr);
+        mem.w64(entry + 8n, headAddr);
+      } catch { /* build without thread-list fields */ }
+    }
   }
 }
 
