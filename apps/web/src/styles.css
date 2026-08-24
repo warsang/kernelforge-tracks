@@ -90,3 +90,12 @@ button:disabled { opacity: 0.5; cursor: wait; }
 .flag button.good { color: var(--good); border-color: var(--good); }
 
 input.cmd { width: 100%; font-family: var(--mono); margin-top: 6px; }
+
+.code-editor {
+  width: 100%; min-height: 320px; font-family: var(--mono);
+  background: #010409; color: var(--text); border: 1px solid var(--border);
+  padding: 12px; tab-size: 4; resize: vertical;
+}
+.compile-status { margin: 8px 0; }
+.compile-status .err { color: var(--bad); }
+.compile-status .good { color: var(--good); }

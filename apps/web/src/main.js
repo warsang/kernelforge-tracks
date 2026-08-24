@@ -6,6 +6,7 @@ import {
 } from "@kernelforge/lab-runtime";
 import { loadProgress, saveProgress } from "@kernelforge/lab-runtime/storage.browser";
 import { getScenario, tryLoadDumpWorld } from "./scenarios.js";
+import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
 
@@ -159,9 +160,60 @@ function renderLesson(lesson) {
     );
 
     if (lab.kind === "compiler") {
-      card.append(h("p", { class: "warn" },
-        "⚠ compiler-backed labs arrive with the browser compile service — " +
-        "the runtime scenario preview below still boots."));
+      const editor = h("textarea", {
+        class: "code-editor", rows: 16, spellcheck: "false",
+      }, getStarterCode(lab));
+      const compileBtn = h("button", { class: "primary" }, "Compile & Load Driver");
+      const compileStatus = h("div", { class: "compile-status" });
+      compileBtn.addEventListener("click", () => {
+        compileStatus.innerHTML = "";
+        const src = editor.value;
+        const validation = validateDriverSource(src, "dkom-hide");
+        if (!validation.ok) {
+          for (const err of validation.errors)
+            compileStatus.append(h("div", { class: "err" }, "✗ " + err));
+          return;
+        }
+        for (const warn of validation.warnings)
+          compileStatus.append(h("div", { class: "dim" }, "⚠ " + warn));
+        compileStatus.append(h("div", { class: "good" }, "✓ Code validated — compiling..."));
+
+        // Boot if needed
+        if (!currentDebugger) {
+          bootBtn?.click();
+          if (!currentDebugger) {
+            compileStatus.append(h("div", { class: "err" }, "boot failed"));
+            return;
+          }
+        }
+
+        // Find kftarget.exe
+        const kftarget = kernel_processByName(currentKernel, "kftarget.exe");
+        if (!kftarget) {
+          compileStatus.append(h("div", { class: "err" }, "kftarget.exe not found in process list!"));
+          return;
+        }
+
+        compileStatus.append(h("div", { class: "good" }, "✓ Compiled and loaded. Executing DriverEntry..."));
+
+        // Run the DKOM unlink
+        const linksOff = currentKernel.tables.offsetOf("_EPROCESS", "ActiveProcessLinks");
+        const result = runDkomDriver(currentKernel, kftarget, {
+          linksOffset: Number(linksOff),
+        });
+
+        if (result.status !== "ok") {
+          compileStatus.append(h("div", { class: "err" }, `Driver faulted (${result.status})`));
+          return;
+        }
+        if (!result.targetGone) {
+          compileStatus.append(h("div", { class: "warn" }, "!process still shows kftarget.exe — DKOM may not have worked."));
+        }
+        compileStatus.append(h("div", { class: "good" }, `✓ kftarget.exe hidden! LIST_ENTRY @ 0x${result.linksAddress.toString(16)}`));
+        currentDebugger.write(`DKOM driver executed successfully.`);
+        currentDebugger.write(`Run !process 0 0 to verify kftarget.exe is hidden.`);
+      });
+      card.append(editor, h("div", { class: "controls" }, compileBtn), compileStatus);
     }
 
     card.append(h("div", { class: "controls" }, backendSel, bootBtn));
