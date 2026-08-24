@@ -20,9 +20,14 @@ export async function sha256Hex(text, cryptoImpl = globalThis.crypto) {
 /**
  * @param {string} submission raw user input
  * @param {object} flagDef { id, sha256 }
+ *
+ * Answers are plain strings (module names, PIDs, hex addresses, symbolic
+ * NTSTATUS names…). Normalization is trim + lowercase so "0XFFFF…" and
+ * "Status_Success" grade the same as the canonical form pinned in each
+ * prompt. Catalog hashes are precomputed over the same normalized text.
  */
 export async function checkFlag(submission, flagDef) {
-  const normalized = submission.trim();
+  const normalized = submission.trim().toLowerCase();
   const digest = await sha256Hex(normalized);
   return timingSafeEqualStr(digest, flagDef.sha256.toLowerCase());
 }

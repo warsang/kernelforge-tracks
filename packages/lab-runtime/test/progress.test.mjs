@@ -11,12 +11,12 @@ import {
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex");
 
-test("checkFlag accepts exact match only", async () => {
-  const def = { id: "f1", sha256: sha("FLAG{hello_world}") };
-  assert.equal(await checkFlag("FLAG{hello_world}", def), true);
-  assert.equal(await checkFlag("  FLAG{hello_world}  ", def), true); // trimmed
-  assert.equal(await checkFlag("flag{hello_world}", def), false);
-  assert.equal(await checkFlag("FLAG{nope}", def), false);
+test("checkFlag normalizes trim + case before hashing", async () => {
+  const def = { id: "f1", sha256: sha("kfbootkit.sys") };
+  assert.equal(await checkFlag("kfbootkit.sys", def), true);
+  assert.equal(await checkFlag("  KFBOOTKIT.SYS  ", def), true); // trim + lowercase
+  assert.equal(await checkFlag("kfbootkit.dl_", def), false);
+  assert.equal(await checkFlag("", def), false);
 });
 
 test("progression: flags complete lessons", async () => {

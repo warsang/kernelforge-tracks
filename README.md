@@ -41,11 +41,11 @@ student C source
 
 ```bash
 npm install
-npm test                 # 36 unit tests across packages
+npm test                 # unit tests across packages
 node apps/web/server.mjs # serve on :8080 (+ /api/compile dev bridge)
 # open http://localhost:8080 — WinDbg tab: `!process 0 0`, `dt nt!_EPROCESS`
-# IDE tab: Compile driver; Lab tab: submit FLAG{312}
-cd apps/web && node test/e2e.mjs   # headless browser integration test
+# IDE tab: Compile driver; Lab tab: submit lab answers
+cd apps/web && node test/e2e.mjs   # headless browser integration test (legacy branch)
 ```
 
 ## Regenerating struct tables
@@ -59,15 +59,35 @@ node scripts/scrape-vergilius.mjs --family windows-7 --build sp1
 Data source: VergiliusProject (CC0 — see their terms.html). Tables drive every
 offset in ntsim and the debugger; switching build = swapping the table dir.
 
-## Module 1 (shipped)
+## Shipped modules (windows-kernel track)
 
-1. Kernel landscape — `lm` reveals `kfbootkit.sys` (`FLAG{kfbootkit.sys}`),
-   `!process 0 0` finds `kfsample.exe` PID 312 (`FLAG{312}`)
+Answers are plain question responses (names, PIDs, hex addresses, symbolic
+NTSTATUS) normalized trim+lowercase then sha256-checked; no FLAG{} wrapper.
+Ground truth lives with instructors; see docs/plan.md for the build-out plan.
+
+**Module 1 — Windows Kernel Fundamentals & Manual Mapping**
+1. Kernel landscape — `lm` reveals `kfprobe.sys`; `!process 0 0` finds
+   `kfsample.exe` PID 312
 2. DKOM process hiding — unlink `kftarget.exe` from `PsActiveProcessHead`
-3. Kernel manual mapping — fix a loader driver's import resolution; capture the
-   mapped payload's secret `DbgPrint`
+3. Kernel manual mapping — fix a loader driver's import resolution; capture
+   the mapped payload's secret `DbgPrint`
 
-## Roadmap (per docs/plan)
+**Module 2 — IRQL & Deferred Procedures** (`irql-dpc`)
+`kfdpc.sys` pins the CPU above DISPATCH_LEVEL and strands a DPC. Read the
+stuck level (`!irql`), record the DeferredRoutine (`!dpcs`), lower and drain
+(`!irql 2`, `!dpcdrain`) to release the secret.
+
+**Module 3 — Inline Hooks & Control Flow** (`api-hook`)
+`kfhook.sys` detoured `PsLookupProcessByProcessId` so PID 666 vanishes from
+lookup. Find it (`!hookscan`), probe it (`!hooktest`), repair the prologue
+with `eb`, prove the lookup succeeds again.
+
+**Module 4 — Pool Internals & Corruption** (`pool-corrupt`)
+An upstream overflow smashed one of `kfpooler.sys`'s trailing pool guards.
+Locate the block (`!poolfind KfPb`), rewrite the guard with `eb`, verify
+(`!poolverify`), capture the checksum secret.
+
+## Roadmap (see docs/plan.md)
 
 - Phase 2: Sogen fork (Windows userland track, real ntdll) + Sauerbraten headless target
 - Phase 3: v86 Linux track (i386 Buildroot, LKM labs)

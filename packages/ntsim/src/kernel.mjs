@@ -20,6 +20,22 @@ const DEFAULT_BASES = {
   eproc: 0xffffb80000000000n, // synthesized EPROCESS blocks
 };
 
+/** Software-visible IRQL names (x64). Levels >= 3 are device/clock/IPI/high;
+ *  precise sub-naming varies by platform so we label the band generically. */
+export const IRQL_NAMES = {
+  0: "PASSIVE_LEVEL",
+  1: "APC_LEVEL",
+  2: "DISPATCH_LEVEL",
+};
+
+export function irqlName(level) {
+  return IRQL_NAMES[level] ?? (level > 2 ? "DEVICE_OR_HIGHER" : "?");
+}
+
+const POOL_MAGIC = 0x4b46454c52505352n; // 'RSPLRFEK'-ish sentinel (LE)
+const POOL_GUARD_BYTE = 0xa5;
+const POOL_GUARD_LEN = 16;
+
 const DEFAULT_PROCESSES = [
   { pid: 4, name: "System", ppl: null },
   { pid: 84, name: "wininit.exe", ppl: null },
@@ -72,11 +88,26 @@ export class NtKernel {
     this.nextThunk = this.bases.thunk;
     /** @type {Map<string, Function>} export name -> js impl */
     this.apiImpls = new Map();
+    /** @type {Map<string, Uint8Array>} export name -> pristine prologue bytes */
+    this.pristineThunks = new Map();
+    /** @type {Array<{api:string, thunk:bigint, target:bigint, module:string}>} */
+    this.inlineHooks = [];
 
     // pool
     this.nextPool = this.bases.pool;
-    /** @type {Array<{addr:bigint,size:number,tag:string}>} */
+    /** @type {Array<{addr:bigint,size:number,tag:string,freed:boolean}>} */
     this.poolAllocs = [];
+
+    /** interrupt state: current processor IRQL (0=PASSIVE .. 31) */
+    this.currentIrql = 2; // DISPATCH_LEVEL default in our labs
+    /** @type {Array<{dpcVa:bigint, routine:bigint, context:bigint, drained:boolean}>} */
+    this.pendingDpcs = [];
+    /** scenario hook invoked when a queued DPC finally drains */
+    this.onDpcDrain = null;
+    /** scenario hook invoked when pool verification passes after corruption */
+    this.onPoolHealed = null;
+    /** when true, double-free raises a modeled BAD_POOL_CALLER bugcheck */
+    this.poolStrict = false;
 
     /** @type {Map<string, bigint>} name -> EPROCESS va */
     this.processesByName = new Map();
@@ -177,17 +208,118 @@ export class NtKernel {
 
   // -------------------------------------------------------------- pool
 
+  /**
+   * Layout per allocation (32 bytes of bookkeeping around the payload):
+   *   [hdr magic u64 @ addr-16][pad 8][payload size bytes @ addr][guard 16B]
+   * The guard lets !poolverify catch out-of-bounds writes before they turn
+   * into distant, unrelated bugchecks.
+   */
   allocPool(size, tag = "ntsm") {
     const aligned = (size + 15) & ~15;
-    const addr = this.nextPool;
-    this.nextPool += BigInt(aligned + 16); // header-ish spacing
-    this.poolAllocs.push({ addr, size, tag });
+    const hdr = this.nextPool;
+    const addr = hdr + 16n;
+    this.nextPool += BigInt(aligned) + 32n; // header(16) + guard(16) + payload
+    this.mem.w64(hdr, POOL_MAGIC);
+    this._writeGuard(addr, size);
+    this.poolAllocs.push({ addr, size, tag, freed: false });
     return addr;
   }
 
-  freePool(_addr) {
-    // bump allocator: frees are no-ops tracked for realism stats only
+  /** Register a scenario-seeded block at a fixed VA (deterministic labs). */
+  registerPoolBlock(addr, size, tag = "ntsm") {
+    this.mem.w64(addr - 16n, POOL_MAGIC);
+    this._writeGuard(addr, size);
+    this.poolAllocs.push({ addr, size, tag, freed: false, fixed: true });
+    return { addr, size, tag };
+  }
+
+  _writeGuard(addr, size) {
+    this.mem.write(
+      addr + BigInt(size),
+      new Uint8Array(POOL_GUARD_LEN).fill(POOL_GUARD_BYTE),
+    );
+  }
+
+  freePool(addr) {
+    const entry = this.poolAllocs.find((a) => a.addr === BigInt(addr));
+    if (!entry) {
+      this.dbgLog.push(`[pool] ExFreePoolWithTag: unknown address — ignored`);
+      return false;
+    }
+    if (entry.freed) {
+      if (this.poolStrict) {
+        // modeled BAD_POOL_CALLER (0xC2): P1=0x7 double free-ish, P2=addr
+        this.bugcheck = { code: 0xc2n, params: [0x7n, BigInt(addr), 0n, 0n] };
+        this.crash = { code: "0xc2" };
+        this.cpu.halted = true;
+      } else {
+        this.dbgLog.push(`[pool] double free at ${addr.toString(16)} detected`);
+      }
+      return false;
+    }
+    entry.freed = true;
     return true;
+  }
+
+  /** Sweep all allocation guards. Returns the corrupted entries. */
+  verifyGuards() {
+    return this.poolAllocs.filter((a) => {
+      if (a.freed) return false;
+      for (let i = 0; i < POOL_GUARD_LEN; i++) {
+        if (this.mem.u8(a.addr + BigInt(a.size) + BigInt(i)) !== POOL_GUARD_BYTE) return true;
+      }
+      return false;
+    });
+  }
+
+  guardBytes(addr) {
+    const entry = this.poolAllocs.find((a) => a.addr === BigInt(addr));
+    if (!entry) return null;
+    return new Uint8Array(POOL_GUARD_LEN).fill(POOL_GUARD_BYTE);
+  }
+
+  // ------------------------------------------------------------ IRQL / DPC
+
+  raiseIrql(level) {
+    if (level < this.currentIrql) {
+      // real Windows: KeRaiseIrql below current = bugcheck IRQL_NOT_LESS_OR_EQUAL
+      this.bugcheck = { code: 0xan, params: [BigInt(level), 0n, 0n, 0n] };
+      this.crash = { code: "0xa" };
+      this.cpu.halted = true;
+      throw new Error(`KeRaiseIrql: cannot raise to ${level} below current ${this.currentIrql}`);
+    }
+    const old = this.currentIrql;
+    this.currentIrql = level;
+    return old;
+  }
+
+  lowerIrql(level) {
+    if (level > this.currentIrql) {
+      this.bugcheck = { code: 0xan, params: [BigInt(level), 1n, 0n, 0n] };
+      this.crash = { code: "0xa" };
+      this.cpu.halted = true;
+      throw new Error(`KeLowerIrql: cannot raise IRQL ${this.currentIrql} -> ${level}`);
+    }
+    this.currentIrql = level;
+  }
+
+  queueDpc(dpcVa, routine, context = 0n) {
+    if (this.pendingDpcs.some((d) => d.dpcVa === dpcVa && !d.drained)) return false;
+    this.pendingDpcs.push({ dpcVa, routine, context, drained: false });
+    return true;
+  }
+
+  /** Fire every queued DPC (caller must be <= DISPATCH_LEVEL). */
+  drainDpcs() {
+    const fired = [];
+    for (const d of this.pendingDpcs) {
+      if (d.drained) continue;
+      d.drained = true;
+      fired.push(d);
+      this.dbgLog.push(`nt: KiRetireDpcList: DPC @ ${d.dpcVa.toString(16)} fired`);
+      try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
+    }
+    return fired;
   }
 
   // ------------------------------------------------------------ API surface
@@ -198,9 +330,35 @@ export class NtKernel {
       this.nextThunk += 16n;
       this.mem.write(thunk, [0xf4]); // hlt marker (hook intercepts first)
       this.apiThunks.set(name, thunk);
+      this.pristineThunks.set(name, this.mem.read(thunk, 8));
     }
     this.apiImpls.set(name, impl.bind(this));
     return this.apiThunks.get(name);
+  }
+
+  /** Write an E9 rel32 detour over an export's prologue (hook modeling). */
+  installDetour(apiName, targetVa) {
+    const thunk = this.apiThunks.get(apiName);
+    if (!thunk) throw new Error(`installDetour: unknown api "${apiName}"`);
+    const rel = Number(BigInt.asIntN(32, targetVa - (thunk + 5n)));
+    this.mem.write(thunk, [
+      0xe9,
+      rel & 0xff, (rel >> 8) & 0xff, (rel >> 16) & 0xff, (rel >> 24) & 0xff,
+    ]);
+  }
+
+  isDetoured(apiName) {
+    const thunk = this.apiThunks.get(apiName);
+    return !!thunk && this.mem.u8(thunk) === 0xe9;
+  }
+
+  /** Restore pristine prologue bytes recorded at defineApi time. */
+  restorePrologue(apiName) {
+    const thunk = this.apiThunks.get(apiName);
+    const orig = this.pristineThunks.get(apiName);
+    if (!thunk || !orig) return false;
+    this.mem.write(thunk, [...orig]);
+    return true;
   }
 
   _wireApiHooks() {
