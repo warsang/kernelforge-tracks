@@ -39,18 +39,30 @@ function capture(kernel) {
   let cleared = false;
   const w = (text, cls = "") => lines.push(cls ? `[${cls}]${text}` : text);
   const exec = (line) => {
-    const [cmd, ...args] = line.trim().split(/\s+/);
+    let [cmd, ...args] = line.trim().split(/\s+/);
+    if (!commands[cmd]) {
+      const m = cmd.match(/^(lm)([a-zA-Z]+)$/i); // lmD-style flags -> lm
+      if (m) { cmd = m[1]; args = [m[2], ...args]; }
+    }
     commands[cmd]?.(args, w, { set innerHTML(v) { cleared = true; lines.push(`(cleared)`); } });
   };
   return { exec, lines, text: () => lines.join("\n"), get cleared() { return cleared; } };
 }
 
-test("lm lists the flag-carrying probe module", async () => {
+test("lm lists the probe module with a suspicious marker", async () => {
   const { kernel } = await booted();
   const c = capture(kernel);
   c.exec("lm");
-  assert.match(c.text(), /kfprobe\.sys/);
-  assert.match(c.text(), new RegExp(PROBE_FLAG));
+  const t = c.text();
+  assert.match(t, /kfprobe\.sys/);
+  assert.match(t, /<-- suspicious/);
+});
+
+test("lm tolerates flags like lmD with a note", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("lmD");
+  assert.match(c.text(), /not modeled/);
 });
 
 test("!process <addr> 1 walks real _EPROCESS fields incl decoded Token", async () => {
@@ -140,4 +152,55 @@ test("!pcr walks the REAL KPCR when booted from the dump fixture", async () => {
   assert.ok(t.includes("_KPCR @"));
   const idtLine = c.lines.find((l) => l.includes("IdtBase"));
   assert.ok(idtLine && !/0x0+$/.test(idtLine.split(":")[1].trim()), "IdtBase null");
+});
+
+test("dump mode: registers seeded from saved context", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  assert.equal(kernel.cpu.regs.rip, BigInt(raw.context.rip));
+  assert.notEqual(kernel.cpu.regs.rsp, 0n);
+
+  const c = capture(kernel);
+  c.exec("r");
+  const t = c.text();
+  assert.match(t, /context from dump/);
+  assert.match(t, /\+0x[0-9a-f]+/); // rip symbolized as module+offset
+});
+
+test("!prcb walks the real PRCB from the fixture", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("!prcb");
+  assert.match(c.text(), /_KPRCB @ /i);
+});
+
+test("!analyze -v reports context/process/modules", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("!analyze -v");
+  const t = c.text();
+  assert.match(t, /ANALYSIS/);
+  assert.match(t, /No bugcheck recorded/);
+  assert.match(t, /CONTEXT:/);
+  assert.match(t, /PROCESS:/);
+  assert.match(t, /MODULES:/);
+});
+
+test("sym resolves module+offset", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  const mod = kernel.loadedModules[0];
+  c.exec(`sym ${mod.base + 0x1234n}`);
+  assert.ok(c.text().includes(mod.name + "+0x1234"), c.text());
 });

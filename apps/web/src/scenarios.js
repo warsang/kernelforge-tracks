@@ -68,6 +68,15 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
   }
 
   if (!dumpWorld) {
+  if (!dumpWorld) {
+    // Plausible live context for the synthetic world (executing ntoskrnl+0x1000)
+    if (kernel.loadedModules?.length) {
+      kernel.cpu.regs.rip = kernel.loadedModules[0].base + 0x1000n;
+      kernel.cpu.regs.rsp = 0xfffff8055b000000n;
+      kernel.contextSource = "synthetic";
+    }
+  }
+
   // Synthesize the processor control chain: KPCR -> PRCB -> CurrentThread.
   // Offsets come from the active build's tables; only CLIENT_ID's stable
   // {UniqueProcess; UniqueThread} pair is written by fixed sub-offsets.
@@ -141,7 +150,7 @@ function populateFromDump(kernel, tables, world) {
   }));
 
   // lab fixtures appended (synthetic, clearly ours)
-  let nextFakeEproc = 0x50000000n;
+  let nextFakeEproc = 0xffffc80000000000n; // kernel-space synthetic range
   for (const [nm, pid] of [["kfsample.exe", 312n], ["kftarget.exe", 666n]]) {
     procs.push({ pid, eproc: nextFakeEproc, name: nm, tokenRaw: 0n, tokenTarget: 0n });
     nextFakeEproc += 0x1000n;
@@ -185,17 +194,52 @@ function populateFromDump(kernel, tables, world) {
     kernel.currentThread = put(world.kpcr.currentThread, world.kpcr.threadHex);
   }
 
-  // loaded modules: real bases/sizes/ordering (+ our probe module appended)
-  kernel.loadedModules = [
-    ...world.modules.map((m) => ({
-      base: BigInt(m.base), sizeOfImage: m.sizeOfImage,
-      name: (m.baseDllName || m.fullDllName || "?").split("\\").pop(),
-      full: m.fullDllName || "",
-      real: true,
-    })),
-    { base: 0x30000000n, name: "kfprobe.sys",
-      full: `\\SystemRoot\\system32\\drivers\\${PROBE_FLAG}.sys` },
-  ];
+  // loaded modules: real bases/SIZES/ordering (+ our probe module appended).
+  // The dumper truncated UNICODE_STRING buffers, so names are reconstructed:
+  //   * index 0 / largest image -> ntoskrnl.exe (kernel base anchor)
+  //   * otherwise longest usable path fragment -> <fragment>.sys
+  const mods = world.modules.map((m, i) => {
+    const hint = (m.baseDllName || m.fullDllName || "").split("\\").filter(Boolean).pop() || "";
+    let name;
+    if (i === 0 || m.sizeOfImage >= 0x800000) name = "ntoskrnl.exe";
+    else if (/^hal(\\|\.|$)/i.test(hint) || /\\hal\.dll/i.test(m.fullDllName || "")) name = "hal.dll";
+    else if (/^[A-Za-z0-9_-]{3,}$/.test(hint)) name = hint + ".sys";
+    else name = "mod_" + i.toString(16) + ".sys";
+    return {
+      base: BigInt(m.base),
+      sizeOfImage: m.sizeOfImage ?? 0x10000,
+      name, full: m.fullDllName || "", real: true,
+      nameRepaired: name !== hint,
+    };
+  });
+  // lab probe module — relocated into kernel space (was wrongly user-range)
+  mods.push({
+    base: 0xfffff8055a000000n, sizeOfImage: 0x8000,
+    name: "kfprobe.sys",
+    full: `\\SystemRoot\\system32\\drivers\\${PROBE_FLAG}.sys`, lab: true,
+  });
+  kernel.loadedModules = mods;
+
+  // saved crash-moment CPU context -> seed BOTH backends' register file
+  if (world.context) {
+    for (const [reg, val] of Object.entries(world.context)) {
+      if (reg in kernel.cpu.regs) kernel.cpu.regs[reg] = BigInt(val);
+    }
+    kernel.contextSource = "dump";
+  }
+
+  // correlate the dumped CurrentThread with its process via Cid (@ETHREAD+0x478)
+  if (world.kpcr?.currentThread && world.kpcr.threadHex) {
+    const bytes = world.kpcr.threadHex.match(/.{2}/g).map((x) => parseInt(x, 16));
+    const cidProcOff = 0x478;
+    const pidBytes = bytes.slice(cidProcOff, cidProcOff + 8);
+    let pid = 0n;
+    for (let i = 7; i >= 0; i--) pid = (pid << 8n) | BigInt(pidBytes[i]);
+    const owner = kernel.findEprocessByPid(pid);
+    kernel.threads = {
+      [String(world.kpcr.currentThread)]: { pid, process: owner },
+    };
+  }
 }
 
 export const scenarios = {
