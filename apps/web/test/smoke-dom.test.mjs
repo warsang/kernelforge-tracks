@@ -29,7 +29,7 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
   window.process = { env: {
     KF_FLAG_M1L1F1: "FLAG{kfprobe}",
     KF_FLAG_M1L1F2: "FLAG{312}",
-    KF_FLAG_M1L2F1: "FLAG{0x40003d90}",
+    KF_FLAG_M1L2F1: "FLAG{0xffffc80000001448}",
   } };
 
   // File-backed fetch shim: serves /tables/** from public/ so the scenario's

@@ -17,6 +17,9 @@ test("flag hashes verify against expected plaintexts", async () => {
   const expect = {
     "m1.l1.f1": "FLAG{kfbootkit.sys}",
     "m1.l1.f2": "FLAG{312}",
+    // kftarget.exe EPROCESS @ 0xffffc80000001000 + ActiveProcessLinks offset
+    // 0x448 (22h2) — must stay in sync with scenarios.js populateFromDump()
+    "m1.l2.f1": "FLAG{0xffffc80000001448}",
     "m1.l3.f1": "FLAG{manual_map_master}",
   };
   const all = catalog.modules[0].lessons.flatMap((l) => l.labs.flatMap((x) => x.flags));

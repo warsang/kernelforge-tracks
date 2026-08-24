@@ -96,4 +96,17 @@ test("runDkomDriver hides kftarget.exe and extracts flag address", async () => {
   // the address should be kftarget's ActiveProcessLinks VA
   const expectedLinks = kftarget + linksOff;
   assert.equal(result.linksAddress, expectedLinks);
+
+  // cross-layer: the flag checker MUST accept the sim-derived address, both
+  // as printed by runDkomDriver and in FLAG{} submission form (regression:
+  // stale hash rejected the correct answer).
+  const { checkFlag } = await import("@kernelforge/lab-runtime");
+  const { catalog } = await import("@kernelforge/course-content");
+  const def = catalog.modules[0].lessons
+    .flatMap((l) => l.labs.flatMap((x) => x.flags))
+    .find((f) => f.id === "m1.l2.f1");
+  assert.ok(def, "m1.l2.f1 missing from catalog");
+  assert.equal(
+    await checkFlag(`FLAG{0x${expectedLinks.toString(16)}}`, def), true,
+    `checker rejects sim-derived address FLAG{0x${expectedLinks.toString(16)}}`);
 });

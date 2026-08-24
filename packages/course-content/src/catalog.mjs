@@ -5,7 +5,9 @@
 const F = {
   m1l1f1: "c35475b641ba918f21483056fa66919e4e74c0ddfd95566bd1ecb6585b668ee5",
   m1l1f2: "ab391e94ef0403e84deecf24fb047c898707b9bf3ae4277bbebd700f956fb3f6",
-  m1l2f1: "11ef3ccbc2892af49adf7f930192e017bf5a732e3e34618d32441bbe1a427f42",
+  // kftarget.exe _EPROCESS is fixed by populateFromDump() at 0xffffc80000001000
+  // and ActiveProcessLinks sits at +0x448 (22h2 tables) => FLAG{0xffffc80000001448}
+  m1l2f1: "5fa613ee4f6e78eb7290ac926ec488e35938125c2bd63ca4eca7c07c3352139b",
   m1l3f1: "755e49d01807e882a7a23f553ee908ea9ab7d8111dffd21a9033adb963731b15",
 };
 export const module1 = {
