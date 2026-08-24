@@ -16,13 +16,20 @@
 let clangMod = null;
 let lldMod = null;
 
-const SYSROOT_URL = new URL("../../vendor/browsercc/dist/sysroot.tar", import.meta.url);
+const DIST_URL = new URL("../../vendor/browsercc/dist/", import.meta.url);
+const SYSROOT_URL = new URL("sysroot.tar", DIST_URL);
 
 async function getModules() {
   if (!clangMod || !lldMod) {
+    // Specifiers are computed at runtime so bundlers cannot statically
+    // resolve them — a missing (not-yet-built) vendor/browsercc/dist must
+    // degrade to the caller's server-compile fallback, never break the
+    // dev-server transform of this worker.
+    const clangSpec = new URL("clang.js", DIST_URL).href;
+    const lldSpec = new URL("lld.js", DIST_URL).href;
     const [{ default: Clang }, { default: LLD }] = await Promise.all([
-      import(/* webpackIgnore: true */ "../../vendor/browsercc/dist/clang.js"),
-      import(/* webpackIgnore: true */ "../../vendor/browsercc/dist/lld.js"),
+      import(/* webpackIgnore: true */ /* @vite-ignore */ clangSpec),
+      import(/* webpackIgnore: true */ /* @vite-ignore */ lldSpec),
     ]);
     let stderr = "";
     clangMod = await Clang({
