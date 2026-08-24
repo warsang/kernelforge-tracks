@@ -121,14 +121,14 @@ function renderLesson(lesson) {
             loadTables: () => loadTables(),
             dumpWorld,
           });
+          consoleOut.innerHTML = "";
+          currentDebugger = createDebugger(session.kernel, consoleOut);
           if (dumpWorld) {
             currentDebugger.write(
               `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +
               `${dumpWorld.meta.moduleCount} modules extracted from a genuine ` +
               `Windows kernel dump (${dumpWorld.meta.source}).`);
           }
-          consoleOut.innerHTML = "";
-          currentDebugger = createDebugger(session.kernel, consoleOut);
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
         } catch (e) {
           consoleOut.innerHTML = "";
