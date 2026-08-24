@@ -96,6 +96,36 @@ export function createCommands(kernel) {
     }
   }
 
+  /** module+offset symbolization, e.g. ntoskrnl+0x2a1f0 */
+  const sym = (va) => {
+    for (const m of kernel.loadedModules ?? []) {
+      const base = m.base;
+      const end = base + BigInt(m.sizeOfImage ?? 0x100000);
+      if (va >= base && va < end) {
+        return `${m.name}+0x${(va - base).toString(16)}`;
+      }
+    }
+    return null;
+  };
+
+  const kindNote = (k) => `ChildSP               RetAddr               Call Site`;
+
+  const stack = (args, w, header) => {
+    const regs = kernel.cpu.regs;
+    const ripSym = sym(regs.rip) ?? "<unknown>";
+    w(header, "hdr");
+    w(`00 ${fmtAddr(regs.rsp)}  ${fmtAddr(regs.rip)}  ${ripSym}`);
+    // nearest-module annotation for rsp too (stack region attribution)
+    for (const m of kernel.loadedModules ?? []) {
+      const base = m.base;
+      if (regs.rsp >= base && regs.rsp < base + BigInt(m.sizeOfImage ?? 0x100000)) {
+        w(`   ^ stack inside ${m.name} mapping`, "dim");
+        break;
+      }
+    }
+    w("   (single-frame model: no unwind metadata in emulated images)", "dim");
+  };
+
   const commands = {
     help(args, w) {
       w("commands:");
@@ -105,6 +135,10 @@ export function createCommands(kernel) {
       w("  !eproc <addr|pid>         short summary");
       w("  !token <addr|pid>         decode Token EX_FAST_REF + raw dump");
       w("  !pcr [addr]               KPCR -> PRCB -> CurrentThread chain");
+      w("  !prcb [addr]              _KPRCB field walk");
+      w("  k | kp | kv               stack (rip frame + module+offset; no unwind data)");
+      w("  !analyze [-v]             modeled crash/state analysis");
+      w("  sym <addr>                resolve module+offset");
       w("  !thread [addr]            _ETHREAD walk (default: PRCB.CurrentThread)");
       w("  dt <Type> [addr]          walk any loaded type");
       w("  r | db <a> [n] | dq <a> [n] | clear");
@@ -112,21 +146,44 @@ export function createCommands(kernel) {
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
 
     lm(args, w) {
-      w("start             end                 module name", "hdr");
-      for (const m of kernel.loadedModules ?? []) {
-        w(`${fmtAddr(m.base)} ${fmtAddr(m.base + 0x100000n)} ${m.name}` +
-          (m.full.includes("FLAG") ? "   <-- suspicious" : ""));
-        w(`    FullDllName: ${m.full}`, "dim");
+      if (args.length && args[0].length > 0 && /[a-zA-Z]/.test(args[0][0])) {
+        w(`note: lm option '${args[0]}' is not modeled — showing standard list`, "dim");
       }
+      w("start             end                 module name", "hdr");
+      let repaired = 0;
+      for (const m of kernel.loadedModules ?? []) {
+        if (m.nameRepaired) repaired++;
+        const sizeOfImg = BigInt(m.sizeOfImage ?? 0x100000);
+        w(`${fmtAddr(m.base)} ${fmtAddr(m.base + sizeOfImg)} ${m.name}` +
+          (m.full.includes("FLAG") ? "   <-- suspicious" : ""));
+      }
+      if (repaired) w(`(${repaired} names reconstructed — dump truncated path strings)`, "dim");
     },
 
     "!process"(args, w) {
       if (!args.length || args[0] === "0") {
+        const bits = Number(args[1] ?? 0);
         w("PROCESS fff...  SessionId: none  Cid: xxxx  Peb: 00000000  ParentCid: 0004", "hdr");
-        for (const p of kernel.listProcesses()) {
+        const procs = kernel.listProcesses();
+        for (const p of procs) {
           w(`PROCESS ${fmtAddr(p.eprocess)}  Cid: ${p.pid.toString().padStart(4, "0")}  ImageFileName: ${p.name}`);
+          if (bits > 0) {
+            try {
+              const tokOff = tables.offsetOf("_EPROCESS", "Token");
+              const raw = mem.u64(p.eprocess + tokOff);
+              const threads = mem.u32(p.eprocess + tables.offsetOf("_EPROCESS", "ActiveThreads"));
+              w(`    Token: ${fmtAddr(raw & FAST_REF_MASK)}  ActiveThreads: ${threads}`, "dim");
+            } catch { /* optional fields */ }
+          }
         }
         return;
+      }
+      // thread-address guard: route obviously-thread addresses to a hint
+      if (kernel.currentThread && BigInt(args[0]) === kernel.currentThread) {
+        return w(`!process: ${fmtAddr(kernel.currentThread)} is an _ETHREAD — use !thread`, "err");
+      }
+      if (kernel.threads?.[String(BigInt(args[0]))]) {
+        return w(`!process: ${fmtAddr(BigInt(args[0]))} is an _ETHREAD — use !thread`, "err");
       }
       const eproc = resolveProcess(args[0]);
       if (!eproc) return w(`!process: no process for "${args[0]}"`, "err");
@@ -177,6 +234,12 @@ export function createCommands(kernel) {
       }
     },
 
+    "!prcb"(args, w) {
+      const prcb = args[0] ? BigInt(args[0]) : kernel.prcb;
+      if (!prcb) return w("!prcb: no PRCB (boot a scenario first)", "err");
+      for (const l of dumpStruct("_KPRCB", prcb, { max: 40 })) w(l);
+    },
+
     "!thread"(args, w) {
       const ctOff = (() => { try { return tables.offsetOf("_KPRCB", "CurrentThread"); } catch { return null; } })();
       let addr;
@@ -196,11 +259,69 @@ export function createCommands(kernel) {
       const tname = typeName.startsWith("_") ? typeName : `_${typeName}`;
       let addr = 0n;
       try { addr = addrTok ? BigInt(addrTok) : 0n; } catch { return w("dt: bad address", "err"); }
+      if (!addr && !addrTok) w(`(address 0x0 — unpopulated; showing zeroed layout for ${tname})`, "dim");
+      else if (!addr) return w("dt: NULL address", "err");
       for (const line of dumpStruct(tname, addr, { max: 96 })) w(line);
     },
 
     r(args, w) {
-      for (const [k, v] of Object.entries(kernel.cpu.regs)) w(`${k.padEnd(4)}=${fmtAddr(v)}`);
+      const src = kernel.contextSource === "dump" ? "   ; context from dump" : "";
+      for (const [k, v] of Object.entries(kernel.cpu.regs)) {
+        const s = sym(v);
+        w(`${k.padEnd(4)}=${fmtAddr(v)}${s ? `  ${s}` : ""}`);
+      }
+      if (src) w(src, "dim");
+    },
+
+    k(args, w) { stack(args, w, kindNote("k")); },
+    kp(args, w) { stack(args, w, kindNote("kp") + "\n   (parameters unavailable — no unwind data modeled)"); },
+    kv(args, w) { stack(args, w, kindNote("kv") + "\n   (frame sizes unavailable — no unwind data modeled)"); },
+
+    "!analyze"(args, w) {
+      const verbose = args.includes("-v");
+      w("======================= ANALYSIS =======================", "hdr");
+      if (kernel.bugcheck) {
+        w(`BUGCHECK_CODE: 0x${kernel.bugcheck.code.toString(16)}`);
+        w(`BUGCHECK_P1..P4: ${kernel.bugcheck.params.map((p) => "0x" + p.toString(16)).join(" ")}`);
+      } else {
+        w("No bugcheck recorded — machine state is live-modeled.", "dim");
+      }
+      const rip = kernel.cpu.regs.rip;
+      const ripSym = sym(rip) ?? "<unknown module>";
+      w(`CONTEXT:  rip=${fmtAddr(rip)} (${ripSym})`);
+      w(`          rsp=${fmtAddr(kernel.cpu.regs.rsp)}`);
+      const curEproc = (() => {
+        try {
+          const pidOff = tables.offsetOf("_EPROCESS", "UniqueProcessId");
+          const cidOff = (() => { try { return tables.offsetOf("_ETHREAD", "Cid"); } catch { return null; } })();
+          if (kernel.currentThread && cidOff !== null) {
+            const pid = mem.u64(kernel.currentThread + cidOff);
+            return kernel.findEprocessByPid(pid);
+          }
+        } catch { /* none */ }
+        return null;
+      })();
+      if (curEproc) {
+        const pid = mem.u64(curEproc + tables.offsetOf("_EPROCESS", "UniqueProcessId"));
+        const nm = mem.readAnsi(curEproc + tables.offsetOf("_EPROCESS", "ImageFileName"), 15);
+        w(`PROCESS:  ${nm} (pid ${pid}) @ ${fmtAddr(curEproc)}`);
+      }
+      if (verbose) {
+        w(`IRQL:     ${kernel.currentIrql ?? "?"}`);
+        w(`MODULES:  ${(kernel.loadedModules ?? []).length} loaded` +
+          ((kernel.loadedModules ?? []).some((m) => m.real) ? " (real-dump set)" : ""));
+        w(`THREADS:  CurrentThread=${fmtAddr(kernel.currentThread ?? 0n)}`);
+        const tail = (kernel.dbgLog ?? []).slice(-5);
+        if (tail.length) { w("--- recent DbgPrint ---", "hdr"); for (const l of tail) w("  " + l, "dim"); }
+      }
+      w("========================================================", "hdr");
+    },
+
+    sym(args, w) {
+      try {
+        const va = BigInt(args[0] ?? "0x0");
+        w(sym(va) ?? `${fmtAddr(va)} <no module>`);
+      } catch { w("usage: sym <address>", "err"); }
     },
 
     db(args, w) {
@@ -239,9 +360,21 @@ export function createDebugger(kernel, out) {
     const trimmed = line.trim();
     if (!trimmed) return;
     write(`kd> ${trimmed}`, "prompt");
-    const [cmd, ...args] = trimmed.split(/\s+/);
+    let [cmd, ...args] = trimmed.split(/\s+/);
+    // tolerate windbg-style command flags: lmD / lmv -> lm <flag>
+    if (!commands[cmd]) {
+      const m = cmd.match(/^(lm)([a-zA-Z]+)$/i);
+      if (m) { cmd = m[1]; args = [m[2], ...args]; }
+    }
     const fn = commands[cmd];
-    if (!fn) write(`Couldn't resolve "${cmd}" — try help`, "err");
+    if (!fn) {
+      const bare = cmd.replace(/^!/, "").toLowerCase();
+      const known = Object.keys(commands).map((c) => c.replace(/^!/, "").toLowerCase());
+      const near = known.find((c) => c.startsWith(bare.slice(0, 3)) && bare.length >= 2);
+      write(near
+        ? `Couldn't resolve "${cmd}" — did you mean "!${near}"? (try help)`
+        : `Couldn't resolve "${cmd}" — try help`, "err");
+    }
     else try { fn(args, write, out); } catch (e) { write(`error: ${e.message}`, "err"); }
   };
   return { exec, write };

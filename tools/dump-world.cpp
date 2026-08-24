@@ -325,6 +325,25 @@ auto readUs = [&](uint64_t va, std::string &out) {
     fprintf(f, "    \"threadHex\": \"%s\"\n", dumpHex(currentThreadVa, 0x898).c_str());
     fprintf(f, "  },\n");
   }
+  // ---- saved register context (crash-moment CPU state), header @ file 0x348 ----
+  fprintf(f, "  \"context\": {\n");
+  {
+    std::ifstream hf(a.dump, std::ios::binary);
+    struct RegDef { const char *name; uint64_t off; };
+    const RegDef regs[] = {
+      {"rax",0x78},{"rcx",0x80},{"rdx",0x88},{"rbx",0x90},{"rsp",0x98},
+      {"rbp",0xa0},{"rsi",0xa8},{"rdi",0xb0},
+      {"r8",0xb8},{"r9",0xc0},{"r10",0xc8},{"r11",0xd0},
+      {"r12",0xd8},{"r13",0xe0},{"r14",0xe8},{"r15",0xf0},{"rip",0xf8},
+    };
+    for (unsigned i = 0; i < sizeof(regs)/sizeof(regs[0]); i++) {
+      uint64_t v = 0;
+      if (hf) { hf.clear(); hf.seekg(0x348 + regs[i].off); hf.read((char *)&v, 8); }
+      fprintf(f, "    \"%s\": \"0x%llx\"%s\n", regs[i].name,
+              (unsigned long long)v, (i+1 < sizeof(regs)/sizeof(regs[0])) ? "," : "");
+    }
+  }
+  fprintf(f, "  },\n");
   fprintf(f, "  \"threads\": []\n}\n");
   fclose(f);
   fprintf(stderr, "[+] wrote %s (%zu procs, %zu mods)\n", a.out.c_str(), procs.size(), mods.size());

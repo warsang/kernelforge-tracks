@@ -46,6 +46,16 @@ export class NtKernel {
     this.tables = opts.tables ?? new StructTables();
     this.cpu = opts.cpu ?? new JsInterpreter(this.mem);
     this.cpu.mem = this.mem;
+    // Unified register surface: expose `rip` on backends whose regfile lacks
+    // it (JsInterpreter tracks RIP separately from the GPR dict).
+    if (this.cpu.regs && !("rip" in this.cpu.regs)) {
+      const cpuRef = this.cpu;
+      Object.defineProperty(cpuRef.regs, "rip", {
+        get() { return cpuRef.rip ?? 0n; },
+        set(v) { cpuRef.rip = BigInt.asUintN(64, BigInt(v)); },
+        configurable: true,
+      });
+    }
     const B = opts.bases ?? {};
     /** @type {typeof DEFAULT_BASES} */
     this.bases = {
