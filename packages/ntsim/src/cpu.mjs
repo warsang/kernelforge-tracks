@@ -13,7 +13,7 @@ const R64 = [
   "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
 ];
 
-const M64 = 0xffffffffffn; // mask
+const M64 = 0xffffffffffffffffn; // full 64-bit mask
 
 function sx(v, bits) {
   const sign = 1n << BigInt(bits - 1);

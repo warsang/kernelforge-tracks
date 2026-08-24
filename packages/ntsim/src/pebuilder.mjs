@@ -34,13 +34,16 @@ export class PeBuilder {
   _impBlobSize() {
     if (!this.imports.length) return 0;
     let n = (this.imports.length + 1) * 20;      // IDT
+    let hntEntries = 0;
     for (const imp of this.imports) {
       n += imp.dll.length + 1;                   // dll name
-      n += (imp.funcs.length + 1) * 8;           // hint/name table + term
+      hntEntries += imp.funcs.length + 1;        // hint/name table incl terminator
       for (const f of imp.funcs) {
         n += 2 + f.length + 1;                   // hint(2)+name+nul
       }
     }
+    n += hntEntries * 8;                         // hint/name table
+    n += hntEntries * 8;                         // IAT
     return (n + 7) & ~7;
   }
 
@@ -57,15 +60,7 @@ export class PeBuilder {
 
     const idtSize = (N + 1) * 20;
     let dllCursor = idtSize;
-    // precompute hnt/str/iat offsets
-    let hntSize = 0, strSize = 0;
-    for (const imp of this.imports) {
-      hntSize += (imp.funcs.length + 1) * 8;
-      for (const f of imp.funcs) strSize += 2 + f.length + 1;
-    }
-    strSize = ((strSize * N) / Math.max(N, 1)) | 0; // placeholder recomputed below
-    void strSize;
-    // simpler: walk once to get true offsets
+    // walk once to compute true sub-offsets
     let offHnt = dllCursor;
     for (const imp of this.imports) offHnt += imp.dll.length + 1;
     let offStr = offHnt;
@@ -76,12 +71,10 @@ export class PeBuilder {
 
     // write dll names
     let dc = idtSize;
-    this.imports.forEach((imp, i) => {
-      imp._dllOff = dc - blobRva === undefined ? 0 : dc; // store ABS offset; RVA added on write
+    this.imports.forEach((imp) => {
+      imp._nameStart = dc;
       for (const ch of imp.dll) buf[dc++] = ch.charCodeAt(0);
       buf[dc++] = 0;
-      imp._nameAbsOff = dc - (dc - imp._dllOff); // = start
-      imp._nameStart = imp._dllOff;
     });
 
     // write hint/name strings + tables + IAT
@@ -122,7 +115,7 @@ export class PeBuilder {
     const peOff = 0x80;
     const coffOff = peOff + 4;
     const optOff = coffOff + 20;
-    const optSize = 112;
+    const optSize = 240; // PE32+: 112 fixed + 16*8 data dirs
     const sectOff = optOff + optSize;
     const headersSize = sectOff + numSections * 40;
     const hdrPages = Math.ceil(headersSize / PAGE);
@@ -189,7 +182,7 @@ export class PeBuilder {
     w64(optOff + 88, 0x100000n);
     w32(optOff + 108, 16);
 
-    const dirBase = optOff + 112;
+    const dirBase = optOff + 112; // data dirs begin right after fixed part
     if (impBlob) {
       w32(dirBase + 8, rdataRva);          // dir[1].VirtualAddress
       w32(dirBase + 12, impBlob.idtSize);  // dir[1].Size
