@@ -230,6 +230,8 @@ export function createCommands(kernel) {
       w("  sym <addr>                resolve module+offset");
       w("  !thread [addr]            _ETHREAD walk (default: PRCB.CurrentThread)");
       w("  dt <Type> [addr]          walk any loaded type");
+      w("  eb <a> <b1> [b2...]       write bytes into mapped memory");
+      w("  !mmstate / !mmrun         manual-map loader state / run (manual-map lab)");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
@@ -624,6 +626,74 @@ export function createCommands(kernel) {
       }
       for (let i = 0; i < count; i++) {
         w(`${fmtAddr(addr + BigInt(i * 8))}  ${fmtAddr(mem.u64(addr + BigInt(i * 8)))}`);
+      }
+    },
+
+    // WinDbg-style byte write into MAPPED memory only — we never materialize
+    // new pages on write so typos can't fabricate phantom backing.
+    eb(args, w) {
+      if (args.length < 2) return w("usage: eb <addr> <byte> [bytes...]", "err");
+      let addr;
+      try { addr = BigInt(args[0]); } catch { return w("eb: bad address", "err"); }
+      if (addr < 0n) addr = BigInt.asUintN(64, addr);
+      const vals = [];
+      for (const tok of args.slice(1)) {
+        const v = parseInt(tok, 16);
+        if (!(v >= 0 && v <= 255)) return w(`eb: bad byte "${tok}"`, "err");
+        vals.push(v);
+      }
+      const why = memFault(addr, vals.length);
+      if (why) return w(memErr(addr, why), "err");
+      mem.write(addr, vals);
+      w(`wrote ${vals.length} byte(s) at ${fmtAddr(addr)}: ` +
+        vals.map((v) => v.toString(16).padStart(2, "0")).join(" "), "dim");
+    },
+
+    "!mmstate"(args, w) {
+      const mm = kernel.manualMap;
+      if (!mm) return w("!mmstate: no manual-map loader booted (boot the manual-map lab)", "err");
+      w("kfloader.sys manual-mapping state", "hdr");
+      w(`  payload image : ${fmtAddr(mm.payloadBase)} (mmpayload.sys)`);
+      w(`  loader base   : ${fmtAddr(mm.loaderBase)}`);
+      const flag = mem.u8(mm.resolveFlag);
+      w(`  g_ResolveImports @ ${fmtAddr(mm.resolveFlag)} = ${flag} ` +
+        `(${flag ? "imports will be resolved" : "STUBBED — IAT left unmapped"})`,
+        flag ? "" : "warn");
+      mm.imports.forEach((imp, i) => {
+        const slot = mem.u64(mm.iatBase + BigInt(i * 8));
+        w(`  IAT[${i}] ${imp.padEnd(26)} : ${slot ? fmtAddr(slot) : "0000000000000000  (unresolved)"}`);
+      });
+      w(`  map attempts  : ${mm.runs}`);
+    },
+
+    "!mmrun"(args, w) {
+      const mm = kernel.manualMap;
+      if (!mm) return w("!mmrun: no manual-map loader booted (boot the manual-map lab)", "err");
+      mm.runs++;
+      if (!mem.u8(mm.resolveFlag)) {
+        w("kfloader: mapping mmpayload.sys sections...", "dim");
+        w("kfloader: import resolution is STUBBED — IAT left zeroed", "err");
+        w("kfloader: payload DriverEntry skipped (first import call would fault)", "err");
+        w("hint: inspect !mmstate, repair the loader with 'eb', retry !mmrun", "dim");
+        kernel.dbgLog.push("kfloader: failed to resolve imports for mmpayload.sys");
+        return;
+      }
+      mm.imports.forEach((_, i) => mem.w64(mm.iatBase + BigInt(i * 8), mm.thunks[i]));
+      w(`kfloader: resolved ${mm.imports.length} import(s) against nt!`);
+      for (const [i, imp] of mm.imports.entries()) {
+        w(`  IAT[${i}] ${imp.padEnd(26)} -> ${fmtAddr(mm.thunks[i])}`, "dim");
+      }
+      w("kfloader: transferring control to mmpayload.sys!DriverEntry...");
+      kernel.dbgLog.push("mmpayload: DriverEntry entered (manually mapped, imports resolved)");
+      kernel.dbgLog.push(`mmpayload: secret=${mm.secret}`);
+      w("--- recent DbgPrint ---", "hdr");
+      for (const l of kernel.dbgLog.slice(-2)) w("  " + l);
+      w("(captured in the DbgPrint buffer — see !analyze -v)", "dim");
+      if (!kernel.loadedModules.some((m) => m.name === "mmpayload.sys")) {
+        kernel.loadedModules.push({
+          base: mm.payloadBase, sizeOfImage: 0x4000, name: "mmpayload.sys",
+          full: "\\SystemRoot\\system32\\mmpayload.sys",
+        });
       }
     },
   };

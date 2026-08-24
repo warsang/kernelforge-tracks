@@ -107,3 +107,36 @@ test("real-dump world: fixture loads with authentic processes", async () => {
   const blob = kernel.mem.read(target, 8);
   assert.equal(blob[0], 0x2a); // '*SYSTEM*' magic from the real dump
 });
+
+test("every catalog lab scenario is registered (regression: manual-map)", async () => {
+  const { catalog } = await import("@kernelforge/course-content");
+  const { scenarios } = await import("../src/scenarios.js");
+  const needed = catalog.modules
+    .flatMap((m) => m.lessons)
+    .flatMap((l) => l.labs)
+    .map((lab) => lab.scenario);
+  assert.ok(needed.includes("manual-map"), "catalog should reference the manual-map lab");
+  for (const id of needed) {
+    assert.ok(scenarios[id], `scenario "${id}" referenced by catalog but not registered`);
+  }
+});
+
+test("manual-map boots with a stubbed loader and hidden payload secret", async () => {
+  const scenario = getScenario("manual-map");
+  const { kernel, kind } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem),
+    loadTables,
+  });
+  assert.equal(kind, "manual-map");
+
+  const mm = kernel.manualMap;
+  assert.ok(mm, "manualMap state missing");
+  assert.equal(kernel.mem.u8(mm.resolveFlag), 0, "loader must ship STUBBED");
+  // IAT starts zeroed
+  for (let i = 0; i < mm.imports.length; i++) {
+    assert.equal(kernel.mem.u64(mm.iatBase + BigInt(i * 8)), 0n);
+  }
+  // loader visible to lm; payload NOT yet mapped in
+  assert.ok(kernel.loadedModules.some((m) => m.name === "kfloader.sys"));
+  assert.ok(!kernel.loadedModules.some((m) => m.name === "mmpayload.sys"));
+});

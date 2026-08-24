@@ -338,6 +338,64 @@ scenarios["dkom-hide"] = {
   },
 };
 
+/**
+ * Manual-map lab world: same base world plus kfloader.sys — a mapper whose
+ * import-resolution step ships STUBBED. The student inspects the loader
+ * (!mmstate), repairs the stub from the debugger (eb), runs the map
+ * (!mmrun) and captures the payload's DbgPrint secret.
+ */
+function setupManualMap(kernel) {
+  const mem = kernel.mem;
+
+  const LOADER_BASE = 0xfffff8055a300000n;
+  const PAYLOAD_BASE = 0xfffff8055a200000n;
+  const IAT_RVA = 0x2000n;
+  const IMPORTS = ["nt!DbgPrint", "nt!ExAllocatePoolWithTag"];
+
+  // resolve thunk targets against whichever ntoskrnl this world booted
+  const ntBase = (kernel.loadedModules ?? []).find((m) => m.name === "ntoskrnl.exe")
+    ?.base ?? 0xfffff8052b800000n;
+
+  // materialize the loader's config page: g_ResolveImports = 0 (stubbed)
+  const resolveFlag = LOADER_BASE;
+  mem.w8(resolveFlag, 0);
+
+  // payload IAT page (all zeros until the resolver runs)
+  const iatBase = PAYLOAD_BASE + IAT_RVA;
+  for (let i = 0; i < IMPORTS.length; i++) mem.w64(iatBase + BigInt(i * 8), 0n);
+
+  kernel.manualMap = {
+    loaderBase: LOADER_BASE,
+    payloadBase: PAYLOAD_BASE,
+    iatBase,
+    resolveFlag,
+    imports: IMPORTS,
+    thunks: IMPORTS.map((_, i) => ntBase + BigInt(0x1000 + i * 0x10)),
+    secret: "FLAG{manual_map_master}",
+    runs: 0,
+  };
+
+  // make the loader visible to `lm` (payload appears only once mapped+run)
+  kernel.loadedModules.push({
+    base: LOADER_BASE, sizeOfImage: 0x8000, name: "kfloader.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfloader.sys", lab: true,
+  });
+}
+
+scenarios["manual-map"] = {
+  title: "manual-map — PE manual mapping with import resolution",
+  description:
+    "Boots the 22H2 world with kfloader.sys loaded. Its import resolution is " +
+    "stubbed: mmpayload.sys cannot run until you repair the loader from the " +
+    "debugger. Inspect with !mmstate, fix with eb, execute with !mmrun.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupManualMap(session.kernel);
+    session.kind = "manual-map";
+    return session;
+  },
+};
+
 export function getScenario(id) {
   const s = scenarios[id];
   if (!s) throw new Error(`unknown scenario "${id}"`);

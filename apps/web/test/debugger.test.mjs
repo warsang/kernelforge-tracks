@@ -183,6 +183,93 @@ test("!process 0 7 reports the dumped CurrentThread as resident under System", a
   assert.match(t, /Tid: 6760/);                 // its authentic CLIENT_ID
 });
 
+// ------------------------------------------------ manual-map lab flow ----
+
+async function bootedManualMap() {
+  const scenario = getScenario("manual-map");
+  return scenario.boot({ makeBackend: (mem) => new JsInterpreter(mem), loadTables });
+}
+
+test("eb writes mapped memory and refuses unmapped addresses", async () => {
+  const { kernel } = await bootedManualMap();
+  const c = capture(kernel);
+  c.exec(`eb ${kernel.manualMap.resolveFlag} 1`);
+  assert.match(c.text(), /wrote 1 byte\(s\)/);
+  assert.equal(kernel.mem.u8(kernel.manualMap.resolveFlag), 1);
+
+  // multi-byte form
+  c.exec(`eb ${kernel.manualMap.resolveFlag} AA 55`);
+  assert.deepEqual(
+    [...kernel.mem.read(kernel.manualMap.resolveFlag, 2)], [0xaa, 0x55]);
+
+  // unmapped target must fault, not materialize a phantom page
+  const c2 = capture(kernel);
+  c2.exec("eb 0xdead0000 7");
+  assert.match(c2.text(), /Memory read error .*unmapped/);
+  assert.ok(!kernel.mem.hasPage(0xdead0000n));
+
+  // bad byte token rejected
+  const c3 = capture(kernel);
+  c3.exec(`eb ${kernel.manualMap.resolveFlag} zz`);
+  assert.match(c3.text(), /bad byte "zz"/);
+});
+
+test("manual-map: stubbed run fails; repairing g_ResolveImports releases payload", async () => {
+  const { kernel } = await bootedManualMap();
+  const mm = kernel.manualMap;
+  const flagPlain = mm.secret;
+
+  // 1) stubbed state is visible
+  let c = capture(kernel);
+  c.exec("!mmstate");
+  let t = c.text();
+  assert.match(t, /STUBBED/);
+  assert.match(t, /unresolved/);
+
+  // 2) running while stubbed must not run the payload
+  c = capture(kernel);
+  c.exec("!mmrun");
+  t = c.text();
+  assert.match(t, /STUBBED/);
+  assert.match(t, /DriverEntry skipped/);
+  assert.ok(!t.includes(flagPlain), "secret must not print while stubbed");
+
+  // 3) repair the loader's resolver byte, then map + run
+  c = capture(kernel);
+  c.exec(`eb ${mm.resolveFlag} 1`);
+  c.exec("!mmrun");
+  t = c.text();
+  assert.match(t, /resolved 2 import\(s\) against nt!/);
+  assert.match(t, new RegExp(flagPlain.replace(/[{}$]/g, "\\$&")));
+  // thunks landed in the IAT
+  assert.notEqual(kernel.mem.u64(mm.iatBase), 0n);
+  assert.notEqual(kernel.mem.u64(mm.iatBase + 8n), 0n);
+
+  // 4) secret captured in the DbgPrint buffer (the flag submission path)
+  assert.ok(kernel.dbgLog.some((l) => l.includes(flagPlain)),
+    `DbgPrint buffer missing secret: ${JSON.stringify(kernel.dbgLog)}`);
+
+  // 5) !analyze -v surfaces the captured DbgPrint lines
+  c = capture(kernel);
+  c.exec("!analyze -v");
+  assert.match(c.text(), /secret=/);
+
+  // 6) mapped payload becomes visible to lm
+  c = capture(kernel);
+  c.exec("lm");
+  assert.match(c.text(), /mmpayload\.sys/);
+});
+
+test("!mm commands degrade gracefully without the manual-map lab", async () => {
+  const { kernel } = await booted(); // plain boot-default world
+  const c = capture(kernel);
+  c.exec("!mmstate");
+  assert.match(c.text(), /no manual-map loader booted/);
+  const c2 = capture(kernel);
+  c2.exec("!mmrun");
+  assert.match(c2.text(), /no manual-map loader booted/);
+});
+
 test("!pcr walks KPCR and hints the PRCB -> CurrentThread chain", async () => {
   const { kernel } = await booted();
   const c = capture(kernel);
