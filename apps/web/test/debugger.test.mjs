@@ -204,3 +204,73 @@ test("sym resolves module+offset", async () => {
   c.exec(`sym ${mod.base + 0x1234n}`);
   assert.ok(c.text().includes(mod.name + "+0x1234"), c.text());
 });
+
+test("dt faults on non-canonical / unmapped addresses", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("dt _EPROCESS 0xffffffffffffffff");
+  assert.match(c.text(), /Memory read error at 0xffffffffffffffff \(unmapped\)/);
+  const c2 = capture(kernel);
+  c2.exec("dt _EPROCESS 0x1234");
+  assert.match(c2.text(), /Memory read error at 0x0000000000001234 \(unmapped\)/);
+});
+
+test("k ChildSP falls back to PRCB.RspBase when regs.rsp is zero", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  kernel.cpu.regs.rsp = 0n; // simulate the unicorn desync
+  const c = capture(kernel);
+  c.exec("k");
+  assert.match(c.text(), /ChildSP from PRCB\.RspBase/);
+  // RspBase from the real dump: PRCB+0x28
+  const prcbHex = raw.kpcr.prcbHex;
+  const rspBase = BigInt("0x" + prcbHex.slice(0x28 * 2, 0x28 * 2 + 16));
+  assert.match(c.text(), /0xffff890a9a3c7650/);
+});
+
+test("!dh parses ntoskrnl PE headers from guest memory", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec("!dh ntoskrnl.exe");
+  const t = c.text();
+  assert.match(t, /PE signature OK/);
+  assert.match(t, /machine .* \(x64\)/);
+  assert.match(t, /section table/);
+  assert.ok(t.includes(".text"));
+});
+
+test("s finds ascii and hex patterns in mapped memory", async () => {
+  const { kernel } = await booted();
+  const probeBase = 0x30000000n;
+  const c = capture(kernel);
+  // probe content was written to its pages during scenario boot
+  c.exec(`s -a ${probeBase + 0xa00n} 0x200 "FLAG{kfprobe}"`);
+  assert.match(c.text(), /Found /);
+  const c2 = capture(kernel);
+  c2.exec(`s -a ${kernel.loadedModules.find((m) => m.name === "kfprobe.sys").base} 0x100 "NOT_PRESENT_ANYWHERE"`);
+  assert.match(c2.text(), /0 matches/);
+});
+
+test("!process <threadAddr> routes to !thread hint", async () => {
+  const raw = JSON.parse(await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
+  const scenario = getScenario("boot-default");
+  const { kernel } = await scenario.boot({
+    makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
+  });
+  const c = capture(kernel);
+  c.exec(`!process ${raw.kpcr.currentThread}`);
+  assert.match(c.text(), /is an _ETHREAD — use !thread/);
+});

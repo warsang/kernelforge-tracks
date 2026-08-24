@@ -122,6 +122,22 @@ export class SparseMemory {
     return this.pages.has((addr & ~PAGE_MASK).toString(16));
   }
 
+  /**
+   * True when every byte in [addr, addr+len) is backed by a materialized
+   * page. Debugger/API layer uses this to turn silent-zero reads into
+   * explicit memory faults.
+   */
+  canRead(addr, len = 1) {
+    let cur = BigInt(addr);
+    const end = cur + BigInt(len);
+    while (cur < end) {
+      const pageKey = (cur & ~PAGE_MASK).toString(16);
+      if (!this.pages.has(pageKey)) return false;
+      cur = (cur & ~PAGE_MASK) + BigInt(PAGE_SIZE);
+    }
+    return true;
+  }
+
   /** Serialize only materialized pages (for snapshots / state blobs). */
   dump() {
     const out = [];
