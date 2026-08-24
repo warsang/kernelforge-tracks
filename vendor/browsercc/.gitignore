@@ -1,3 +1,5 @@
 dist/*.wasm
 dist/sysroot.tar
 llvm-project/
+!dist/clang.js
+!dist/lld.js
