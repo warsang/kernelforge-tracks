@@ -5,7 +5,7 @@ import {
   emptyProgress, resolveBackend,
 } from "@kernelforge/lab-runtime";
 import { loadProgress, saveProgress } from "@kernelforge/lab-runtime/storage.browser";
-import { getScenario, tryLoadDumpWorld } from "./scenarios.js";
+import { getScenario, tryLoadDumpWorld, tryLoadCarvedState } from "./scenarios.js";
 import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
 import { compileDriverSource, warmupCompiler } from "@kernelforge/compiler-worker/index.browser.mjs";
 import { loadTables } from "./tables.js";
@@ -171,14 +171,21 @@ function renderLesson(lesson) {
           const scenario = getScenario(lab.scenario);
           const factory = await resolveBackend(backendSel.value);
           const dumpWorld = await tryLoadDumpWorld();
+          const carvedState = await tryLoadCarvedState();
           const session = await scenario.boot({
             makeBackend: (mem) => factory(mem),
             loadTables: () => loadTables(),
             dumpWorld,
+            carvedState,
           });
           dbg.innerHTML = "";
           currentKernel = session.kernel;
           currentDebugger = createDebugger(session.kernel, dbg);
+          if (session.dumpPagesLoaded > 0) {
+            currentDebugger.write(
+              `CARVED-DUMP MODE: ${session.dumpPagesLoaded} genuine pages ` +
+              `(ntoskrnl/CI/cng) loaded at true VAs from a public kernel dump.`);
+          }
           if (dumpWorld) {
             currentDebugger.write(
               `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +

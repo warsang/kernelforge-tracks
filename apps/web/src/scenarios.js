@@ -9,6 +9,7 @@
 import { SparseMemory } from "@kernelforge/ntsim/src/memory.mjs";
 import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
+import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 
 /** Dev flag planted by boot-default; index.html overrides via process.env. */
 export const PROBE_FLAG = "FLAG{kfprobe}";
@@ -18,13 +19,23 @@ export const PROBE_FLAG = "FLAG{kfprobe}";
  * @param {(mem: object) => Promise<object>|object} io.makeBackend
  * @param {() => Promise<object>} io.loadTables StructTables provider
  */
-async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
+async function bootDefault({ makeBackend, loadTables, dumpWorld = null, carvedState = null }) {
   const mem = new SparseMemory();
   const cpu = await makeBackend(mem);
   const tables = await loadTables();
 
   const kernel = new NtKernel({ cpu, tables });
   kernel.bootstrap();
+
+  // Genuine dump pages first (ntoskrnl/CI/cng code+data at true VAs) — the
+  // process/KPCR overlay below then patches live structures on top.
+  let dumpPagesLoaded = 0;
+  if (carvedState) {
+    const info = loadDumpState(mem, carvedState);
+    dumpPagesLoaded = info.pagesLoaded;
+    kernel.dumpSource = "carved";
+    kernel.carvedModules = info.modules;
+  }
 
   if (dumpWorld) populateFromDump(kernel, tables, dumpWorld);
   if (!dumpWorld) {
@@ -127,7 +138,7 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null }) {
     kernel.currentThread = ethread;
   }
 
-  return { kernel, kind: "boot-default" };
+  return { kernel, kind: "boot-default", dumpPagesLoaded };
 }
 
 /** Try to load a real-dump snapshot; returns parsed JSON or null. */
@@ -137,6 +148,23 @@ export async function tryLoadDumpWorld(fetchImpl = fetch) {
     if (!res.ok) return null;
     const j = await res.json();
     if (!j?.processes?.length || !j?.modules?.length) return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Try to load a CARVED dump state (carve-dump.mjs output: VA-keyed genuine
+ * pages + module list). Returns parsed state or null when absent — labs then
+ * fall back to the static JSON world.
+ */
+export async function tryLoadCarvedState(fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl("/dumps/ntsim-state.json");
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (!Array.isArray(j?.pages) || !j.pages.length) return null;
     return j;
   } catch {
     return null;
@@ -208,9 +236,13 @@ function populateFromDump(kernel, tables, world) {
     }
     kernel.processesByName.set(p.name, p.eproc);
   });
-  // real PE headers at their DllBases — enables !dh parsing
+  // real PE headers at their DllBases — enables !dh parsing. Skipped per
+  // module when the carve supplied full pages (header page included).
+  const carvedBases = new Set(
+    (kernel.carvedModules ?? []).map((m) => m.base.toString(16)));
   for (const m of world.modules) {
     if (!m.headerHex || !m.base) continue;
+    if (carvedBases.has(BigInt(m.base).toString(16))) continue;
     const bytes = new Uint8Array(m.headerHex.match(/.{2}/g).map((x) => parseInt(x, 16)));
     mem.write(BigInt(m.base), bytes);
   }
