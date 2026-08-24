@@ -8,11 +8,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @kernelforge/web",
+    "dev": "npm run bridge & npm run web",
     "build": "npm run build --workspace @kernelforge/web",
     "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
     "typecheck": "tsc --build",
-    "assets": "npm run build --workspace @kernelforge/ntsim-assets"
+    "assets": "npm run build --workspace @kernelforge/ntsim-assets",
+    "bridge": "node apps/web/compile-bridge.mjs",
+    "web": "npm run dev --workspace @kernelforge/web"
   },
   "devDependencies": {
     "typescript": "^5.5.4"

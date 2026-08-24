@@ -16,10 +16,11 @@ function getBrowserCompiler() {
   return browserCompiler;
 }
 
-/** Kick off WASM toolchain preload; never throws. */
+/** Kick off WASM toolchain preload; never throws, no-op outside browsers. */
 export function warmupCompiler() {
   try {
-    getBrowserCompiler().warmup().catch(() => { wasmBroken = true; });
+    if (!BrowserCompiler.supported) return;
+    getBrowserCompiler().warmup().then((ok) => { if (!ok) wasmBroken = true; });
   } catch {
     wasmBroken = true;
   }
