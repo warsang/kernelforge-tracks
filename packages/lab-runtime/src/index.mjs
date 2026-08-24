@@ -91,3 +91,25 @@ export function submitFlagForProgress(progress, lesson, flagId, correct) {
   }
   return { progress: next, events };
 }
+
+// ---------------------------------------------------------------------------
+// Storage — browser (IndexedDB) when available, in-memory fallback elsewhere.
+// ---------------------------------------------------------------------------
+
+let memoryStore = null;
+
+export async function loadProgress() {
+  if (typeof indexedDB !== "undefined") {
+    const { loadProgress: load } = await import("./storage.browser.mjs");
+    return load();
+  }
+  return memoryStore;
+}
+
+export async function saveProgress(p) {
+  if (typeof indexedDB !== "undefined") {
+    const { saveProgress: save } = await import("./storage.browser.mjs");
+    return save(p);
+  }
+  memoryStore = p;
+}

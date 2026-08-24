@@ -7,6 +7,7 @@ import { NtKernel, mapPe } from "@kernelforge/ntsim";
 import { KdEngine } from "@kernelforge/windbg-web/engine";
 import { linkDriver } from "@kernelforge/compiler-worker/linkdriver.mjs";
 import { catalog } from "@kernelforge/course-content";
+import { checkFlag, emptyProgress, submitFlagForProgress, loadProgress, saveProgress } from "@kernelforge/lab-runtime";
 
 // ---------------------------------------------------------------- state
 
@@ -151,6 +152,42 @@ $("btn-compile").addEventListener("click", async () => {
   } catch (e) {
     status.textContent = e.message;
     status.className = "err";
+  }
+});
+
+// ---------------------------------------------------------------- flags
+
+let progress = emptyProgress();
+try { progress = (await loadProgress()) ?? progress; } catch { /* first run */ }
+$("points").textContent = `${progress.points} pts`;
+
+$("btn-flag").addEventListener("click", async () => {
+  const submission = $("flag-in").value;
+  const statusEl = $("flag-status");
+
+  let solved = false;
+  outer: for (const mod of catalog.modules) {
+    for (const lesson of mod.lessons) {
+      for (const lab of lesson.labs) {
+        for (const def of lab.flags) {
+          if (progress.solvedFlags[def.id]) continue;
+          if (await checkFlag(submission, def)) {
+            const res = submitFlagForProgress(progress, lesson, def.id, true);
+            progress = res.progress;
+            await saveProgress(progress);
+            $("points").textContent = `${progress.points} pts`;
+            statusEl.textContent = `✓ ${def.id} solved (+${def.points})`;
+            statusEl.className = "ok";
+            solved = true;
+            break outer;
+          }
+        }
+      }
+    }
+  }
+  if (!solved) {
+    statusEl.textContent = "incorrect";
+    statusEl.className = "err";
   }
 });
 

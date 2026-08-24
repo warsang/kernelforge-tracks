@@ -65,9 +65,16 @@ button, select {
 }
 button:hover { border-color: var(--accent); }
 #lab-log {
-  background: var(--panel); min-height: 60vh; max-height: 75vh; overflow: auto;
+  background: var(--panel); min-height: 50vh; max-height: 65vh; overflow: auto;
   padding: 12px; border-radius: 4px; white-space: pre-wrap; font-size: 13px;
 }
+.flag-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+#flag-in {
+  flex: 0 1 320px; background: var(--panel); border: 1px solid var(--border);
+  color: var(--warn); font-family: inherit; padding: 6px 10px; border-radius: 3px; outline: none;
+}
+#flag-status.ok { color: var(--accent); }
+#flag-status.err { color: var(--err); }
 
 /* windbg */
 .kd-wrap {

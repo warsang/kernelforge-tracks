@@ -35,5 +35,27 @@ await page.waitForTimeout(4000);
 const status = await page.locator("#compile-status").innerText();
 console.log("compile+load status:", status);
 
+// 5. flag submission flow (lab tab)
+await page.click('button[data-tab="lab"]');
+if (!(await page.locator("#kd-in").isVisible().catch(() => false))) {
+  // boot if needed via lab button
+  await page.click("#btn-boot");
+  await page.waitForTimeout(1500);
+}
+// l1f2: PID of kfsample is not the target; the flag is kftarget's... actually
+// m1.l1.f2 = FLAG{312}? No — 312 is kfsample. The intended answer per prompt is
+// the pid of "kfsample" (312). Submit it.
+await page.fill("#flag-in", "FLAG{312}");
+await page.click("#btn-flag");
+await page.waitForTimeout(400);
+const flagStatus = await page.locator("#flag-status").innerText();
+console.log("flag submit:", flagStatus);
+const points = await page.locator("#points").innerText();
+console.log("points:", points);
+// persistence: reload and confirm points survived
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(800);
+console.log("points after reload:", await page.locator("#points").innerText());
+
 console.log(errors.length ? `ERRORS:\n${errors.join("\n")}` : "no page errors");
 await browser.close();
