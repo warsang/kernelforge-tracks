@@ -433,7 +433,12 @@ export class JsInterpreter {
       }
       if (low === 4 || low === 5) {
         const a = this.readReg(0, size);
-        const b = size === 1 ? BigInt(this.fetch8()) : this.fetch(4);
+        // imm8 for the byte forms; imm16/imm32 sign-extended to the operand
+        // size in 64-bit mode (48 0d id = or rax, imm32 SIGN-extended)
+        let b;
+        if (size === 1) b = BigInt(this.fetch8());
+        else if (size === 2) b = sx(this.fetch(2), 16);
+        else b = sx(this.fetch(4), 32);
         const r = this.alu(name, a, b, size);
         if (name !== "cmp") this.writeReg(0, size, r);
         return;

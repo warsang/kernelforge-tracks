@@ -177,3 +177,119 @@ test("hybrid: pure-integer programs never leave the JS engine", async () => {
   const h = await runOn("hybrid", CASES["alu + flag capture"]);
   void h;
 });
+
+// ---------------------------------------------------------------------------
+// Kernel-VA battery: true canonical Windows kernel addresses (> bit 63).
+// The UC_TLB_VIRTUAL switch makes QEMU map guest VAs 1:1 instead of
+// truncating through 52-bit physical space, so every engine — and the hybrid
+// handoff mid-program — must agree here too.
+// ---------------------------------------------------------------------------
+
+const KCODE = 0xfffff80300001000n;
+const KSTACK = 0xfffff8050007f000n;
+
+/** runOn() twin for kernel-VA layouts. */
+async function runOnKernelVa(engineKind, bytes) {
+  const mem = new SparseMemory();
+  mem.write(KCODE, new Uint8Array(bytes));
+  let cpu;
+  if (engineKind === "js") cpu = new JsInterpreter(mem);
+  else if (engineKind === "unicorn") cpu = await createUnicornBackend(mem);
+  else if (engineKind === "trunc") cpu = await createUnicornBackend(mem, { execAliasTruncate: true });
+  else cpu = await HybridCpuBackend.create(mem);
+
+  const program = [...bytes.filter((b) => b !== 0xf4), 0xc3];
+  mem.write(KCODE, new Uint8Array(program));
+  cpu.regs.rsp = KSTACK;
+  const r = cpu.callFunction(KCODE, []);
+  assert.equal(r.status, "ok",
+    `[kv:${engineKind}] call failed: ${r.status} ${r.error?.message ?? ""} rip=0x${cpu.rip.toString(16)}`);
+  const regs = {};
+  for (const r2 of ["rax","rcx","rdx","rbx","r8","r9","r10","r11"]) {
+    regs[r2] = cpu.regs[r2];
+  }
+  return { regs, mem };
+}
+
+const KV_CASES = {
+  "kernelVA: mov/or imm + memory roundtrip": [
+    0x48, 0xb8, 0x44, 0x44, 0x33, 0x33, 0x22, 0x22, 0x11, 0x11, // movabs rax, ...
+    0x48, 0x89, 0x05, 0x00, 0x02, 0x00, 0x00,                   // mov [rip+0x200], rax
+    0x48, 0x8b, 0x0d, 0xf9, 0x01, 0x00, 0x00,                   // mov rcx, [rip+0x1f9]
+    0x48, 0x0d, 0x00, 0x00, 0xaa, 0xaa,                         // or rax, 0xaaaa0000
+    0xf4,
+  ],
+  "kernelVA: lea sib + stack push/pop": [
+    0x4a, 0x8d, 0x04, 0x09,                     // lea rax, [rcx+r9]
+    0x57,                                       // push rdi
+    0x48, 0xc7, 0xc7, 0x5a, 0x5a, 0x5a, 0x5a,   // mov rdi, 0x5a5a5a5a
+    0x5f,                                       // pop rdi
+    0xf4,
+  ],
+};
+
+test("parity: identical state at true Windows kernel VAs", async () => {
+  for (const [name, bytes] of Object.entries(KV_CASES)) {
+    const js = await runOnKernelVa("js", bytes);
+    const uc = await runOnKernelVa("unicorn", bytes);
+    assert.deepEqual(js.regs, uc.regs, `[${name}] register divergence`);
+    for (const pageKey of js.mem.pages.keys()) {
+      // Below-RSP stack scratch holds each backend's ABI sentinel frame
+      // (different marker conventions by design) — same exclusion as above.
+      if (pageKey.endsWith("07e000") || pageKey.endsWith("07f000")) continue;
+      assert.deepEqual(
+        js.mem.pages.get(pageKey),
+        uc.mem.pages.get(pageKey),
+        `[${name}] page ${pageKey} diverged`,
+      );
+    }
+  }
+});
+
+test("parity: execAliasTruncate fallback matches default engine at kernel VAs", async () => {
+  for (const [name, bytes] of Object.entries(KV_CASES)) {
+    const js = await runOnKernelVa("js", bytes);
+    const trunc = await runOnKernelVa("trunc", bytes);
+    assert.deepEqual(js.regs, trunc.regs, `[${name}] truncation-alias divergence`);
+  }
+});
+
+test("hybrid: SSE handoff mid-program at kernel VAs", async () => {
+  const bytes = [
+    0x48, 0xc7, 0xc3, 0x07, 0, 0, 0,     // mov rbx, 7
+    0x0f, 0x57, 0xc0,                    // xorps xmm0, xmm0 (JS refuses → unicorn)
+    0x48, 0xc7, 0xc0, 0x39, 0x05, 0, 0,  // mov rax, 1337
+    0xf4,
+  ];
+  const h = await runOnKernelVa("hybrid", bytes);
+  assert.equal(h.regs.rax, 1337n);
+  assert.equal(h.regs.rbx, 7n);
+});
+
+test("hybrid: API-thunk interception at a kernel VA (architectural RIP in hooks)", async () => {
+  const THUNK = 0xfffff806dead1000n;
+  const mem = new SparseMemory();
+  const thunkBytes = [0x48, 0xc7, 0xc0, 0x2a, 0, 0, 0, 0xc3]; // mov eax,42 ; ret
+  mem.write(THUNK, new Uint8Array(thunkBytes));
+
+  const cpu = await HybridCpuBackend.create(mem);
+  let seenRip = null;
+  // observe-only: prove range-limited hooks fire at kernel VAs with the
+  // architectural (un-truncated) guest address
+  cpu.addCodeHook((addr) => { seenRip = addr; return null; }, THUNK, THUNK);
+
+  const caller = [
+    0x48, 0xb8, ...(() => { const o = []; let x = THUNK; for (let i = 0; i < 8; i++) { o.push(Number(x & 0xffn)); x >>= 8n; } return o; })(),
+    0xff, 0xd0,       // call rax
+    0x48, 0xff, 0xc8, // dec rax
+    0xf4,
+  ];
+  mem.write(KCODE, new Uint8Array(caller));
+  cpu.regs.rsp = KSTACK;
+  cpu.rip = KCODE;
+
+  const reason = cpu.run(1_000_000);
+  assert.ok(["halted", "ok"].includes(reason), `run -> ${reason}`);
+  assert.equal(seenRip, THUNK, "hook did not observe architectural thunk RIP");
+  assert.equal(cpu.regs.rax, 41n); // dec after the "API" returned 42
+});

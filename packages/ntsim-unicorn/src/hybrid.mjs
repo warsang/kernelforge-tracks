@@ -38,8 +38,12 @@ export class HybridCpuBackend {
     this.handoffs = [];
   }
 
-  static async create(mem) {
-    return new HybridCpuBackend(mem, new JsInterpreter(mem), await createUnicornBackend(mem));
+  static async create(mem, opts = {}) {
+    return new HybridCpuBackend(
+      mem,
+      new JsInterpreter(mem),
+      await createUnicornBackend(mem, opts),
+    );
   }
 
   // ------------------------------------------------------------- identity
