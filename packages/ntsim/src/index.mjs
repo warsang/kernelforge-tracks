@@ -6,6 +6,7 @@ export {
   PageTableSpace, splitVa, joinVa, decodePte, pteBitsString,
   selfMapVas, PTE_BIT,
 } from "./paging.mjs";
+export { ServiceTable } from "./ssdt.mjs";
 export { mapPe, parsePe, rvaToOffset, PeError } from "./pe.mjs";
 export { PeBuilder } from "./pebuilder.mjs";
 export { loadDumpState } from "./dumpstate.mjs";
