@@ -15,6 +15,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { includeDir as wdkIncludeDir } from "@kernelforge/compiler-worker/wdk-headers.mjs";
 
 const execFileP = promisify(execFile);
 const PORT = process.env.PORT ?? 8087;
@@ -39,6 +40,7 @@ async function handleCompile(req, res) {
       await execFileP("clang", [
         "--target=x86_64-pc-windows-msvc",
         "-O1", "-ffreestanding", "-fno-stack-protector",
+        `-isystem`, wdkIncludeDir(),
         "-c", cFile, "-o", oFile,
       ], { timeout: 15000 });
     } catch (e) {
