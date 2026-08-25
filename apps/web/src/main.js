@@ -1,4 +1,5 @@
 import "./styles.css";
+import { marked } from "marked";
 import { catalog } from "@kernelforge/course-content";
 import {
   checkFlag, submitFlagForProgress, isLessonUnlocked,
@@ -142,12 +143,17 @@ function renderLesson(lesson) {
   const main = document.getElementById("main");
   disposeConsoles(); // terminals from the previous lesson render
   main.innerHTML = "";
-  main.append(
-    h("div", { class: "card" },
-      h("h1", null, lesson.title),
-      h("p", { class: "dim" }, "(lesson MDX bodies land with the content pipeline — labs are fully playable)"),
-    ),
-  );
+
+  // Lesson body: markdown (shipped as content modules in course-content).
+  const card = h("div", { class: "card" }, h("h1", null, lesson.title));
+  const body = h("div", { class: "lesson-body md" });
+  if (typeof lesson.body === "string" && lesson.body.length) {
+    body.innerHTML = marked.parse(lesson.body);
+  } else {
+    body.append(h("p", { class: "dim" }, "(no lesson text)"));
+  }
+  card.append(body);
+  main.append(card);
 
   for (const lab of lesson.labs) {
     // xterm.js-backed kd> console (div fallback in headless DOMs); input is
@@ -284,7 +290,7 @@ function renderLesson(lesson) {
     // ---- flag submission
     for (const f of lab.flags) {
       const solved = !!progress.solvedFlags[f.id];
-      const inp = h("input", { placeholder: solved ? "solved ✔" : "FLAG{…}", disabled: solved ? "" : undefined });
+      const inp = h("input", { placeholder: solved ? "solved ✔" : "your answer…", disabled: solved ? "" : undefined });
       const btn = h("button", {
         disabled: solved ? "" : undefined,
         onclick: async () => {

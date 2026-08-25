@@ -81,11 +81,24 @@ export function installWinApi(kernel) {
 
   // ------------------------------------------------------- memory & pool
 
+  const poolTagStr = (tag) => String.fromCharCode(
+    Number(tag & 0xffn), Number((tag >> 8n) & 0xffn),
+    Number((tag >> 16n) & 0xffn), Number((tag >> 24n) & 0xffn));
+
   k.define("ExAllocatePool", (poolType, size) => k.alloc(size));
-  k.define("ExAllocatePoolWithTag", (poolType, size, tag) => k.alloc(size)); // dup-safe
+  k.define("ExAllocatePoolWithTag", (poolType, size, tag) => {
+    // PagedPool (type 1) above APC_LEVEL would bugcheck a real machine.
+    if ((Number(poolType) & 1) === 1 && kernel.currentIrql > 1) {
+      kernel.dbgLog.push(
+        `[pool] ExAllocatePoolWithTag(PagedPool) at IRQL ${kernel.currentIrql} ` +
+        `> APC_LEVEL — real Windows bugchecks here (returning NULL)`);
+      return 0n;
+    }
+    return kernel.allocPool(Number(size), tag ? poolTagStr(tag) : "ntsm");
+  });
   k.define("ExAllocatePool2", (flags, size, tag) => (size > 0x7fffffffn ? 0n : k.alloc(size)));
   k.define("ExFreePool", () => undefined);
-  k.define("ExFreePoolWithTag", () => undefined);
+  k.define("ExFreePoolWithTag", (addr, tag) => kernel.freePool(addr));
 
   k.define("RtlCopyMemory", (dst, src, len) => {
     mem.write(dst, mem.read(src, Number(len)));
@@ -283,35 +296,44 @@ export function installWinApi(kernel) {
   k.define("KeInitializeSpinLock", (sl) => { mem.w32(sl, 0); return undefined; });
   k.define("KeAcquireSpinLock", (sl, oldIrql) => {
     mem.w8(oldIrql, 2); // DISPATCH_LEVEL
+    kernel.currentIrql = Math.max(kernel.currentIrql, 2);
     return undefined;
   });
   k.define("KeReleaseSpinLock", (sl, newIrql) => {
-    kernel.currentIrql = Number(newIrql) & 0xff;
+    kernel.lowerIrql(Number(newIrql) & 0xff);
     return undefined;
   });
-  k.define("KfRaiseIrql", (newIrql) => {
-    const old = kernel.currentIrql ?? 2;
-    kernel.currentIrql = Number(newIrql) & 0xff;
-    return old;
-  });
+  k.define("KfRaiseIrql", (newIrql) => kernel.raiseIrql(Number(newIrql) & 0xff));
   k.define("KeRaiseIrql", (newIrql, oldOut) => {
-    mem.w8(oldOut, kernel.currentIrql ?? 2);
-    kernel.currentIrql = Number(newIrql) & 0xff;
+    const old = kernel.raiseIrql(Number(newIrql) & 0xff);
+    mem.w8(oldOut, old);
     return undefined;
   });
-  k.define("KeLowerIrql", (newIrql) => { kernel.currentIrql = Number(newIrql) & 0xff; });
+  k.define("KeLowerIrql", (newIrql) => {
+    kernel.lowerIrql(Number(newIrql) & 0xff);
+    return undefined;
+  });
+  k.define("KeGetCurrentIrql", () => BigInt(kernel.currentIrql ?? 2));
   k.define("KeInitializeDpc", (dpc, deferred, ctx) => {
     mem.w64(dpc, 0x4b444350n); // 'DPCk' marker
     mem.w64(dpc + 8n, ptrSizeMask(deferred));
     mem.w64(dpc + 16n, ptrSizeMask(ctx));
     return undefined;
   });
-  k.define("KeInsertQueueDpc", (dpc) => {
-    kernel.pendingDpcs = kernel.pendingDpcs ?? [];
-    kernel.pendingDpcs.push({
-      routine: mem.u64(dpc + 8n),
-      context: mem.u64(dpc + 16n),
-    });
+  k.define("KeInsertQueueDpc", (dpc, sysArg1, sysArg2) => {
+    void sysArg1; void sysArg2;
+    // already-queued DPCs are not requeued (returns FALSE in real Windows)
+    return kernel.queueDpc(
+      ptrSizeMask(dpc),
+      mem.u64(dpc + 8n),
+      mem.u64(dpc + 16n),
+    ) ? 1n : 0n;
+  });
+  k.define("KeRemoveQueueDpc", (dpc) => {
+    const va = ptrSizeMask(dpc);
+    const idx = kernel.pendingDpcs.findIndex((d) => d.dpcVa === va && !d.drained);
+    if (idx < 0) return 0n;
+    kernel.pendingDpcs[idx].drained = true;
     return 1n;
   });
   k.define("KeInitializeTimer", () => undefined);

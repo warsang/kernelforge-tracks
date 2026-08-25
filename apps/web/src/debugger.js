@@ -12,7 +12,29 @@
  * called out explicitly.
  */
 
+import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
+
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
+
+/** Common NTSTATUS codes for symbolic display in lab output. */
+const STATUS_NAMES = {
+  0x00000000n: "STATUS_SUCCESS",
+  0xc0000001n: "STATUS_NOT_IMPLEMENTED",
+  0xc0000005n: "STATUS_ACCESS_VIOLATION",
+  0xc000000bn: "STATUS_INVALID_PARAMETER",
+  0xc000000dn: "STATUS_INVALID_PARAMETER",
+  0xc0000022n: "STATUS_ACCESS_DENIED",
+  0xc0000034n: "STATUS_OBJECT_NAME_NOT_FOUND",
+  0xc00000bbn: "STATUS_NOT_SUPPORTED",
+};
+
+function statusName(v) {
+  return STATUS_NAMES[BigInt.asUintN(32, BigInt(v))] ?? `0x${BigInt.asUintN(32, BigInt(v)).toString(16).padStart(8, "0")}`;
+}
+
+function hexBytes(bytes) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+}
 
 function fmtAddr(v) {
   return "0x" + v.toString(16).padStart(16, "0");
@@ -232,6 +254,12 @@ export function createCommands(kernel) {
       w("  dt <Type> [addr]          walk any loaded type");
       w("  eb <a> <b1> [b2...]       write bytes into mapped memory");
       w("  !mmstate / !mmrun         manual-map loader state / run (manual-map lab)");
+      w("  !irql [n]                 current IRQL (name) / force a level (lab ext)");
+      w("  !dpcs / !dpcdrain         DPC queue contents / drain at <= DISPATCH");
+      w("  !hookscan [export]        diff live vs pristine export prologues");
+      w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
+      w("  !poolfind <tag>           list tagged pool blocks + guard health");
+      w("  !poolverify               sweep all allocation guards");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
@@ -647,6 +675,166 @@ export function createCommands(kernel) {
       mem.write(addr, vals);
       w(`wrote ${vals.length} byte(s) at ${fmtAddr(addr)}: ` +
         vals.map((v) => v.toString(16).padStart(2, "0")).join(" "), "dim");
+    },
+
+    "!irql"(args, w) {
+      if (!args[0]) {
+        const lvl = kernel.currentIrql ?? 0;
+        w(`IRQL: ${lvl} (${irqlName(lvl)})`, "hdr");
+        if (lvl > 2) {
+          w("  note: threads should never SIT here — drivers raise transiently", "warn");
+        }
+        w("  lab extension: '!irql <n>' forces a level (0..31)", "dim");
+        return;
+      }
+      const n = Number(args[0]);
+      if (!Number.isInteger(n) || n < 0 || n > 31) {
+        return w("!irql: level must be an integer 0..31", "err");
+      }
+      const old = kernel.currentIrql ?? 0;
+      kernel.currentIrql = n; // debugger force, not driver semantics
+      kernel.dbgLog.push(`nt: (lab) IRQL forced ${old} -> ${n}`);
+      w(`IRQL: ${old} -> ${n} (${irqlName(n)})`);
+    },
+
+    "!dpcs"(args, w) {
+      const q = kernel.pendingDpcs ?? [];
+      if (!q.length) return w("!dpcs: DPC queue is empty", "dim");
+      w("DPC queue (per-CPU, drained at <= DISPATCH_LEVEL)", "hdr");
+      w("  DPC               DeferredRoutine     Status", "hdr");
+      for (const d of q) {
+        const target = d.routine ? `${fmtAddr(d.routine)}${sym(d.routine) ? ` (${sym(d.routine)})` : ""}` : "NULL";
+        w(`  ${fmtAddr(d.dpcVa)}  ${target}  ${d.drained ? "drained" : "QUEUED"}`,
+          d.drained ? "dim" : "");
+      }
+      const stuck = q.filter((d) => !d.drained).length;
+      if (stuck && (kernel.currentIrql ?? 0) > 2) {
+        w(`  ${stuck} DPC(s) stranded: CPU pinned above DISPATCH_LEVEL`, "warn");
+      }
+    },
+
+    "!dpcdrain"(args, w) {
+      const queued = (kernel.pendingDpcs ?? []).filter((d) => !d.drained);
+      if (!queued.length) return w("!dpcdrain: nothing queued", "dim");
+      if ((kernel.currentIrql ?? 0) > 2) {
+        w(`!dpcdrain: cannot request a DPC interrupt at IRQL ${kernel.currentIrql}`, "err");
+        w("hint: lower the level first ('!irql 2')", "dim");
+        return;
+      }
+      const fired = kernel.drainDpcs();
+      w(`drained ${fired.length} DPC(s):`, "hdr");
+      for (const d of fired) w(`  ${fmtAddr(d.dpcVa)} -> ${sym(d.routine) ?? fmtAddr(d.routine)}`);
+      const tail = (kernel.dbgLog ?? []).slice(-3);
+      if (tail.length) { w("--- recent DbgPrint ---", "hdr"); for (const l of tail) w("  " + l); }
+    },
+
+    "!hookscan"(args, w) {
+      // optional filter: tolerate nt!-prefixed export names
+      const want = args[0] ? args[0].replace(/^nt!|ntoskrnl\.exe!/i, "") : null;
+      const diffs = [];
+      for (const [name, thunk] of kernel.apiThunks ?? []) {
+        if (want && name.toLowerCase() !== want.toLowerCase()) continue;
+        const pristine = kernel.pristineThunks.get(name);
+        if (!pristine) continue;
+        const live = mem.read(thunk, pristine.length);
+        if (live.some((b, i) => b !== pristine[i])) diffs.push({ name, thunk, live, pristine });
+      }
+      if (!diffs.length) {
+        w(want ? `${want}: prologue matches pristine bytes` : "no detoured exports found", "hdr");
+        return;
+      }
+      w("DETECTED INLINE HOOKS:", "hdr");
+      for (const d of diffs) {
+        const hook = (kernel.inlineHooks ?? []).find((x) => x.api === d.name);
+        const target = hook ? `${fmtAddr(hook.target)}${sym(hook.target) ? ` (${sym(hook.target)})` : ""}` : "<unknown>";
+        w(`  ${d.name}`, "hdr");
+        w(`    thunk   : ${fmtAddr(d.thunk)}`);
+        w(`    live    : ${hexBytes(d.live.slice(0, 5))}`);
+        w(`    pristine: ${hexBytes(d.pristine.slice(0, 5))}`);
+        w(`    detour  : -> ${target}  [${hook?.module ?? "?"}]`, "warn");
+        w(`    repair  : eb ${fmtAddr(d.thunk)} ${hexBytes(d.pristine.slice(0, 1))}`, "dim");
+      }
+    },
+
+    "!hooktest"(args, w) {
+      if (!args[0]) {
+        return w("usage: !hooktest <Export> [args...]   e.g. !hooktest PsLookupProcessByProcessId 666", "err");
+      }
+      const name = args[0].replace(/^nt!|ntoskrnl\.exe!/i, "");
+      const impl = kernel.apiImpls.get(name);
+      const thunk = kernel.apiThunks.get(name);
+      if (!impl || !thunk) return w(`!hooktest: unknown export "${name}"`, "err");
+
+      // lookup-style exports: last arg is a PID; provide an out-pointer scratch
+      const isLookup = /(ByProcessId|ByThreadId)$/i.test(name);
+      let callArgs = args.slice(1);
+      let scratch = null;
+      if (isLookup) {
+        scratch = kernel.allocPool(8);
+        callArgs = [...callArgs, scratch];
+      }
+      try {
+        const vals = callArgs.map((t) => /^\d+$/.test(t) ? BigInt(t)
+          : t.startsWith("0x") ? BigInt(t) : t);
+        if (vals.some((v) => typeof v === "string")) {
+          return w("!hooktest: numeric arguments only in this model", "err");
+        }
+        const ret = impl(...vals);
+        const status = BigInt.asUintN(32, BigInt(ret));
+        const hookNote = kernel.isDetoured(name) ? "  [PROLOGUE DETOURED]" : "";
+        w(`${name}(${callArgs.map((a) => a.toString()).join(", ")}) -> ${statusName(status)}${hookNote}`,
+          status === 0n ? "good" : "");
+        if (isLookup && status === 0n && scratch) {
+          const resolved = mem.u64(scratch);
+          w(`  *out = ${resolved ? fmtAddr(resolved) + (sym(resolved) ? ` (${sym(resolved)})` : "") : "NULL"}`);
+        }
+      } catch (e) {
+        w(`!hooktest: ${e.message}`, "err");
+      }
+    },
+
+    "!poolfind"(args, w) {
+      if (!args[0]) return w("usage: !poolfind <tag>   e.g. !poolfind KfPb", "err");
+      const tag = args[0].toLowerCase();
+      const blocks = (kernel.poolAllocs ?? []).filter((a) => a.tag.toLowerCase() === tag);
+      if (!blocks.length) return w(`!poolfind: no blocks tagged "${args[0]}"`, "dim");
+      w(`pool blocks tagged '${args[0]}':`, "hdr");
+      let corrupted = 0;
+      for (const b of blocks) {
+        let guard = "intact";
+        for (let i = 0; i < 16; i++) {
+          const got = mem.u8(b.addr + BigInt(b.size) + BigInt(i));
+          if (got !== 0xa5) {
+            guard = `CORRUPTED at guard[${i}] (got 0x${got.toString(16)}, expected 0xa5)`;
+            corrupted++;
+            break;
+          }
+        }
+        w(`  ${fmtAddr(b.addr)}  size=0x${b.size.toString(16)}  ${b.freed ? "freed" : "active"}  guard: ${guard}`,
+          guard === "intact" ? "" : "warn");
+      }
+      if (corrupted) {
+        w(`repair: rewrite the smashed guard with 'eb' (expected pattern: ` +
+          `a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5), then !poolverify`, "dim");
+      } else {
+        w("all guards read A5 patterns", "good");
+      }
+    },
+
+    "!poolverify"(args, w) {
+      const bad = kernel.verifyGuards?.() ?? [];
+      if (!bad.length) {
+        w("!poolverify: all allocation guards intact", "good");
+        kernel.onPoolHealed?.();
+        return;
+      }
+      w(`!poolverify: ${bad.length} corrupted allocation(s):`, "err");
+      for (const b of bad) {
+        const got = mem.u8(b.addr + BigInt(b.size));
+        w(`  ${fmtAddr(b.addr)} tag='${b.tag}' size=0x${b.size.toString(16)} ` +
+          `guard[0]=0x${got.toString(16)} (expected 0xa5)`, "warn");
+      }
+      w("hint: !poolfind <tag> shows expected bytes; repair with 'eb'", "dim");
     },
 
     "!mmstate"(args, w) {

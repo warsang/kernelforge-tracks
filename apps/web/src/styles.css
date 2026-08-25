@@ -104,3 +104,27 @@ input.cmd { width: 100%; font-family: var(--mono); margin-top: 6px; }
 .compile-status { margin: 8px 0; }
 .compile-status .err { color: var(--bad); }
 .compile-status .good { color: var(--good); }
+
+/* rendered lesson markdown */
+.lesson-body { font-size: 14px; line-height: 1.65; max-width: 78ch; }
+.lesson-body h2 { margin: 18px 0 8px; font-size: 16px; color: var(--accent); }
+.lesson-body p, .lesson-body li { margin: 6px 0; }
+.lesson-body ul, .lesson-body ol { padding-left: 22px; margin: 8px 0; }
+.lesson-body code {
+  font-family: var(--mono); font-size: 12.5px; background: #010409;
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+}
+.lesson-body pre {
+  background: #010409; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; overflow-x: auto; margin: 10px 0;
+}
+.lesson-body pre code { border: none; padding: 0; background: none; }
+.lesson-body table { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+.lesson-body th, .lesson-body td {
+  border: 1px solid var(--border); padding: 5px 10px; text-align: left;
+}
+.lesson-body th { color: var(--accent); background: var(--panel2); }
+.lesson-body blockquote {
+  margin: 8px 0; padding: 4px 14px; border-left: 3px solid var(--accent);
+  color: var(--dim);
+}
