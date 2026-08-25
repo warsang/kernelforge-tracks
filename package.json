@@ -12,7 +12,8 @@
     "build": "npm run build --workspace @kernelforge/web",
     "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
     "typecheck": "tsc --build",
-    "assets": "npm run build --workspace @kernelforge/ntsim-assets"
+    "assets": "npm run build --workspace @kernelforge/ntsim-assets",
+    "carve": "node packages/ntsim-assets/scripts/carve-dump.mjs"
   },
   "devDependencies": {
     "typescript": "^5.5.4"

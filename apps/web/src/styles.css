@@ -104,3 +104,30 @@ input.cmd { width: 100%; font-family: var(--mono); margin-top: 6px; }
 .compile-status { margin: 8px 0; }
 .compile-status .err { color: var(--bad); }
 .compile-status .good { color: var(--good); }
+
+/* ---------------------------------------------------- analyzer tab */
+.analyzer-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+.analyzer-controls input,
+.analyzer-controls select { max-width: 240px; }
+.analyzer-out .line { padding: 2px 0; }
+.analyzer-out .err { color: #ff6b6b; }
+.analyzer-out .warn { color: #ffd43b; }
+.analyzer-out .ok { color: #69db7c; }
+.analyzer-out .section {
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 10px 0;
+}
+.analyzer-out .section h3 { margin: 4px 0; font-size: 0.95em; }
+.kv { display: flex; gap: 8px; font-size: 0.9em; padding: 1px 0; }
+.kv .k { color: #888; min-width: 160px; }
+.mono { font-family: ui-monospace, monospace; font-size: 0.85em; word-break: break-all; }
+.report { margin-top: 12px; }
+button.tool { width: 100%; text-align: left; margin-bottom: 8px; }

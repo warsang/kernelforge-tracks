@@ -15,8 +15,18 @@ packages/
     cpu.mjs                  deterministic x86-64 interpreter (Win64 ABI)
     structs.mjs              Vergilius-table-driven struct access (no hardcoded offsets)
     pe.mjs / pebuilder.mjs   PE32+ manual mapper + image builder
-    kernel.mjs               process list, pool, API hooks, DbgPrint, DriverEntry
-  ntsim-assets               VergiliusProject scraper -> per-build offset JSON (CC0)
+    devices.mjs              DRIVER_OBJECT/DEVICE_OBJECT/IRP model + scripted IRP engine
+    seh.mjs                  x64 table-SEH: .pdata lookup + __C_specific_handler scopes
+    kernel.mjs               process list, pool, API thunks, tracing, SEH-aware calls,
+                             deferred drains (DPC/work/APC), IRQL violation tracking
+    winapi.mjs + winapi-ext  249 modeled ntoskrnl exports (registry, virtual FS, sections,
+                             interlocked, events, Se/Ob/Mm/Po/Etw/WMI/FsRtl)
+  ntsim-analyzer             run-any-.sys harness: map -> DriverEntry -> IOCTLs -> report
+  ntsim-assets               VergiliusProject scraper -> per-build offset JSON (CC0);
+                             kdmp.mjs (crash-dump parser) + carve-dump.mjs (genuine pages)
+  ntsim-unicorn              Unicorn/QEMU-TCG wasm CPU backend + HybridCpuBackend
+                             (JS interpreter front end, automatic one-way handoff to
+                             QEMU on any instruction the interpreter refuses)
   windbg-web                 kd> engine: dt/!process/lm/r/bp over live ntsim state
   compiler-worker            COFF parser + x64 linker: clang .obj -> runnable .sys
   course-content             module catalog, flag hashes, progression graph
@@ -27,15 +37,47 @@ packages/
 
 ```
 student C source
-  -> clang --target=x86_64-pc-windows-msvc -c        (dev bridge; browsercc WASM later)
+  -> clang --target=x86_64-pc-windows-msvc -c        (wasm in-browser; dev bridge fallback)
   -> COFF .obj                                        (real compiler output)
   -> compiler-worker: linkDriver()                    (sections, relocs, extern resolve)
   -> PE32+ .sys                                       (pebuilder)
   -> ntsim mapPe(): manual-map into emulated kernel   (relocations, IAT -> API thunks)
-  -> JsInterpreter executes DriverEntry               (Win64 ABI)
-  -> DbgPrint captured; inspected via kd> dt/!process
+  -> JsInterpreter / HybridBackend executes DriverEntry (Win64 ABI, table-SEH on fault)
+  -> deferred drains (DPCs / work items / APCs)       (kernel.drainDeferred)
+  -> scripted IRPs: MajorFunction[DEVICE_CONTROL]     (sendIrp/sendIoctl)
+  -> DbgPrint + API trace captured; inspected via kd> dt/!process
   -> flags checked (sha256), progress persisted       (IndexedDB)
 ```
+
+## Driver Analyzer
+
+Upload any x64 `.sys` in the **Driver Analyzer** tab (sidebar → Tools):
+
+1. Manual-mapped; every import resolves — modeled APIs behave faithfully,
+   unknown exports become traced stubs returning STATUS_SUCCESS
+   (`report.load.unmodeledExports` keeps it honest).
+2. `DriverEntry` runs through the SEH path: faults are dispatched via the
+   image's `.pdata` scope tables (__try/__except funclets re-entered as ABI
+   calls); unhandled faults surface as bugcheck reports.
+3. Queued DPCs / work items / APCs drain through the CPU.
+4. Scripted IOCTLs drive `MajorFunction[IRP_MJ_DEVICE_CONTROL]`: craft an
+   ioctl code + input hex, watch the handler run, read back
+   IoStatus/SystemBuffer.
+5. Zw/Nt calls above APC_LEVEL are recorded as IRQL violations.
+
+Node API: `analyzeDriver(bytes, opts)` from `@kernelforge/ntsim-analyzer`.
+
+## Genuine kernel bytes (optional)
+
+```bash
+npm run carve -- <mem.dmp> --out apps/web/public/dumps --build win10-19041
+cp apps/web/public/dumps/ntsim-state-win10-19041.json \
+   apps/web/public/dumps/ntsim-state.json   # deployed asset name
+```
+
+Labs and the analyzer both fetch `/dumps/ntsim-state.json` at boot when
+present: resident ntoskrnl/CI/cng pages land at their true VAs under the
+synthetic overlay. Without it everything runs on synthetic bytes.
 
 ## Quick start
 
@@ -75,7 +117,7 @@ offset in ntsim and the debugger; switching build = swapping the table dir.
 - Phase 5: UEFI bootkit simulator
 - Phase 6: BYOVD/misconfiguration labs (RACEAC-style TOCTOU, mhyprot2 pattern)
 - Infra: browsercc WASM fork (X86+BPF LLVM backends) to move compilation fully client-side;
-  real kernel-dump carve (kdmp-parser) to anchor ntoskrnl pages with genuine bytes
+  deeper API harness breadth (speakeasy-class), IRP/IOCTL-driven malware labs
 
 ## Legal notes
 

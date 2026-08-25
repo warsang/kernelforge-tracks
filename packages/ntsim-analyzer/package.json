@@ -1,0 +1,11 @@
+{
+  "name": "@kernelforge/ntsim-analyzer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run-any-driver analysis harness over ntsim: upload .sys -> map -> DriverEntry -> IOCTLs -> report",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./src/index.mjs": "./src/index.mjs"
+  }
+}

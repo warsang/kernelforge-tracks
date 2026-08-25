@@ -13,6 +13,7 @@
  */
 
 import { M64 } from "./cpu.mjs";
+import { installWinApiExt } from "./winapi-ext.mjs";
 
 const STATUS_SUCCESS = 0x00000000n;
 const STATUS_NOT_IMPLEMENTED = 0xc0000001n;
@@ -92,8 +93,8 @@ export function installWinApi(kernel) {
     return dst;
   });
   k.define("RtlCopyBytes", (...a) => impls.RtlCopyMemory(...a));
-  k.define("memcpy", (...a) => impls.RtlCopyMemory(...a)("RtlCopyMemory"));
-  k.define("memmove", (...a) => impls.RtlCopyMemory(...a)("RtlCopyMemory"));
+  k.define("memcpy", (...a) => impls.RtlCopyMemory(...a));
+  k.define("memmove", (...a) => impls.RtlCopyMemory(...a));
   k.define("RtlMoveMemory", (...a) => impls.RtlCopyMemory(...a)("RtlCopyMemory"));
   k.define("RtlFillMemory", (dst, len, val) => {
     mem.write(dst, new Uint8Array(Number(len)).fill(Number(val) & 0xff));
@@ -307,8 +308,8 @@ export function installWinApi(kernel) {
     return undefined;
   });
   k.define("KeInsertQueueDpc", (dpc) => {
-    kernel.pendingDpcs = kernel.pendingDpcs ?? [];
     kernel.pendingDpcs.push({
+      dpc: ptrSizeMask(dpc),
       routine: mem.u64(dpc + 8n),
       context: mem.u64(dpc + 16n),
     });
@@ -431,24 +432,8 @@ export function installWinApi(kernel) {
     return 0n;
   });
 
-  // IRPs: accept-and-complete so DriverEntry flows that touch devices continue
-  k.define("IoAllocateIrp", (stackSize) => k.alloc(0xa8 + Number(stackSize) * 56));
-  k.define("IoFreeIrp", () => undefined);
-  k.define("IoCompleteRequest", (irp, priority) => {
-    void priority;
-    if (irp) mem.w32(irp + 0x30, 0); // IoStatus.Status = STATUS_SUCCESS slot
-    return undefined;
-  });
-  k.define("IofCallDriver", (devObj, irp) => {
-    void devObj;
-    if (irp) mem.w32(irp + 0x30, 0xc0000001); // not implemented by modeled stack
-    return 0xc0000001n;
-  });
-  k.define("IoCreateDevice", (driverObj, extSize, name, type, chars, reserved, devOut) => {
-    const dev = k.alloc(0xd0 + Number(extSize ?? 0));
-    mem.w64(dev + 0x08, ptrSizeMask(driverObj));
-    mem.w64(devOut, dev);
-    return STATUS_SUCCESS;
-  });
-  k.define("IoDeleteDevice", () => undefined);
+  // Everything below (devices/IRPs, registry writes+enum, virtual FS,
+  // sections, interlocked64, events/mutexes/resources, time, extended
+  // strings, Se/Ob/Mm/Po/Etw/WMI/FsRtl coverage) lives in winapi-ext.mjs.
+  installWinApiExt(kernel, { impls, k, usRead, usWrite: k.usWrite });
 }

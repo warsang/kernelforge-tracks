@@ -123,6 +123,7 @@ export class JsInterpreter {
   }
 
   writeReg(idx, size, val) {
+    val = BigInt(val);
     const name = R64[idx];
     const cur = this.regs[name];
     switch (size) {
@@ -164,10 +165,10 @@ export class JsInterpreter {
     if (mod !== 3 && rm === 4) {
       const sib = this.fetch8();
       const scale = 1n << BigInt(sib >> 6);
-      const idx = (sib >> 3) & 7;
-      const base = sib & 7;
+      const idxRaw = (sib >> 3) & 7;
+      let base = (sib & 7) + (this.rexB ? 8 : 0);
       let addr = 0n;
-      if (idx !== 4) addr += this.readReg(idx, 8) * scale;
+      if (idxRaw !== 4) addr += this.readReg(idxRaw + (this.rexX ? 8 : 0), 8) * scale;
       if (base === 5 && mod === 0) {
         addr += this.fetch(4); // disp32, no base
       } else {
@@ -180,7 +181,8 @@ export class JsInterpreter {
         const disp = sx(this.fetch(4), 32);
         rm = { kind: "mem", addr: (this.rip + disp) & M64 };
       } else {
-        rm = { kind: "mem", addr: this.readReg(rm, 8) };
+        // REX.B extends the memory-indirect register too
+        rm = { kind: "mem", addr: this.readReg(this.rexB ? (rm | 8) : rm, 8) };
       }
     }
 
@@ -218,7 +220,7 @@ export class JsInterpreter {
 
   storeMem(addr, size, val) {
     const out = new Uint8Array(size);
-    let b = val;
+    let b = BigInt(val);
     for (let i = 0; i < size; i++) { out[i] = Number(b & 0xffn); b >>= 8n; }
     this.mem.write(addr & M64, out);
   }
@@ -293,6 +295,7 @@ export class JsInterpreter {
     const startRip = this.rip;
     this.steps++;
     this.rexR = false;
+    this.rexX = false;
     this.rexByte = 0;
 
     // prefixes
@@ -307,6 +310,7 @@ export class JsInterpreter {
         rex = p;
         this.rexByte = rex;
         this.rexR = (rex & 4) !== 0;
+        this.rexX = (rex & 2) !== 0;
         if (rex & 8) opsize = 8;
         else if (opsize === 4) opsize = 4;
         continue;
@@ -396,7 +400,7 @@ export class JsInterpreter {
       }
       case p === 0xcc: {
         this.pendingBreak = true;
-        this.ripAfterInt3 = startRip + 1n;
+        this.ripAfterInt3 = (this.opcodeStart ?? this.rip) + 1n;
         return;
       }
       case p === 0xf4: this.halted = true; return;
@@ -444,7 +448,7 @@ export class JsInterpreter {
     if (p === 0x69 || p === 0x6b) {
       const { reg, rm } = this.decodeModrm(opsize);
       const a = this.loadOp(rm, opsize);
-      const b = p === 0x69 ? this.fetch(opsize) : BigInt(BigInt.asIntN(8, Number(this.fetch8())));
+      const b = p === 0x69 ? this.fetch(opsize) : BigInt.asIntN(8, BigInt(this.fetch8()));
       this.writeReg(reg, opsize, a * b);
       return;
     }
@@ -538,11 +542,18 @@ export class JsInterpreter {
     if (p === 0xc6 || p === 0xc7) { // mov r/m, imm
       const size = p === 0xc6 ? 1 : opsize;
       const { rm } = this.decodeModrm(size);
-      const imm = size === 1 ? this.fetch8() : this.fetch(size);
+      // x86 encoding: imm8 | imm16 | imm32(sign-extended to 64). Never imm64.
+      let imm;
+      if (size === 1) imm = this.fetch8();
+      else if (size === 2) imm = this.fetch(2);
+      else {
+        imm = sx(this.fetch(4), 32);
+        if (size === 4) imm &= 0xffffffffn;
+      }
       this.storeOp(rm, size, imm);
       return;
     }
-    if (p === 0xb0 || (p >= 0xb8 && p <= 0xbf)) {
+    if ((p >= 0xb0 && p <= 0xb7) || (p >= 0xb8 && p <= 0xbf)) {
       if (p >= 0xb8) { // mov r64, imm64 (with REX.W) / imm32
         const idx = p - 0xb8 + (rexB ? 8 : 0);
         this.regs[R64[idx]] = rex & 8 ? this.fetch(8) : this.fetch(4);
@@ -555,11 +566,15 @@ export class JsInterpreter {
     }
 
     // c0/c1/d0/d1/d2/d3 shift group
-    if (p === 0xc1 || p === 0xd1 || p === 0xc0 || p === 0xd0) {
+    if ((p >= 0xc0 && p <= 0xc1) || (p >= 0xd0 && p <= 0xd3)) {
       const names = ["rol", "ror", "shl", "shr", "sal", "sar", "shl", "sar"];
       const size = (p & 1) === 0 ? 1 : opsize;
       const { reg, rm } = this.decodeModrm(size);
-      const count = (p === 0xc1 || p === 0xc0) ? Number(this.fetch8()) : 1;
+      // count source: imm8 (c0/c1), literal 1 (d0/d1), or %cl masked to 5 bits
+      let count;
+      if (p === 0xc0 || p === 0xc1) count = Number(this.fetch8()) & 0x1f;
+      else if (p >= 0xd2) count = Number(this.readReg(1, 1)) & 0x1f;
+      else count = 1;
       const a = this.loadOp(rm, size);
       const bits = BigInt(size * 8);
       const mask = (1n << bits) - 1n;
@@ -590,7 +605,12 @@ export class JsInterpreter {
       const mask = (1n << BigInt(size * 8)) - 1n;
       const signBit = 1n << BigInt(size * 8 - 1);
       switch (reg) {
-        case 0: case 1: this.alu("test", a, BigInt(this.fetch(size)), size); return;
+        case 0: case 1: {
+          // F7 test takes imm32 (sign-extended); F6 takes imm8
+          const raw = size === 1 ? BigInt(this.fetch8()) : sx(this.fetch(4), 32);
+          this.alu("test", a, size === 2 ? raw & 0xffffn : raw, size);
+          return;
+        }
         case 2: this.storeOp(rm, size, (~a) & mask); return;
         case 3: {
           const r = this.alu("sub", 0n, a, size);

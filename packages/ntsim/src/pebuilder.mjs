@@ -18,6 +18,8 @@ export class PeBuilder {
     this.sections = []; // {name, data, chars}
     this.imports = [];  // {dll:"ntoskrnl.exe", funcs:["DbgPrint",...]}
     this.imageBase = 0x140000000n;
+    /** optional {rva, size} written to data directory 3 (.pdata) */
+    this.exceptionDir = null;
   }
 
   addSection(name, data, chars = 0x60000020) {
@@ -186,6 +188,10 @@ export class PeBuilder {
     if (impBlob) {
       w32(dirBase + 8, rdataRva);          // dir[1].VirtualAddress
       w32(dirBase + 12, impBlob.idtSize);  // dir[1].Size
+    }
+    if (this.exceptionDir) {
+      w32(dirBase + 24, this.exceptionDir.rva); // dir[3].VirtualAddress (.pdata)
+      w32(dirBase + 28, this.exceptionDir.size);
     }
 
     const writeSection = (idx, name, vsize, srva, rsize, rawPtr, chars) => {

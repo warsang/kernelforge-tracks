@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.mjs",
+    "./src/hybrid.mjs": "./src/hybrid.mjs",
+    "./src/backend.mjs": "./src/backend.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"

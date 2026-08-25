@@ -72,6 +72,8 @@ export class UnicornCpuBackend {
    * @param {object} uc initialized unicorn module namespace
    */
   #dirty = new Set();
+  /** pages that are backend-internal (ABI sentinels) — never pulled into sparse */
+  #internal = new Set();
   #arenaEnd = null;
   #pendingRip = null;
 
@@ -112,9 +114,10 @@ export class UnicornCpuBackend {
     engine_hook_init(this);
 
     function engine_hook_init(self) {
-      // dirty-page tracker: record every written page during execution
+      // dirty-page tracker: record every written page during execution.
       self.engine.hook_add(uc.HOOK_MEM_WRITE, (_h, _type, address) => {
-        self.#dirty.add(toU64(address).toString(16));
+        // page base only: syncOut pulls whole pages back into SparseMemory
+        self.#dirty.add((toU64(address) & ~0xfffn).toString(16));
       }, 0, 1, 0);
     }
 
@@ -203,9 +206,10 @@ export class UnicornCpuBackend {
     return base;
   }
 
-  /** Pull every unicorn-mapped page into SparseMemory (uc becomes readable). */
+  /** Pull every guest-visible unicorn page into SparseMemory. */
   #pullAll() {
     for (const key of this.#mapped) {
+      if (this.#internal.has(key)) continue;
       const base = BigInt(parseInt(key, 16));
       this.mem.write(base, this.#rawRead(base, this.PAGE));
     }
@@ -248,6 +252,14 @@ export class UnicornCpuBackend {
 
   // ------------------------------------------------------------------ hooks
 
+  /** Guest HLT == backend halt (mirrors JsInterpreter.halted). */
+  hookHlt(rip) {
+    this.engine.hook_add(this.uc.HOOK_CODE, () => {
+      this.halted = true;
+      this.engine.emu_stop();
+    }, 0, toI64(rip), toI64(rip));
+  }
+
   /**
    * Range-limited code hook (CpuBackend contract). Handlers return true when
    * they rewired state themselves; emulation then resumes from the new RIP.
@@ -284,6 +296,14 @@ export class UnicornCpuBackend {
     } catch {
       /* already removed */
     }
+  }
+
+  /** Guest HLT == backend halt (mirrors JsInterpreter.halted). */
+  hookHlt(rip) {
+    this.engine.hook_add(this.uc.HOOK_CODE, () => {
+      this.halted = true;
+      this.engine.emu_stop();
+    }, 0, toI64(rip), toI64(rip));
   }
 
   reset() {
@@ -373,6 +393,7 @@ export class UnicornCpuBackend {
     // the marker page must be mapped/translatable for the hook to ever fire;
     // fill happens UC-side only so SparseMemory stays free of backend internals
     const mpage = this.#ensurePageMapped(RET_MARKER & ~0xfffn);
+    this.#internal.add(mpage.toString(16));
     this.#rawWrite(mpage, new Uint8Array(this.PAGE).fill(0xf4));
 
     this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn

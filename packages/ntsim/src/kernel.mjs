@@ -12,12 +12,14 @@ import { StructTables, StructRef } from "./structs.mjs";
 import { JsInterpreter, M64 } from "./cpu.mjs";
 import { installWinApi } from "./winapi.mjs";
 import { SymbolEngine } from "./symbols.mjs";
+import { tryDispatchException } from "./seh.mjs";
 
 const DEFAULT_BASES = {
   kva: 0xfffff80000000000n,
   pool: 0xfffff90000000000n, // synthetic "NonPaged" pool region
   thunk: 0xfffff80100000000n, // kernel API thunks
   eproc: 0xffffb80000000000n, // synthesized EPROCESS blocks
+  driver: 0xfffff80200000000n, // DRIVER_OBJECT / analyzer scratch
 };
 
 const DEFAULT_PROCESSES = [
@@ -64,6 +66,7 @@ export class NtKernel {
       pool: B.pool ?? DEFAULT_BASES.pool,
       thunk: B.thunk ?? DEFAULT_BASES.thunk,
       eproc: B.eproc ?? DEFAULT_BASES.eproc,
+      driver: B.driver ?? DEFAULT_BASES.driver,
     };
     this.buildName = opts.buildName ?? "synthetic-22h2";
 
@@ -72,6 +75,21 @@ export class NtKernel {
     this.nextThunk = this.bases.thunk;
     /** @type {Map<string, Function>} export name -> js impl */
     this.apiImpls = new Map();
+
+    // analyzer state -----------------------------------------------------
+    /** @type {Array<{name:string,args:bigint[],ret:bigint,retAddr:bigint}>} */
+    this.apiTrace = [];
+    this.apiTraceLimit = 8192;
+    /** exports auto-provisioned as traced stubs (run-any-*.sys mode) */
+    this.unmodeledExports = [];
+    /** IRQL violations (Zw or Nt exports called above APC_LEVEL) */
+    this.irqlViolations = [];
+    /** exception dispatch log */
+    this.exceptionTrace = [];
+    /** queued DPCs / work items / APCs awaiting drainDpcs() */
+    this.pendingDpcs = [];
+    this.pendingWorkItems = [];
+    this.pendingApcs = [];
 
     // pool
     this.nextPool = this.bases.pool;
@@ -203,6 +221,27 @@ export class NtKernel {
     return this.apiThunks.get(name);
   }
 
+  /**
+   * Auto-provision an export we have no model for: a traced thunk returning
+   * STATUS_SUCCESS. Used when running arbitrary uploaded drivers — unknown
+   * imports must not abort the map; they stay visible in unmodeledExports.
+   */
+  provisionUnknownApi(name) {
+    if (this.apiThunks.has(name)) return this.apiThunks.get(name);
+    this.unmodeledExports.push(name);
+    this.dbgLog.push(`[analyzer] provisioned unmodeled export ${name} -> SUCCESS`);
+    return this.defineApi(name, () => 0n);
+  }
+
+  /** Resolve "ntdll!Name"-style import; provisions when unknown. */
+  resolveImportProvisioned(qualified) {
+    const name = qualified.includes("!") ? qualified.split("!").pop() : qualified;
+    const known = this.apiThunks.get(name);
+    if (known) return known;
+    // WDF/FLTMGR/ndis-style prefixed names still get generic stubs
+    return this.provisionUnknownApi(name);
+  }
+
   _wireApiHooks() {
     const k = this;
     this.defineApi("DbgPrint", function (fmtAddr, ...args) {
@@ -278,15 +317,36 @@ export class NtKernel {
       // find which api
       for (const [name, addr] of this.apiThunks) {
         if (addr === rip) {
-          // windows x64 ABI: rcx rdx r8 r9 (+ stack)
+          // windows x64 ABI: rcx rdx r8 r9, then stack args above the
+          // return address + 32-byte shadow space ([rsp+0x28..]) — needed
+          // for varargs (DbgPrintEx, sprintf) and >4-arg exports.
+          const rsp = this.cpu.regs.rsp;
           const args = [
             this.cpu.regs.rcx, this.cpu.regs.rdx,
             this.cpu.regs.r8, this.cpu.regs.r9,
           ];
+          for (let j = 0; j < 7; j++) {
+            try { args.push(this.cpu.mem.u64(rsp + 0x28n + BigInt(8 * j))); } catch { args.push(0n); }
+          }
+          const retAddr = this.cpu.mem.u64(rsp);
+          // IRQL contract: Zw*/Nt* require PASSIVE_LEVEL; log violations
+          if ((name.startsWith("Zw") || name.startsWith("Nt")) && (this.currentIrql ?? 0) > 1) {
+            this.irqlViolations.push({ name, irql: this.currentIrql });
+            this.dbgLog.push(`[irql] ${name} called at IRQL ${this.currentIrql} (> APC_LEVEL)`);
+          }
           const ret = this.apiImpls.get(name)(...args);
           // emulate ret
           this.cpu.regs.rax = typeof ret === "bigint" ? (ret & M64) : (ret === undefined ? 0n : BigInt(ret));
-          this.cpu.rip = this.cpu.popVal();
+          this.cpu.regs.rsp = (rsp + 8n) & M64; // pop return address slot
+          this.cpu.rip = retAddr;
+          if (this.apiTrace.length < this.apiTraceLimit) {
+            this.apiTrace.push({
+              name,
+              args: args.map((a) => a & M64),
+              ret: this.cpu.regs.rax,
+              retAddr,
+            });
+          }
           return true;
         }
       }
@@ -302,8 +362,77 @@ export class NtKernel {
   /** Invoke DriverEntry(driverObj, registryPath) on a mapped driver image. */
   callDriverEntry(entryAddr, driverObjectAddr = 0n, regPathAddr = 0n) {
     this.currentIrql = 2;
-    const r = this.cpu.callFunction(entryAddr, [driverObjectAddr, regPathAddr]);
+    const r = this.callFunctionSeh
+      ? this.callFunctionSeh(entryAddr, [driverObjectAddr, regPathAddr])
+      : this.cpu.callFunction(entryAddr, [driverObjectAddr, regPathAddr]);
     return r;
+  }
+
+  /**
+   * callFunction with table-SEH fallback: on backend fault, attempt scope-
+   * table dispatch for the given image; a handled exception re-enters the
+   * __except handler as its own ABI call. Requires `image` {base, bytes}.
+   */
+  callFunctionSeh(addr, args = [], image = null) {
+    const r = this.cpu.callFunction(addr, args);
+    if (r.status !== "fault" || !image) return r;
+    let dispatch;
+    try {
+      dispatch = tryDispatchException(this, image, r.error);
+    } catch {
+      return r; // malformed unwind data -> report the raw fault
+    }
+    this.exceptionTrace.push({
+      faultRip: "0x" + (r.error?.rip ?? 0n).toString(16),
+      handled: !!dispatch.handled,
+      detail: dispatch.detail,
+    });
+    if (!dispatch.handled) return r;
+    return {
+      status: "ok",
+      retval: dispatch.ntstatus ?? dispatch.result?.retval ?? 0n,
+      sehHandled: true,
+      sehDetail: dispatch.detail,
+    };
+  }
+
+  // ------------------------------------------------------- deferred phases
+
+  /**
+   * Drain queued DPCs / work items / APCs left behind by the driver.
+   * Each routine is invoked through the same SEH-aware call path. Bounded:
+   * at most `maxPasses` sweeps so requeueing drivers can't spin forever.
+   * @returns {{dpcs:number, workItems:number, apcs:number}}
+   */
+  drainDeferred(maxPasses = 8) {
+    const counts = { dpcs: 0, workItems: 0, apcs: 0 };
+    for (let pass = 0; pass < maxPasses; pass++) {
+      const dpcs = this.pendingDpcs.splice(0);
+      const work = this.pendingWorkItems.splice(0);
+      const apcs = this.pendingApcs.splice(0);
+      if (!dpcs.length && !work.length && !apcs.length) break;
+
+      for (const d of dpcs) {
+        counts.dpcs++;
+        const r = this.cpu.callFunction(d.routine, [d.dpc ?? 0n, d.context ?? 0n, 0n, 0n]);
+        this.dbgLog.push(`[dpc] routine 0x${d.routine.toString(16)} -> ${r.status}`);
+        if (r.status !== "ok") this.exceptionTrace.push({ kind: "dpc", detail: r.status });
+      }
+      for (const w of work) {
+        counts.workItems++;
+        const r = this.cpu.callFunction(w.worker, [w.device ?? 0n, w.context ?? 0n]);
+        this.dbgLog.push(`[work] worker 0x${w.worker.toString(16)} -> ${r.status}`);
+        if (r.status !== "ok") this.exceptionTrace.push({ kind: "work", detail: r.status });
+      }
+      for (const a of apcs) {
+        counts.apcs++;
+        const r = this.cpu.callFunction(a.normalRoutine, [a.normalContext ?? 0n, a.systemArgument1 ?? 0n, a.systemArgument2 ?? 0n]);
+        this.dbgLog.push(`[apc] normalRoutine 0x${a.normalRoutine.toString(16)} -> ${r.status}`);
+        if (r.status !== "ok") this.exceptionTrace.push({ kind: "apc", detail: r.status });
+      }
+    }
+    this.deferredDrain = counts;
+    return counts;
   }
 
   // ------------------------------------------------------------ introspection

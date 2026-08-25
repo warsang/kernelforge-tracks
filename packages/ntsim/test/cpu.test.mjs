@@ -172,11 +172,11 @@ test("kernel VAs (>2^53) survive register round-trip", () => {
 test("addCodeHook intercepts within range only", () => {
   const { mem, cpu } = newCpu();
   const c = new CodeBuf();
-  // 0x1000: call 0x5000        (rel32 = 0x5000 - 0x1005 = 0x3ffb)
-  // 0x1005: mov rax, 42        (would overwrite rax if the hook failed)
+  // 0x1000: mov rax, 42        (overwrites rax if the hook failed to fire)
+  // 0x1007: call 0x5000        (rel32 = 0x5000 - 0x100c = 0x3ff4)
   // 0x100c: ret
-  c.db(0xe8).dd(0x3ffb);
   c.db(REX_W).db(0xc7).db(0xc0).dd(42);
+  c.db(0xe8).dd(0x3ff4);
   c.db(0xc3);
   mem.write(0x1000n, c.b);
   mem.write(0x5000n, [0xf4]); // hlt marker, never executed when hook fires

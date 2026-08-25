@@ -11,6 +11,7 @@ import { compileDriverSource, warmupCompiler } from "@kernelforge/compiler-worke
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
 import { createDebugConsole, disposeConsoles } from "./console.js";
+import { renderAnalyzer } from "./analyzer.js";
 
 warmupCompiler(); // preload the wasm toolchain in the background
 
@@ -109,6 +110,12 @@ function renderShell() {
 function renderSidebar() {
   const sidebar = document.getElementById("sidebar");
   sidebar.innerHTML = "";
+  sidebar.append(h("h2", null, "Tools"));
+  const analyzerBtn = h("button", {
+    class: "tool",
+    onclick: () => renderAnalyzer(document.getElementById("main")),
+  }, "⚒ Driver Analyzer");
+  sidebar.append(analyzerBtn);
   for (const mod of catalog.modules) {
     sidebar.append(h("h2", null, mod.title));
     for (const lesson of mod.lessons) {
