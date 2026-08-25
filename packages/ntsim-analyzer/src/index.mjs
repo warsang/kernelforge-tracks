@@ -26,6 +26,13 @@ import {
 
 const DEFAULT_DRIVER_BASE = 0xfffff80300000000n;
 
+/** "C:\Windows\mhyprot2.SYS" -> service key basename "mhyprot2" (no extension). */
+function serviceKeyOf(name) {
+  const base = String(name ?? "uploaded.sys").split(/[\\/]/).pop() || "uploaded.sys";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
 function hexToBytes(hex) {
   const hx = String(hex ?? "").replace(/[^0-9a-fA-F]/g, "");
   if (!hx) return new Uint8Array(0);
@@ -36,7 +43,8 @@ function hexToBytes(hex) {
 /**
  * @param {Uint8Array} imageBytes raw PE32+ (.sys) file content
  * @param {object} [opts]
- *   name           driver name for DRIVER_OBJECT.DriverName (default "uploaded.sys")
+ *   name           driver name for DRIVER_OBJECT.DriverName + service RegistryPath
+ *                  (default "uploaded.sys"; basename w/o ext seeds Services\<key>)
  *   backend        "js" | "unicorn" | "hybrid" | CpuBackend instance
  *   tables         StructTables instance
  *   bases          NtKernel base overrides
@@ -118,8 +126,13 @@ export async function analyzeDriver(imageBytes, opts = {}) {
     })),
   };
 
+  const driverName = opts.name ?? "uploaded.sys";
+  const regPath = `\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\${serviceKeyOf(driverName)}`;
+  report.load.registryPath = regPath;
+  report.load.driverName = driverName;
+
   const regPathBuf = kernel.allocPool(0x100);
-  mem.writeUtf16(regPathBuf, "\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\uploaded");
+  mem.writeUtf16(regPathBuf, regPath);
 
   // ------------------------------------------------------ DriverEntry
   const entryResult = kernel.callFunctionSeh(mapped.entry, [drvRec.va, regPathBuf], image);

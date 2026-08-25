@@ -62,7 +62,11 @@ export function renderAnalyzer(main) {
     el("option", { value: "js" }, "JsInterpreter (deterministic)"),
     el("option", { value: "hybrid" }, "Hybrid (JS + Unicorn fallback)"),
   );
-  const nameInput = el("input", { type: "text", placeholder: "uploaded.sys", value: "uploaded.sys" });
+  const nameInput = el("input", { type: "text", placeholder: "uploaded.sys", value: "uploaded.sys", title: "Driver name — seeds DriverName and the Services\\<key> registry path. Auto-filled from the uploaded file." });
+  fileInput.addEventListener("change", () => {
+    const f = fileInput.files?.[0];
+    if (f) nameInput.value = f.name;
+  });
 
   const loadBtn = el("button", { class: "primary" }, "Load & run DriverEntry");
 
