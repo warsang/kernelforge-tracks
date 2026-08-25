@@ -20,6 +20,7 @@ const app = document.getElementById("app");
 let progress = emptyProgress();
 let currentDebugger = null;
 let currentKernel = null;
+let currentSession = null;
 
 function kernel_processByName(kernel, name) {
   return kernel.processesByName.get(name) ?? null;
@@ -179,16 +180,17 @@ function renderLesson(lesson) {
         const dbg = await consoleReady;
         try {
           const scenario = getScenario(lab.scenario);
-          const factory = await resolveBackend(backendSel.value);
+          const factory = pane.rawBoot ? null : await resolveBackend(backendSel.value);
           const dumpWorld = pane.noDump ? null : await tryLoadDumpWorld();
-          const carvedState = pane.noDump ? null : await tryLoadCarvedState();
-          const session = await scenario.boot({
+          const io = pane.rawBoot ? {} : {
             makeBackend: (mem) => factory(mem),
             loadTables: () => loadTables(),
             dumpWorld,
-            carvedState,
-          });
+            carvedState: pane.noDump ? null : await tryLoadCarvedState(),
+          };
+          const session = await scenario.boot(io);
           dbg.innerHTML = "";
+          currentSession = session;
           currentKernel = session.kernel ?? null;
           currentDebugger = pane.createDebugger
             ? pane.createDebugger(session, dbg)
@@ -220,6 +222,18 @@ function renderLesson(lesson) {
       h("h2", null, lab.title + " ", h("code", { class: "kind" }, lab.kind)),
       h("p", null, lab.brief),
     );
+
+    // pane-registered editors (e.g. linux LKM IDE)
+    if (pane.attachEditor) {
+      const editorStatus = h("div", { class: "compile-status" });
+      card.append(pane.attachEditor({
+        h,
+        lab,
+        status: (text, cls = "dim") => editorStatus.append(h("div", { class: cls }, text)),
+        getSession: () => ({ linux: currentSession?.linux ?? null }),
+      }));
+      card.append(editorStatus);
+    }
 
     if (lab.kind === "compiler") {
       const editor = h("textarea", {

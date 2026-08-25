@@ -1,0 +1,10 @@
+{
+  "name": "@kernelforge/v86-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

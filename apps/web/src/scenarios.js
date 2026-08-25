@@ -619,6 +619,42 @@ scenarios["sauer-hook"] = {
   },
 };
 
+/**
+ * linux-kernel worlds (packages/v86-lab): a real i386 buildroot guest under
+ * v86. Boot requires the vendored bundle + image; without them the lab card
+ * surfaces an instructive BundleMissingError instead of failing silently.
+ */
+async function bootLinuxWorld(worldId) {
+  const { bootLinuxSession, fetchGuestImage } = await import("@kernelforge/v86-lab");
+  const image = await fetchGuestImage();
+  const session = await bootLinuxSession({ worldId, image });
+  return { kind: worldId, linux: session };
+}
+
+scenarios["lkm-hello"] = {
+  title: "lkm-hello — buildroot guest",
+  description:
+    "Boots the i386 Linux guest. Write your module in the editor, ship it into " +
+    "the guest, insmod it and read dmesg over serial.",
+  boot: () => bootLinuxWorld("lkm-hello"),
+};
+
+scenarios["syscall-trace"] = {
+  title: "syscall-trace — kprobe world",
+  description:
+    "Same guest; /root/trigger fires execve storms. Register a kprobe and read " +
+    "your handler's KFFLAG output from the serial stream.",
+  boot: () => bootLinuxWorld("syscall-trace"),
+};
+
+scenarios["task-hide"] = {
+  title: "task-hide — kfvillain loaded",
+  description:
+    "The villain rootkit hides decoy tasks during init. Measure nr_threads vs " +
+    "/proc visibility, then make it confess through your detector.",
+  boot: () => bootLinuxWorld("task-hide"),
+};
+
 export function getScenario(id) {
   const s = scenarios[id];
   if (!s) throw new Error(`unknown scenario "${id}"`);

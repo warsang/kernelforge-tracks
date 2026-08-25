@@ -11,6 +11,7 @@
  */
 
 import { createSogenDebugger } from "./sogen-debugger.js";
+import { createLinuxDebugger, attachLinuxEditor } from "./linux-pane.js";
 
 const panes = new Map();
 
@@ -34,4 +35,15 @@ registerPane("sogen", {
   ],
   noDump: true,
   createDebugger: (session, host) => createSogenDebugger(session, host),
+});
+
+// --- linux-kernel: v86 buildroot guest --------------------------------------
+registerPane("linux", {
+  backends: [
+    { value: "v86", label: "Guest: v86 i386 Linux (buildroot)" },
+  ],
+  noDump: true,
+  rawBoot: true, // no ntsim CPU factory involved
+  createDebugger: (session, host) => createLinuxDebugger(session, host),
+  attachEditor: attachLinuxEditor,
 });

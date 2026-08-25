@@ -26,6 +26,9 @@ import m3l1Body from "./lessons/m3-l1.mjs";
 import m4l1Body from "./lessons/m4-l1.mjs";
 import m5l1Body from "./lessons/m5-l1.mjs";
 import m6l1Body from "./lessons/m6-l1.mjs";
+import m7l1Body from "./lessons/m7-l1.mjs";
+import m8l1Body from "./lessons/m8-l1.mjs";
+import m9l1Body from "./lessons/m9-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -432,7 +435,147 @@ export const module6 = {
   ],
 };
 
+export const module7 = {
+  id: "m7",
+  title: "Linux LKM Fundamentals",
+  track: "linux-kernel",
+  summary:
+    "A real i386 Linux kernel booted by v86 inside the browser tab: write, ship " +
+    "and load your first loadable kernel modules against a frozen syscall ABI.",
+  lessons: [
+    {
+      id: "m7.l1",
+      title: "Hello, kernel module",
+      body: m7l1Body,
+      requires: ["m6.l1"],
+      labs: [
+        {
+          id: "m7.l1.lab1",
+          kind: "linux",
+          title: "insmod your first .ko",
+          brief:
+            "Compile a greeting module in the IDE tab, push it into the buildroot guest, " +
+            "insmod it, and read dmesg over serial.",
+          scenario: "lkm-hello",
+          flags: [
+            {
+              id: "m7.l1.f1",
+              sha256: F.m7l1f1,
+              prompt:
+                "Linux syscall numbers are a frozen per-arch ABI. Submit init_module's " +
+                "decimal syscall number on i386.",
+              points: 100,
+            },
+            {
+              id: "m7.l1.f2",
+              sha256: F.m7l1f2,
+              prompt:
+                "Extend your module to read /root/.kflag from kernel space and print it " +
+                "with pr_info. Submit the file's secret string exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module8 = {
+  id: "m8",
+  title: "Syscall Internals & Tracing",
+  track: "linux-kernel",
+  summary:
+    "The int-0x80 choke point, sys_call_table mechanics, and non-invasive " +
+    "observation with kprobes — instrumentation without patching.",
+  lessons: [
+    {
+      id: "m8.l1",
+      title: "Watch the boundary with kprobes",
+      body: m8l1Body,
+      requires: ["m7.l1"],
+      labs: [
+        {
+          id: "m8.l1.lab1",
+          kind: "linux",
+          title: "Probe execve",
+          brief:
+            "Register a kprobe on the program-execution syscall, trigger it with " +
+            "/root/trigger in the guest, and capture your handler's output.",
+          scenario: "syscall-trace",
+          flags: [
+            {
+              id: "m8.l1.f1",
+              sha256: F.m8l1f1,
+              prompt:
+                "Your probe must fire when programs start. Submit execve's decimal " +
+                "syscall number on i386.",
+              points: 100,
+            },
+            {
+              id: "m8.l1.f2",
+              sha256: F.m8l1f2,
+              prompt:
+                "With your kprobe registered and /root/trigger executed, submit the " +
+                "secret string your handler prints.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module9 = {
+  id: "m9",
+  title: "Rootkits & Detection",
+  track: "linux-kernel",
+  summary:
+    "A prebuilt villain rootkit unlinks tasks behind your back; write the " +
+    "cross-accounting detector that catches it.",
+  lessons: [
+    {
+      id: "m9.l1",
+      title: "Catch the task-unlinking rootkit",
+      body: m9l1Body,
+      requires: ["m8.l1"],
+      labs: [
+        {
+          id: "m9.l1.lab1",
+          kind: "linux",
+          title: "Detect what ps cannot see",
+          brief:
+            "kfvillain.ko hides decoy tasks during boot. Measure the scheduler-list vs " +
+            "nr_threads discrepancy, then make the villain confess.",
+          scenario: "task-hide",
+          flags: [
+            {
+              id: "m9.l1.f1",
+              sha256: F.m9l1f1,
+              prompt:
+                "Compare nr_threads against /proc-visible tasks with your detector " +
+                "module. How many tasks are hidden? Submit the decimal count.",
+              points: 200,
+            },
+            {
+              id: "m9.l1.f2",
+              sha256: F.m9l1f2,
+              prompt:
+                "Call the exported kfvillain_reveal() once your count is confirmed; " +
+                "the villain prints its surrender secret through your completion path. " +
+                "Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+
 export const catalog = {
   version: 3,
-  modules: [module1, module2, module3, module4, module5, module6],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9],
 };

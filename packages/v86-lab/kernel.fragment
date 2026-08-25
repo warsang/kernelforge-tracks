@@ -1,0 +1,20 @@
+# Kernel fragment for the v86 linux-kernel track labs.
+# Serial console + instrumentation primitives + deterministic addresses.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+
+# lab primitives
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_PROC_FS=y
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+
+# determinism: no KASLR, no module signature enforcement
+CONFIG_RANDOMIZE_BASE=n
+CONFIG_MODULE_SIG=n
+CONFIG_DEBUG_INFO=n

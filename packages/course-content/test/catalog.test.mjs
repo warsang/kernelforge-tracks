@@ -4,22 +4,23 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v3 has six modules / eight lessons / eighteen flags", () => {
+test("catalog v3 has nine modules / eleven lessons / twenty-four flags", () => {
   assert.equal(catalog.version, 3);
-  assert.equal(catalog.modules.length, 6);
+  assert.equal(catalog.modules.length, 9);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 8);
+  assert.equal(lessons.length, 11);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 18);
+  assert.equal(flags.length, 24);
 });
 
 test("tracks span kernel, userland and linux", () => {
   const tracks = new Set(catalog.modules.map((m) => m.track));
-  assert.ok(tracks.has("windows-kernel"), "missing track windows-kernel");
-  assert.ok(tracks.has("windows-userland"), "missing track windows-userland");
+  for (const t of ["windows-kernel", "windows-userland", "linux-kernel"]) {
+    assert.ok(tracks.has(t), `missing track ${t}`);
+  }
 });
 
-test("lesson chain is linear m1.l1 -> m6.l1", () => {
+test("lesson chain is linear m1.l1 -> m9.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -60,6 +61,13 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m6.l1.f1": "0x004532a0",
     "m6.l1.f2": "0x0046f010",
     "m6.l1.f3": "kf-input-restored",
+    // linux-kernel: frozen i386 ABI + guest-seeded secrets
+    "m7.l1.f1": "128",
+    "m7.l1.f2": "kf-lkm-hello",
+    "m8.l1.f1": "11",
+    "m8.l1.f2": "kf-trace-ok",
+    "m9.l1.f1": "3",
+    "m9.l1.f2": "kf-detector-ok",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)
