@@ -25,7 +25,7 @@ alias windows under your chosen index so plain \`dq\`/\`eb\` reach them.
 3. The code page was NX-smashed: bit 63 of its PTE is set, so the
    driver's integrity pass refuses to run. Clear it with \`eb\`
    (byte 7 of the alias qword), then \`!vtop\` the code VA again and read
-   the released secret from !analyze -v / DbgPrint buffer.
+   the released secret from !dbgprint / the DbgPrint buffer.
 
 ## Why defenders care
 

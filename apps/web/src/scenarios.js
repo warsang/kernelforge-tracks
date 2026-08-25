@@ -492,8 +492,8 @@ function setupIrqlDpc(kernel) {
 
   // payoff once the queue finally drains
   kernel.onDpcDrain = () => {
-    kernel.dbgLog.push("kfdpc: deferred routine ran at DISPATCH_LEVEL");
-    kernel.dbgLog.push("kfdpc: secret=kf-dpc-drain-ok");
+    kernel.debugPrint("kfdpc: deferred routine ran at DISPATCH_LEVEL");
+    kernel.debugPrint("kfdpc: secret=kf-dpc-drain-ok");
   };
 
   kernel.loadedModules.push({
@@ -535,7 +535,7 @@ function setupApiHook(kernel) {
   const orig = kernel.apiImpls.get(API);
   kernel.defineApi(API, function (pid, outPtr) {
     if (kernel.isDetoured(API) && BigInt(pid) === KFHOOK_HIDDEN_PID) {
-      kernel.dbgLog.push(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
+      kernel.debugPrint(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
       return 0xc000000bn; // STATUS_INVALID_PARAMETER
     }
     return orig(pid, outPtr);
@@ -592,7 +592,7 @@ function setupApiHookBlank(kernel) {
   const orig = kernel.apiImpls.get(API);
   kernel.defineApi(API, function (pid, outPtr) {
     if (kernel.isDetoured(API) && BigInt(pid) === KFHOOK_HIDDEN_PID) {
-      kernel.dbgLog.push(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
+      kernel.debugPrint(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
       return 0xc000000bn;
     }
     return orig(pid, outPtr);
@@ -635,8 +635,8 @@ function setupPoolCorrupt(kernel) {
   kernel.onPoolHealed = () => {
     if (healed) return;
     healed = true;
-    kernel.dbgLog.push("kfpooler: integrity pass complete — all guards intact");
-    kernel.dbgLog.push("kfpooler: checksum=kf-pool-guard-ok");
+    kernel.debugPrint("kfpooler: integrity pass complete — all guards intact");
+    kernel.debugPrint("kfpooler: checksum=kf-pool-guard-ok");
   };
 
   kernel.mem.writeAnsi(POOL_BASE - 0x800n,
@@ -915,8 +915,8 @@ function setupPagingWalk(kernel) {
     const nx = (kernel.mem.u64(pteRow.entryPa) & (1n << 63n)) !== 0n;
     if (!nx && !paid) {
       paid = true;
-      kernel.dbgLog.push("kfdriver: integrity pass complete — code page executable again");
-      kernel.dbgLog.push(`kfdriver: secret=${C.secret}`);
+      kernel.debugPrint("kfdriver: integrity pass complete — code page executable again");
+      kernel.debugPrint(`kfdriver: secret=${C.secret}`);
     }
   };
 
@@ -1005,8 +1005,8 @@ function setupEdrSensor(kernel) {
     const res = fire(pid, imageName, opts);
     if (!res.blocked && imageName === C.BLOCKED_NAME && !paid) {
       paid = true;
-      kernel.dbgLog.push("kfalcon: telemetry gap — implant spawn went unreported");
-      kernel.dbgLog.push(`kfalcon: secret=${C.secret}`);
+      kernel.debugPrint("kfalcon: telemetry gap — implant spawn went unreported");
+      kernel.debugPrint(`kfalcon: secret=${C.secret}`);
     }
     return res;
   };
@@ -1055,7 +1055,7 @@ function setupSsdtHook(kernel) {
     const orig = kernel.apiImpls.get(api);
     kernel.defineApi(api, function (pid, ...rest) {
       if (kernel.isDetoured(api) && BigInt(pid) === hiddenPid) {
-        kernel.dbgLog.push(`nt!${api}: hook suppressed pid ${hiddenPid}`);
+        kernel.debugPrint(`nt!${api}: hook suppressed pid ${hiddenPid}`);
         return 0xc0000022n; // STATUS_ACCESS_DENIED while hooked
       }
       return orig ? orig(pid, ...rest) : 0n;
@@ -1080,8 +1080,8 @@ function setupSsdtHook(kernel) {
   kernel.onSsdtScanned = (hooks) => {
     if (!hooks.length && !paid) {
       paid = true;
-      kernel.dbgLog.push(`kfvillain: table clean — suppressed lookups released`);
-      kernel.dbgLog.push(`kfvillain: secret=${C.secret}`);
+      kernel.debugPrint(`kfvillain: table clean — suppressed lookups released`);
+      kernel.debugPrint(`kfvillain: secret=${C.secret}`);
     }
   };
 

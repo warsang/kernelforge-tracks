@@ -55,7 +55,10 @@ second answer.
 - \`r\` shows the register context; \`k\` shows where rip sits.
 - \`? <expr>\` evaluates addresses (\`? nt!PsActiveProcessHead\`-style math);
   \`u <addr>\` disassembles; \`da\`/\`du\` read strings out of memory.
-- \`!analyze -v\` summarizes state including recent DbgPrint output.
+- \`!analyze -v\` summarizes live machine state (bugcheck context, process,
+  IRQL, modules) — like real WinDbg, it does not replay debug output.
+- \`!dbgprint\` replays the buffered \`DbgPrint\` output; new lines also
+  stream into the console live as drivers print them.
 
 ## Native commands vs debugger extensions
 

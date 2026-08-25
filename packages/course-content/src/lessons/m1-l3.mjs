@@ -30,7 +30,7 @@ Inspect, repair, execute:
 kd> !mmstate          # loader state: stubbed flag + unresolved IAT slots
 kd> eb <addr> 01      # set g_ResolveImports = 1 (address shown by !mmstate)
 kd> !mmrun            # re-run the map: imports resolve, payload starts
-kd> !analyze -v       # read the payload's DbgPrint secret
+kd> !dbgprint        # read the payload's DbgPrint secret
 \`\`\`
 
 When the payload finally runs it calls \`DbgPrint\` with a secret string.

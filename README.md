@@ -91,9 +91,13 @@ mapped ranges), `u`/`uf` (capstone-wasm x64 disassembly, branch-target
 symbolization), `da`/`du`, `x <pattern>`, `? <expr>`, `sym`.
 Debugger extensions (`!commands`, each documented in the lesson that
 introduces it with its in-driver equivalent): `!process`, `!drivers`,
-`!drvobj`, `!dh`, `!pcr`/`!prcb`/`!thread`, `!analyze`, `!irql`, `!dpcs`,
-`!dpcdrain`, `!hookscan`, `!hooktest`, `!poolfind`, `!poolverify`,
-`!mmstate`, `!mmrun`, `!funcs`, `!decomp`.
+`!drvobj`, `!dh`, `!pcr`/`!prcb`/`!thread`, `!analyze`, `!dbgprint`,
+`!irql`, `!dpcs`, `!dpcdrain`, `!hookscan`, `!hooktest`, `!poolfind`,
+`!poolverify`, `!mmstate`, `!mmrun`, `!funcs`, `!decomp`.
+DbgPrint output streams live into the debugger console as drivers print
+it (`NtKernel.onDebugPrint`) and replays from the `!dbgprint` buffer —
+mirroring a real kernel debugger. `!analyze -v` reports machine state
+only, matching WinDbg semantics (it never replays debug output).
 
 Module image extents are materialized (int3-padded) and pre-mapped in the
 Unicorn address space when a driver joins the module list

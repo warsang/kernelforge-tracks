@@ -175,6 +175,11 @@ export class NtKernel {
     /** captured DbgPrint lines */
     this.dbgLog = [];
 
+    /** optional live sink: invoked with each formatted DbgPrint line as it
+     *  happens (a real kernel debugger receives debug output inline; the
+     *  buffer above is the post-hoc !dbgprint view). */
+    this.onDebugPrint = null;
+
     /** bugcheck state */
     this.crash = null;
 
@@ -668,8 +673,18 @@ export class NtKernel {
         default: return `%${conv}`;
       }
     });
-    this.dbgLog.push(out);
+    this.debugPrint(out);
     return out;
+  }
+
+  /** Buffer a pre-formatted line and fire the live sink. Used by the DbgPrint
+   *  API thunk and by lab fixtures that speak in a driver's voice without
+   *  going through the guest's formatter. */
+  debugPrint(line) {
+    this.dbgLog.push(line);
+    if (this.onDebugPrint) {
+      try { this.onDebugPrint(line); } catch { /* sink must not kill execution */ }
+    }
   }
 
   findEprocessByPid(pid) {
