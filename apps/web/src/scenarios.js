@@ -626,6 +626,95 @@ scenarios["pool-corrupt"] = {
 };
 
 /**
+ * Sentinel v1 world (m1.l4 defense lab): the synthetic 22H2 world AFTER two
+ * of module-1's attacks landed:
+ *   1. kftarget.exe is DKOM-unlinked from ActiveProcessLinks — but its
+ *      EPROCESS bytes are still carved-able in the eproc pool window.
+ *   2. An unbacked executable page (manual-mapped code grid) sits in the
+ *      pool region, covered by NO entry of the loaded-module list.
+ * The KLDR chain is properly linked here so guest drivers can walk it the
+ * way PsLoadedModuleList walkers do on real Windows.
+ */
+function setupSentinelM1(kernel, tables) {
+  const mem = kernel.mem;
+
+  // --- attack residue #1: DKOM unlink of kftarget.exe --------------------
+  const linksOff = tables.offsetOf("_EPROCESS", "ActiveProcessLinks");
+  const victim = kernel.findEprocessByPid(666n);
+  if (victim) {
+    const links = victim + linksOff;
+    const flink = mem.u64(links);
+    const blink = mem.u64(links + 8n);
+    mem.w64(flink + 8n, blink); // next->Blink = prev
+    mem.w64(blink, flink);      // prev->Flink = next
+    // head self-heals around the hole; victim bytes stay in place for carving
+    // give the student's carve sweep a dense, readable window around them
+    const winStart = (BigInt(victim) & ~0xfffn) - 0x2000n;
+    for (let p = winStart; p < winStart + 0x8000n; p += 0x1000n) {
+      if (!mem.hasPage(p)) mem.write(p, new Uint8Array(0x1000));
+    }
+    kernel.sentinelCarve = { base: winStart, len: 0x8000 };
+  }
+
+  // --- attack residue #2: unbacked executable code in pool ---------------
+  const GRID_VA = 0xfffff90000020000n; // outside every loaded-module range
+  writeFunctionGrid(mem, GRID_VA, 0x400);
+
+  // --- rebuild a properly linked KLDR chain any driver can walk ----------
+  // (the synthetic world's list is field-only; dump worlds differ again —
+  // so the defense lab always gets one canonical, linked list)
+  const LDR_HEAD = 0x4ff00000n;
+  const ENTRY_STRIDE = 0x100n;
+  const ENTRY_BASE = 0x4fe00000n;
+  const mods = (kernel.loadedModules ?? []).slice(0, 12);
+  const ring = [];
+  mods.forEach((m, i) => {
+    const e = ENTRY_BASE + BigInt(i) * ENTRY_STRIDE;
+    mem.w64(e, 0n);            // Flink patched below
+    mem.w64(e + 8n, 0n);       // Blink patched below
+    mem.w64(e + 0x30n, m.base);
+    mem.w64(e + 0x38n, m.base + 0x1000n); // EntryPoint-ish
+    mem.w64(e + 0x40n, BigInt(m.sizeOfImage ?? 0x10000));
+    // FullDllName UNICODE_STRING {len, max, pad, buf} at +0x48
+    const full = m.full ?? m.name ?? "module.sys";
+    mem.w16(e + 0x48n, full.length * 2);
+    mem.w16(e + 0x4an, full.length * 2 + 2);
+    mem.w64(e + 0x50n, e + 0x80n);
+    mem.writeUtf16(e + 0x80n, full, 120);
+    ring.push(e);
+  });
+  for (const [i, e] of ring.entries()) {
+    const prev = i === 0 ? LDR_HEAD : ring[i - 1];
+    const next = i === ring.length - 1 ? LDR_HEAD : ring[i + 1];
+    mem.w64(e, next);
+    mem.w64(e + 8n, prev);
+  }
+  mem.w64(LDR_HEAD, ring[0] ?? LDR_HEAD);
+  mem.w64(LDR_HEAD + 8n, ring[ring.length - 1] ?? LDR_HEAD);
+
+  kernel.sentinel = {
+    kind: "v1",
+    ldrHead: LDR_HEAD,
+    gridVa: GRID_VA,
+    secret: "kf-sentinel-v1-ok",
+  };
+}
+
+scenarios["sentinel-m1"] = {
+  title: "sentinel-m1 — defend the module-1 world",
+  description:
+    "The world after module 1's attacks: kftarget.exe is unlinked and an " +
+    "unbacked code page hides in pool. Compile KF-Sentinel v1 to catch both " +
+    "from inside the kernel.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupSentinelM1(session.kernel, session.kernel.tables);
+    session.kind = "sentinel-m1";
+    return session;
+  },
+};
+
+/**
  * windows-userland worlds (packages/sogen-runtime reference backend): a
  * headless Sauerbraten process under a sogen-style userspace emulator.
  * Sessions carry .world + .consoleEngine instead of .kernel — the pane

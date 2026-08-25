@@ -35,6 +35,13 @@ const REQUIRED_PATTERNS = {
     { pattern: /DbgPrint/i,
       hint: "DbgPrint the hooked address (and the secret line) so the lab can verify your detour landed." },
   ],
+  // KF-Sentinel defense labs (shared structural requirements)
+  "sentinel": [
+    { pattern: /DriverEntry/i,
+      hint: "Every kernel driver needs a DriverEntry(PDRIVER_OBJECT, PUNICODE_STRING) entry point." },
+    { pattern: /DbgPrint/i,
+      hint: "Sensors emit findings via DbgPrint telemetry — the lab verifies your printed lines." },
+  ],
 };
 
 export function validateDriverSource(source, labKind) {

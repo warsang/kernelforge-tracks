@@ -21,15 +21,23 @@
 import m1l1Body from "./lessons/m1-l1.mjs";
 import m1l2Body from "./lessons/m1-l2.mjs";
 import m1l3Body from "./lessons/m1-l3.mjs";
+import m1l4Body from "./lessons/m1-l4.mjs";
 import m2l1Body from "./lessons/m2-l1.mjs";
+import m2l2Body from "./lessons/m2-l2.mjs";
 import m3l1Body from "./lessons/m3-l1.mjs";
+import m3l2Body from "./lessons/m3-l2.mjs";
 import m4l1Body from "./lessons/m4-l1.mjs";
+import m4l2Body from "./lessons/m4-l2.mjs";
 import m5l1Body from "./lessons/m5-l1.mjs";
 import m6l1Body from "./lessons/m6-l1.mjs";
 import m7l1Body from "./lessons/m7-l1.mjs";
 import m8l1Body from "./lessons/m8-l1.mjs";
 import m9l1Body from "./lessons/m9-l1.mjs";
 import m10l1Body from "./lessons/m10-l1.mjs";
+import {
+  SENTINEL_V1_STARTER, SENTINEL_V2_STARTER, SENTINEL_V3_STARTER,
+  SENTINEL_V4_STARTER,
+} from "./starters.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -48,6 +56,16 @@ const F = {
   // PsLookupProcessByProcessId is the 4th defineApi call => bases.thunk+0x30
   m3l1f4: "1517f7b43bddbd7889d718031169acafe107f73b267df8a0d0c3b9f97223a862",
   m3l1f5: "f8aa067dc961c4f182e93bda11cec69361b2b9882c88eeba3a1e3439aba80c34",
+  // --- KF-Sentinel defense labs (windows-kernel track) ---
+  m1l4f1: "c7e616822f366fb1b5e0756af498cc11d2c0862edcb32ca65882f622ff39de1b", // carved victim pid
+  m1l4f2: "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683", // linked entries post-DKOM
+  m1l4f3: "355cbb85edcf7eac7e437a0a597c733c2f41b78e98f5f2370e83e50a8c21e2ca", // sentinel v1 secret
+  m2l2f1: "e629fa6598d732768f7c726b4b621285f9c3b85303900aa912017db7617d8bdb", // sampled IRQL
+  m2l2f2: "06d1b91d683d670a69c021df6469f85c679de4752c44f5cc78a6e774dc64c2b9", // watchdog secret
+  m3l2f1: "cf7e5768f7f48553d460e0ae0e18158f0342c3f3f1e7674eac0e8fda3c82fab6", // attested export
+  m3l2f2: "c7b4da3905c06e32b6aed4c17aba7c7ba3e49735081651cc8612d15a992ddec6", // attest secret
+  m4l2f1: "50bac58f006cecfdbf8bc09893ee32e2bc3eaae6d5b92a6799645cc1463bf031", // convicted block VA
+  m4l2f2: "3c0785e6ee570d27daef2e74ac2be40c2d656a92c4faf9d1b3073810d636ffd1", // poolmon secret
   m4l1f1: "50bac58f006cecfdbf8bc09893ee32e2bc3eaae6d5b92a6799645cc1463bf031",
   m4l1f2: "e00133bdd1fb36765d3379852981a2b2c7163f1a0cd1b826f82b516d6080d0d0",
   // --- windows-userland (sogen reference backend) ---
@@ -233,6 +251,55 @@ export const module1 = {
         },
       ],
     },
+    {
+      id: "m1.l4",
+      title: "Defense: build KF-Sentinel v1 — process & module integrity",
+      body: m1l4Body,
+      requires: ["m1.l3"],
+      labs: [
+        {
+          id: "m1.l4.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v1: catch DKOM and unbacked code from ring 0",
+          brief:
+            "The world after module 1's attacks: kftarget.exe is unlinked, an executable " +
+            "pool page hides outside every module. Compile the Sentinel v1 starter — it " +
+            "carves for hidden processes and classifies unbacked executable memory.",
+          scenario: "sentinel-m1",
+          compileTask: "sentinel-v1",
+          starterFiles: [
+            { path: "driver/kfsentinel_v1.c", content: SENTINEL_V1_STARTER },
+          ],
+          flags: [
+            {
+              id: "m1.l4.f1",
+              sha256: F.m1l4f1,
+              prompt:
+                "Your sensor's carve sweep finds a process whose name signature survives in " +
+                "memory while ActiveProcessLinks no longer references it. Submit that " +
+                "hidden process's decimal PID as printed by your driver.",
+              points: 150,
+            },
+            {
+              id: "m1.l4.f2",
+              sha256: F.m1l4f2,
+              prompt:
+                "Sentinel v1 walks the (linked) module list and counts linked entries on the " +
+                "process list. Submit the number of LINKED entries it reports after the DKOM.",
+              points: 100,
+            },
+            {
+              id: "m1.l4.f3",
+              sha256: F.m1l4f3,
+              prompt:
+                "When both sensors finish, Sentinel v1 prints its completion secret in the " +
+                "DbgPrint buffer (!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
   ],
 };
 
@@ -248,7 +315,7 @@ export const module2 = {
       id: "m2.l1",
       title: "IRQL & deferred procedure calls",
       body: m2l1Body,
-      requires: ["m1.l3"],
+      requires: ["m1.l4"],
       labs: [
         {
           id: "m2.l1.lab1",
@@ -276,13 +343,53 @@ export const module2 = {
                 "DeferredRoutine address as full 16-digit hex with 0x prefix.",
               points: 150,
             },
-            {
+             {
               id: "m2.l1.f3",
               sha256: F.m2l1f3,
               prompt:
                 "Repair the level (!irql 2), drain the queue (!dpcdrain), and read the secret " +
                 "the deferred routine DbgPrints (!analyze -v). Submit it exactly.",
               points: 150,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m2.l2",
+      title: "Defense: KF-Sentinel v2 — IRQL watchdog & DPC forensics",
+      body: m2l2Body,
+      requires: ["m2.l1"],
+      labs: [
+        {
+          id: "m2.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v2: watchdog the interrupt ladder from ring 0",
+          brief:
+            "Same pinned-IRQL world you freed in m2.l1 — but now your own compiled driver " +
+            "samples KeGetCurrentIrql, reports the stall, restores DISPATCH_LEVEL and " +
+            "releases the stranded DPC.",
+          scenario: "irql-dpc",
+          compileTask: "sentinel-v2",
+          starterFiles: [
+            { path: "driver/kfsentinel_v2.c", content: SENTINEL_V2_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l2.f1",
+              sha256: F.m2l2f1,
+              prompt:
+                "Your compiled watchdog samples the IRQL in DriverEntry. What level does it " +
+                "report? Submit as a decimal number.",
+              points: 100,
+            },
+            {
+              id: "m2.l2.f2",
+              sha256: F.m2l2f2,
+              prompt:
+                "After the watchdog restores the ladder and you drain with !dpcdrain, the " +
+                "watchdog's acknowledgement secret is in the DbgPrint buffer. Submit it exactly.",
+              points: 200,
             },
           ],
         },
@@ -303,7 +410,7 @@ export const module3 = {
       id: "m3.l1",
       title: "Inline hooks & control flow",
       body: m3l1Body,
-      requires: ["m2.l1"],
+      requires: ["m2.l2"],
       labs: [
         {
           id: "m3.l1.lab1",
@@ -378,6 +485,46 @@ export const module3 = {
         },
       ],
     },
+    {
+      id: "m3.l2",
+      title: "Defense: KF-Sentinel v3 — prologue attestation engine",
+      body: m3l2Body,
+      requires: ["m3.l1"],
+      labs: [
+        {
+          id: "m3.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v3: attest export prologues from inside the kernel",
+          brief:
+            "The api-hook world, defended this time. Compile an attestation sensor that " +
+            "resolves critical exports, compares their first bytes against a known-good " +
+            "baseline, and convicts kfhook.sys's detour from ring 0.",
+          scenario: "api-hook",
+          compileTask: "sentinel-v3",
+          starterFiles: [
+            { path: "driver/kfsentinel_v3.c", content: SENTINEL_V3_STARTER },
+          ],
+          flags: [
+            {
+              id: "m3.l2.f1",
+              sha256: F.m3l2f1,
+              prompt:
+                "Your attestation sensor reports exactly one export whose live first byte " +
+                "diverges from the baseline. Submit that export's name.",
+              points: 150,
+            },
+            {
+              id: "m3.l2.f2",
+              sha256: F.m3l2f2,
+              prompt:
+                "On conviction the sensor prints its completion secret to the DbgPrint buffer. " +
+                "Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
   ],
 };
 
@@ -393,7 +540,7 @@ export const module4 = {
       id: "m4.l1",
       title: "Pool internals & corruption forensics",
       body: m4l1Body,
-      requires: ["m3.l1"],
+      requires: ["m3.l2"],
       labs: [
         {
           id: "m4.l1.lab1",
@@ -424,6 +571,46 @@ export const module4 = {
         },
       ],
     },
+    {
+      id: "m4.l2",
+      title: "Defense: KF-Sentinel v4 — pool integrity monitor",
+      body: m4l2Body,
+      requires: ["m4.l1"],
+      labs: [
+        {
+          id: "m4.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v4: sweep pool guards from your own driver",
+          brief:
+            "The pool-corrupt world, defended. Compile a monitor that sweeps the trailing " +
+            "A5 guards of every tracked KfPb block, attributes corruption to its fence, and " +
+            "reports the overflow before anything crashes.",
+          scenario: "pool-corrupt",
+          compileTask: "sentinel-v4",
+          starterFiles: [
+            { path: "driver/kfsentinel_v4.c", content: SENTINEL_V4_STARTER },
+          ],
+          flags: [
+            {
+              id: "m4.l2.f1",
+              sha256: F.m4l2f1,
+              prompt:
+                "Your monitor convicts exactly one block. Submit its user address as full " +
+                "16-digit hex with 0x prefix (as printed by your driver).",
+              points: 150,
+            },
+            {
+              id: "m4.l2.f2",
+              sha256: F.m4l2f2,
+              prompt:
+                "On conviction the monitor prints its completion secret to the DbgPrint " +
+                "buffer (!analyze -v). Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
   ],
 };
 
@@ -439,7 +626,7 @@ export const module5 = {
       id: "m5.l1",
       title: "Modules, scans & the local player",
       body: m5l1Body,
-      requires: ["m4.l1"],
+      requires: ["m4.l2"],
       labs: [
         {
           id: "m5.l1.lab1",

@@ -70,12 +70,20 @@ typedef unsigned short      USHORT;
 typedef unsigned int        UINT;
 typedef unsigned long       ULONG;
 typedef unsigned long long  ULONGLONG;
+typedef long long           LONGLONG;
+/* full-width spellings the WDK ships and tutorial code expects */
+typedef unsigned long long  ULONG64;
+typedef unsigned long long  UINT64;
+typedef long long           LONG64;
+typedef long long           INT64;
 
 typedef wchar_t             WCHAR;
 
 typedef void                VOID;
 typedef int                 BOOL;
 typedef unsigned char       BOOLEAN;
+#define TRUE  1
+#define FALSE 0
 
 #define CONST const
 #define STATIC static
@@ -143,6 +151,8 @@ typedef NTSTATUS *PNTSTATUS;
 #define STATUS_INSUFFICIENT_RESOURCES    ((NTSTATUS)0xC000009AL)
 #define STATUS_NOT_SUPPORTED             ((NTSTATUS)0xC00000BBL)
 #define STATUS_PENDING                   ((NTSTATUS)0x00000103L)
+#define STATUS_INVALID_IMAGE_HASH        ((NTSTATUS)0xC0000221L)
+#define STATUS_INVALID_BUFFER_SIZE       ((NTSTATUS)0xC0000206L)
 
 /* --- basic structures ----------------------------------------------------- */
 

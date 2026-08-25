@@ -640,9 +640,14 @@ export class JsInterpreter {
     const { opsize, rep, rexB, rexX } = ctx;
     const startRip = this.rip;
 
-    // endbr64/endbr32: F3 0F 1E FA / F3 0F 1E FB
-    if (op === 0x1e || op === 0x1f) {
-      this.fetch8(); // trailing modrm byte (FA/FB or nop payload)
+    // multi-byte NOP family and branch hints:
+    //   0F 1F /0        nop r/m (modrm may carry SIB + disp32 — 9-byte nops!)
+    //   0F 0D /r        prefetch group (legacy)
+    //   F3 0F 1E FA/FB  endbr64/endbr32 (single modrm byte, no disp)
+    // Decoding the full ModRM keeps the instruction stream aligned; the
+    // previous single-byte skip desynced execution on clang padding nops.
+    if (op === 0x1e || op === 0x1f || op === 0x0d) {
+      this.decodeModrm(opsize);
       return;
     }
 

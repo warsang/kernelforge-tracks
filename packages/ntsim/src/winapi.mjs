@@ -304,14 +304,19 @@ export function installWinApi(kernel) {
     kernel.lowerIrql(Number(newIrql) & 0xff);
     return undefined;
   });
-  k.define("KfRaiseIrql", (newIrql) => kernel.raiseIrql(Number(newIrql) & 0xff));
+  // KIRQL params are 8-bit: clang targets may write only the low byte of the
+  // argument register (stale high bits are legal garbage under the Win x64
+  // ABI). Mask via BigInt BEFORE Number() — huge register-sized values lose
+  // precision as doubles and the naive &0xff silently yields wrong levels.
+  const kirql = (v) => Number(BigInt.asUintN(8, BigInt(v ?? 0)));
+  k.define("KfRaiseIrql", (newIrql) => kernel.raiseIrql(kirql(newIrql)));
   k.define("KeRaiseIrql", (newIrql, oldOut) => {
-    const old = kernel.raiseIrql(Number(newIrql) & 0xff);
+    const old = kernel.raiseIrql(kirql(newIrql));
     mem.w8(oldOut, old);
     return undefined;
   });
   k.define("KeLowerIrql", (newIrql) => {
-    kernel.lowerIrql(Number(newIrql) & 0xff);
+    kernel.lowerIrql(kirql(newIrql));
     return undefined;
   });
   k.define("KeGetCurrentIrql", () => BigInt(kernel.currentIrql ?? 2));

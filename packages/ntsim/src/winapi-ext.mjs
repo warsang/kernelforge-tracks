@@ -795,7 +795,11 @@ export function installWinApiExt(kernel, ctx) {
 
   // ------------------------------------------------------------------- Mm
 
-  k.define("MmIsAddressValid", () => 1n);
+  k.define("MmIsAddressValid", (va) => {
+    // honest per-page backing check: drivers use this to guard probe reads
+    // (pool carving, pointer validation) before dereferencing
+    try { return mem.canRead(BigInt(va), 1) ? 1n : 0n; } catch { return 0n; }
+  });
   k.define("MmAllocateContiguousMemory", (size) => k.alloc(Number(size)));
   k.define("MmFreeContiguousMemory", () => undefined);
   k.define("MmGetPhysicalMemoryRanges", () => k.alloc(0x100)); // opaque ranges blob

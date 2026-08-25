@@ -135,6 +135,57 @@ const COMPILE_TASKS = {
   "dkom-hide": { validate: (src) => validateDriverSource(src, "dkom-hide"), verify: verifyDkomTask },
   "inline-hook": { validate: (src) => validateDriverSource(src, "inline-hook"), verify: verifyInlineHookTask },
 };
+
+/** Defense-lab tasks verify via the sensor's own DbgPrint telemetry. */
+function logJoin(kernel) { return kernel.dbgLog.join("\n"); }
+
+function makeSentinelVerify(patterns) {
+  return (kernel, _loaded, status) => {
+    const log = logJoin(kernel);
+    let ok = true;
+    for (const [label, rx] of patterns) {
+      if (rx.test(log)) status("good", `✓ ${label}`);
+      else { ok = false; status("err", `✗ missing: ${label}`); }
+    }
+    if (ok) status("dim", "Sensor telemetry complete — read findings from the debugger.");
+    return ok;
+  };
+}
+
+COMPILE_TASKS["sentinel-v1"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["process-list walk", /SENTINEL-V1: process list walk/],
+    ["DKOM carve detection", /carve hit 'kftarget\.exe'.*pid=666|no hidden-process signatures/],
+    ["unbacked-exec classification", /UNBACKED EXEC DETECTED|belongs to a listed module/],
+    ["completion secret", /secret=kf-sentinel-v1-ok/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v2"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["IRQL sampling", /SENTINEL-WATCHDOG: sampled IRQL = 15/],
+    ["ladder restoration", /ladder restored to 2/],
+    ["watchdog secret", /secret=kf-watchdog-ok/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v3"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["PsLookupProcessByProcessId attested", /SENTINEL-ATTEST: PsLookupProcessByProcessId/],
+    ["hook conviction", /INLINE HOOK DETECTED/],
+    ["completion secret", /secret=kf-attest-ok/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v4"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    // %p renders without 0x; %02x pads to 8 digits (model formatter limits)
+    ["guard sweep ran", /SENTINEL-POOLMON: block 0 @ fffff90000001000 guard intact/],
+    ["corruption convicted", /block 1 @ fffff90000001200.*CORRUPTED/],
+    ["completion secret", /secret=kf-poolmon-ok/],
+  ]),
+};
 const taskFor = (lab) => COMPILE_TASKS[lab.compileTask ?? (lab.id.includes("dkom") ? "dkom-hide" : "")] ?? null;
 
 // ---------------------------------------------------------------- rendering
