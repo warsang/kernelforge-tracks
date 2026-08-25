@@ -47,11 +47,47 @@ level with one DPC stranded in the queue. Your job:
 3. Repair: \`!irql 2\`, then \`!dpcdrain\`. The routine finally runs and
    DbgPrints its secret (answer 3).
 
+## Custom debugger extensions in this lab
+
+All three commands are **lab extensions** — real WinDbg has none of them;
+they exist because the model exposes IRQL/DPC state that a live kernel hides
+behind the HAL:
+
+- \`!irql [n]\` — reads (or forces) the emulated processor level.
+  *Driver equivalent:* \`KeGetCurrentIrql()\` reads; \`KeRaiseIrql\`/
+  \`KeLowerIrql\` move — exactly what your compiled watchdog in m2.l2 does:
+  \`\`\`c
+  KIRQL sampled = KeGetCurrentIrql();          // the read
+  if (sampled > DISPATCH_LEVEL)
+      KeLowerIrql(DISPATCH_LEVEL);             // the repair
+  \`\`\`
+- \`!dpcs\` — dumps the per-CPU deferred queue with drain status.
+  *Driver equivalent:* walk \`_KPRCB.DpcData\` entries and read each
+  \`_KDPC.DeferredRoutine\` (the debugger shows the same address you would
+  read at DPC+0x18 with build-table offsets).
+- \`!dpcdrain\` — retires queued DPCs once the level permits, mirroring what
+  \`KiRetireDpcList\` does on a healthy core.
+
 ## Defensive framing
 
 IRQL abuse is not exotic: a driver that spins at high IRQL freezes the core
 for everything on it, which is both a classic kernel panic generator and,
 deliberately, an anti-forensics trick — code running above DISPATCH is
-invisible to many instrumentation callbacks. Knowing what *should* be on the
-ladder makes the anomalies pop.
+invisible to many instrumentation callbacks.
+
+Defender playbook, in increasing order of strength:
+
+1. **Sampling watchdog**: a timer-DPC sensor samples \`KeGetCurrentIrql\`
+   across CPUs and histograms time-at-level. Healthy kernels spike; they do
+   not plateau at 15. You build this in m2.l2 (**KF-Sentinel v2**), including
+   the repair half — lowering the ladder so starved work runs again.
+2. **DPC-latency telemetry**: per-CPU queue depth and retire latency feed the
+   same pipeline as \`% DPC Time\` counters; a queue that never drains is a
+   stalled core wearing a disguise.
+3. **Self-watchdog verification**: anticheats schedule their own DPC and
+   alarm if it does not fire within N ticks — a stuck core cannot hide its
+   own stall from a deadline.
+4. **Hypervisor ceiling**: with EPT-based monitoring the host sees guest
+   interrupt state directly; no guest CR8/APIC game can hide from the layer
+   that owns the APIC page.
 `;

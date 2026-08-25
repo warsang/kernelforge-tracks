@@ -13,7 +13,7 @@ own driver, on every boot and then periodically.
 1. **Resolve the target honestly.** Your import of
    \`PsLookupProcessByProcessId\` links to the export's real address — the
    same pointer every caller uses. Production sensors use
-   \\\`MmGetSystemRoutineAddress\\\` plus a second resolution path (pattern
+   \`MmGetSystemRoutineAddress\` plus a second resolution path (pattern
    scan, exception-directory walk) because a hooked IAT/resolve path is
    itself an attack.
 2. **Hold a known-good baseline.** Here it is one byte: the model's F4

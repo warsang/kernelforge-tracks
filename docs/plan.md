@@ -139,3 +139,63 @@ Status: implemented 2026-08. Branch base: main @ 7cf7a81. Worktree:
 - [x] npm test + tsc --build green at every commit.
 - Pending vendors: sogen wasm core, v86 bundle + bzImage artifact, ghidra
   decompiler wasm (each documented in its package's vendor/README.md).
+
+### Defense build-out: KF-Sentinel + debugger hardening (feat/defense-labs-debugger-fixes)
+
+Course arc for the windows-kernel track is now explicitly
+**attack theory -> attack lab -> defense theory -> defense lab**; every
+custom `!command` is called out as a debugger extension in its lesson, with
+the driver-mode C that produces the same information from inside the kernel.
+
+**Debugger/emulator fixes (bug reports):**
+- pool-corrupt `eb` write-back: guard addressing made unambiguous
+  (`!poolfind`/`!poolverify` print `guard @ user_va+size` and a
+  copy-pasteable eb line); persistence across unicorn syncIn/pullAll/syncOut
+  cycles pinned by apps/web/test/pool-guard-persistence.test.mjs on both
+  backends. Root cause of the original report was writing at the BLOCK start;
+  output now makes that mistake impossible to make silently.
+- missing commands added: u/uf (capstone-wasm; low-alias-base strategy keeps
+  >2^53 kernel VAs exact), da/du, x, ?, !drivers, !drvobj (+!drivobj alias);
+  db/dq/s parse WinDbg L<hex> length prefixes (NaN-BigInt fix) plus
+  backtick-stripping and symbol args (nt!Export, module+offset).
+- module extents materialized (int3-padded) + pre-mapped via
+  UnicornCpuBackend.mapRange when a module joins lm — fixes !dh/s/u over
+  kfhook.sys detour pages and compiled kf_*.sys images
+  (NtKernel.materializeModuleRange).
+- dt nt!_MMVAD / _MMVAD_SHORT: teaching tables hand-authored from public
+  Vergilius 22h2 x64 dumps (marked synthetic-teaching), registered through
+  both table loaders.
+
+**KF-Sentinel defense lessons/labs (compiler kind, real wasm clang):**
+- m1.l4 v1 (`sentinel-m1`): list-vs-carve DKOM detection + unbacked-exec
+  classification against a linked KLDR chain. Answers: 666 / 6 / kf-sentinel-v1-ok.
+- m2.l2 v2 (`irql-dpc`): IRQL watchdog samples KeGetCurrentIrql, restores
+  DISPATCH_LEVEL, releases the stranded DPC. Answers: 15 / kf-watchdog-ok.
+- m3.l2 v3 (`api-hook`): prologue attestation engine vs known-good baseline;
+  convicts kfhook.sys's E9. Answers: PsLookupProcessByProcessId / kf-attest-ok.
+- m4.l2 v4 (`pool-corrupt`): pool integrity monitor sweeps KfPb guard
+  trailers in-driver. Answers: 0xfffff90000001200 / kf-poolmon-ok.
+- Starters single-sourced in packages/course-content/src/starters.mjs;
+  committed COFF fixtures compiled from the exact same text
+  (packages/compiler-worker/test/fixtures/kfsentinel_v*.obj); verification
+  matches the sensor's own DbgPrint telemetry (main.js COMPILE_TASKS).
+- Progression chain extended linearly: ...m1.l4 -> m2.l1 -> m2.l2 -> m3.l1 ->
+  m3.l2 -> m4.l1 -> m4.l2 -> m5.l1...
+
+**Fidelity fixes surfaced by compiled sensor code:**
+- JsInterpreter 0F 1E/1F/0D multi-byte NOP + endbr decode now consumes full
+  ModRM/SIB/disp32 (was desyncing execution after clang padding nops).
+- KeLowerIrql/KeRaiseIrql/KfRaiseIrql mask sub-dword args through BigInt
+  before Number() — guest ABIs legally leave stale high register bits, and
+  double conversion of huge values silently corrupted the level.
+- MmIsAddressValid performs a genuine per-page backing check.
+
+**New m3.l1.lab2** (`api-hook-blank`): author-your-own-inline-hook compiler
+lab; students discover the export thunk VA via x/u/sym (deterministic:
+bases.thunk+0x30 = 0xfffff80100000030), paste into the template, compile,
+load; suppression gates on live prologue bytes exactly like kfhook.sys.
+Answers: 0xfffff80100000030 / kf-hook-author-ok.
+
+Teaching headers gained SAL annotation macros (_In_ etc.) and ULONG64/INT64/
+TRUE/FALSE so tutorial sources compile unmodified; headers-manifest.json
+regenerated.

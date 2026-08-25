@@ -30,7 +30,7 @@ You will write (well: guide the builder through) a driver that:
 
 After loading, confirm from the debugger:
 
-\`\`\`
+\`\`\`text
 kd> !process 0 0        # kftarget.exe is gone
 \`\`\`
 
@@ -45,11 +45,42 @@ tables, so the same driver source works across builds. Notice your debugger
 and your driver agreeing on \`0x448\` without either hardcoding more than one
 copy of the truth.
 
-## Defensive framing
+## Defensive framing — detecting DKOM
 
 DKOM is decades old yet still appears in the wild because so much tooling
-trusts the kernel's own lists unconditionally. Defenses worth knowing:
-comparing the EPROCESS ring against the handle table / KTHREAD cross-references,
-hypervisor-backed views (the guest cannot edit what it cannot see), and
-KPP-style checks that re-walk the list from independent roots.
+trusts the kernel's own lists unconditionally. A defender's answer is always
+the same move: **find a second opinion that does not flow through the thing
+being edited**, then diff. The main independent sources:
+
+| second opinion | why DKOM cannot touch it |
+|---|---|
+| handle-table scan | open handles keep object headers alive regardless of list membership |
+| KTHREAD cross-refs | every thread's \`ApcState.Process\` still points at the victim |
+| pool carving | the EPROCESS bytes themselves survive in place |
+| ETW process events | emitted at creation time, before any hiding |
+
+A minimal in-driver cross-check against thread references:
+
+\`\`\`c
+// For each listed process we also count ETHREADs whose Cid.UniqueProcess
+// matches it, walking PsActiveProcessHead *and* a thread source. A process
+// with live threads but no list node is being hidden.
+BOOLEAN ProcessHasLiveThreads(PEPROCESS eproc)
+{
+    // production: walk EPROCESS.ThreadListHead (still intact post-DKOM!)
+    PLIST_ENTRY head = (PLIST_ENTRY)((PUCHAR)eproc + OFF_THREAD_LIST_HEAD);
+    return head->Flink != head;   // unlinked processes keep their threads
+}
+\`\`\`
+
+That last line is the quiet killer: **DKOM hides the process but forgets its
+threads** — \`ThreadListHead\`, quota blocks and the kernel handle table all
+still reference it. Hypervisor-backed views go further (the guest cannot
+edit what it cannot see), and classic KPP-style checks re-walk the list from
+independent roots on a timer.
+
+You will implement exactly this class of detection in m1.l4: **KF-Sentinel
+v1** walks the process list, carves the EPROCESS pool window for name
+signatures, and convicts anything carved-but-not-linked. Build the attack
+here, then build the thing that catches it there.
 `;

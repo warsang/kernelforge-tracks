@@ -79,6 +79,23 @@ Labs and the analyzer both fetch `/dumps/ntsim-state.json` at boot when
 present: resident ntoskrnl/CI/cng pages land at their true VAs under the
 synthetic overlay. Without it everything runs on synthetic bytes.
 
+## Debugger surface (apps/web/src/debugger.js)
+
+Native-engine commands: `lm`, `dt`, `r`, `k/kp/kv`, `eb`, `db/dq` (WinDbg
+`L<hex>` length prefixes supported), `s` (page-wise degrade on partially
+mapped ranges), `u`/`uf` (capstone-wasm x64 disassembly, branch-target
+symbolization), `da`/`du`, `x <pattern>`, `? <expr>`, `sym`.
+Debugger extensions (`!commands`, each documented in the lesson that
+introduces it with its in-driver equivalent): `!process`, `!drivers`,
+`!drvobj`, `!dh`, `!pcr`/`!prcb`/`!thread`, `!analyze`, `!irql`, `!dpcs`,
+`!dpcdrain`, `!hookscan`, `!hooktest`, `!poolfind`, `!poolverify`,
+`!mmstate`, `!mmrun`, `!funcs`, `!decomp`.
+
+Module image extents are materialized (int3-padded) and pre-mapped in the
+Unicorn address space when a driver joins the module list
+(`NtKernel.materializeModuleRange` + `backend.mapRange`), so `lm`-listed
+modules are fully readable/executable instead of exposing unmapped holes.
+
 ## Quick start
 
 ```bash
@@ -109,27 +126,45 @@ Ground truth lives with instructors; see docs/plan.md for the build-out plan.
 
 **Track: windows-kernel (ntsim)**
 
+Every windows-kernel module follows the same arc: **attack theory → attack
+lab → defense theory → defense lab** where students compile a real detection
+driver. The defense labs build **KF-Sentinel**, a progressive anticheat/EDR:
+v1 process & module integrity, v2 IRQL watchdog, v3 prologue attestation, v4
+pool integrity monitor — and each later attack must evade the sensors built
+so far.
+
 **Module 1 — Windows Kernel Fundamentals & Manual Mapping**
 1. Kernel landscape — `lm` reveals `kfprobe.sys`; `!process 0 0` finds
    `kfsample.exe` PID 312
 2. DKOM process hiding — unlink `kftarget.exe` from `PsActiveProcessHead`
 3. Kernel manual mapping — fix a loader driver's import resolution; capture
    the mapped payload's secret `DbgPrint`
+4. **Defense: KF-Sentinel v1** (`sentinel-m1`) — compile a sensor that carves
+   the EPROCESS pool window for DKOM-hidden processes and classifies an
+   unbacked executable pool page against the linked module list
 
 **Module 2 — IRQL & Deferred Procedures** (`irql-dpc`)
 `kfdpc.sys` pins the CPU above DISPATCH_LEVEL and strands a DPC. Read the
 stuck level (`!irql`), record the DeferredRoutine (`!dpcs`), lower and drain
 (`!irql 2`, `!dpcdrain`) to release the secret.
+5. **Defense: KF-Sentinel v2** — compile a watchdog that samples
+   `KeGetCurrentIrql`, restores the ladder and releases the stranded DPC.
 
-**Module 3 — Inline Hooks & Control Flow** (`api-hook`)
+**Module 3 — Inline Hooks & Control Flow** (`api-hook`, `api-hook-blank`)
 `kfhook.sys` detoured `PsLookupProcessByProcessId` so PID 666 vanishes from
 lookup. Find it (`!hookscan`), probe it (`!hooktest`), repair the prologue
-with `eb`, prove the lookup succeeds again.
+with `eb`, prove the lookup succeeds again. Then author the detour yourself:
+find the export's address with `x`/`u`/`sym`, paste it into the driver
+template, compile, load — your bytes do the hooking.
+6. **Defense: KF-Sentinel v3** — compile a prologue attestation engine that
+   convicts both hooks from ring 0.
 
 **Module 4 — Pool Internals & Corruption** (`pool-corrupt`)
 An upstream overflow smashed one of `kfpooler.sys`'s trailing pool guards.
-Locate the block (`!poolfind KfPb`), rewrite the guard with `eb`, verify
-(`!poolverify`), capture the checksum secret.
+Locate the block (`!poolfind KfPb` prints exact guard addresses), rewrite the
+guard with `eb`, verify (`!poolverify`), capture the checksum secret.
+7. **Defense: KF-Sentinel v4** — compile a pool monitor that sweeps guard
+   trailers from your own driver and attributes the overflow.
 
 **Track: windows-userland (sogen)**
 
