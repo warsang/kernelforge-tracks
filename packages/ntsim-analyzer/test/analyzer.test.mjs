@@ -58,6 +58,31 @@ test("analyzeDriver: clean DriverEntry returns SUCCESS + load report", async () 
   assert.equal(r.load.base, `0x${BASE.toString(16)}`);
 });
 
+test("analyzeDriver: driver name seeds DriverName + Services registry path", async () => {
+  const t = probeTextRva(0x20);
+  const text = new Uint8Array(0x20);
+  text.set([0x31, 0xc0, 0xc3], 0x10);
+  const img = buildImage({ entryRva: t + 0x10, text });
+
+  for (const name of ["mhyprot2.sys", `C:\\Windows\\System32\\drivers\\evil.SYS`]) {
+    const r = await analyzeDriver(img, { tables: await loadTables(), name });
+    assert.equal(r.load.driverName, name);
+    const svc = name.split(/[\\/]/).pop().replace(/\.[^.]*$/, "");
+    assert.equal(
+      r.load.registryPath,
+      `\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\${svc}`,
+    );
+
+    // DriverName UNICODE_STRING (at +0x20) points at a buffer holding the name
+    const kernel = r.__session.kernel;
+    const drvVa = r.__session.drvRec.va;
+    const len = kernel.mem.u16(drvVa + 0x20n);
+    const buf = kernel.mem.u64(drvVa + 0x28n);
+    assert.equal(kernel.mem.readUtf16(buf, 128), name);
+    assert.ok(len > 0);
+  }
+});
+
 test("analyzeDriver: unknown imports are provisioned as traced stubs", async () => {
   const t = probeTextRva(0x20);
   const b = new PeBuilder();
