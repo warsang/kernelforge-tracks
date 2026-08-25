@@ -18,6 +18,7 @@
  *     0x02100040, local player index 3 => VA 0x021000d0, health +0x24
  *   - sauer-hook: cl_sendinput at 0x004532a0, cheat stub at 0x0046f010
  */
+import m1l0Body from "./lessons/m1-l0-concepts.mjs";
 import m1l1Body from "./lessons/m1-l1.mjs";
 import m1l2Body from "./lessons/m1-l2.mjs";
 import m1l3Body from "./lessons/m1-l3.mjs";
@@ -192,14 +193,23 @@ export const module1 = {
   title: "Windows Kernel Fundamentals & Kernel Manual Mapping",
   track: "windows-kernel",
   summary:
-    "x64 kernel internals on a real dump-anchored emulated kernel: EPROCESS walking, " +
-    "process hiding, then write and manually map your first drivers in ntsim.",
+    "x64 kernel internals on a real dump-anchored emulated kernel: the four " +
+    "places a process exists (list, threads, handles, telemetry), EPROCESS " +
+    "walking, process hiding, then write and manually map your first drivers " +
+    "in ntsim.",
   lessons: [
+    {
+      id: "m1.l0",
+      title: "Kernel objects primer — the four places a process exists",
+      body: m1l0Body,
+      requires: [],
+      labs: [],
+    },
     {
       id: "m1.l1",
       title: "The x64 kernel landscape",
       body: m1l1Body,
-      requires: [],
+      requires: ["m1.l0"],
       labs: [
         {
           id: "m1.l1.lab1",

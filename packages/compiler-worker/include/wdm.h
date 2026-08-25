@@ -166,6 +166,17 @@ typedef struct _CLIENT_ID {
 
 typedef LONG KPRIORITY;
 
+/* KAPC_STATE (teaching subset): mirrors the real layout's Process field;
+ * ntsim saves/restores Process (+0x10) and ApcStateIndex (+0x18) only */
+typedef struct _KAPC_STATE {
+    LIST_ENTRY ApcListHead[2];     /* reserved — not modeled */
+    struct _PEPROCESS *Process;    /* saved ApcState.Process @ +0x10 */
+    unsigned char ApcStateIndex;   /* saved ApcStateIndex   @ +0x18 */
+} KAPC_STATE, *PKAPC_STATE;
+
+VOID KeStackAttachProcess(PEPROCESS Process, PKAPC_STATE ApcState);
+VOID KeUnstackDetachProcess(PKAPC_STATE ApcState);
+
 HANDLE PsGetCurrentProcessId(void);
 HANDLE PsGetCurrentThreadId(void);
 PEPROCESS PsGetCurrentProcess(void);

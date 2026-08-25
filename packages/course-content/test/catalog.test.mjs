@@ -4,11 +4,11 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has nineteen modules / twenty-five lessons / sixty-three flags", () => {
+test("catalog v5 has nineteen modules / twenty-six lessons / sixty-three flags", () => {
   assert.equal(catalog.version, 5);
   assert.equal(catalog.modules.length, 19);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 25);
+  assert.equal(lessons.length, 26);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
   assert.equal(flags.length, 63);
 });
@@ -20,10 +20,10 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l1 -> m19.l1", () => {
+test("lesson chain is linear m1.l0 -> m19.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
-    if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
+    if (l.id === "m1.l0") { assert.deepEqual(l.requires, []); continue; }
     const prev = lessons[lessons.indexOf(l) - 1];
     assert.ok(l.requires.includes(prev.id), `${l.id} must require ${prev.id}`);
   }
@@ -131,7 +131,8 @@ test("no flag uses the legacy FLAG{} prompt syntax", () => {
 
 test("lesson progression unlocks l2 after l1 completion", async () => {
   const m1 = catalog.modules[0];
-  const [l1] = m1.lessons;
+  // m1.l0 is a reading-only primer (no labs); completion starts at m1.l1
+  const l1 = m1.lessons.find((l) => l.id === "m1.l1");
   let p = emptyProgress();
   for (const flag of l1.labs[0].flags) {
     p = submitFlagForProgress(p, l1, flag.id, true).progress;

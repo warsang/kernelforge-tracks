@@ -119,25 +119,28 @@ test("!process <pid> 7 enumerates ThreadListHead threads (synthetic world)", asy
 
 test("!process 0 4 lists THREAD entries under their parent process only", async () => {
   const { kernel } = await booted();
-  const ethread = kernel.currentThread;
   const c = capture(kernel);
   c.exec("!process 0 4");
   const threadLines = c.lines.filter((l) => l.includes("THREAD "));
-  assert.equal(threadLines.length, 1, `expected exactly one resident thread line, got: ${threadLines}`);
-  assert.ok(threadLines[0].includes(ethread.toString(16)));
-  // it must sit BENEATH its parent process line
+  // boot seeds one live thread per process; populateFromDump rewires lsass's
+  // ring to its own synthetic ETHREAD (Tid 408), so still exactly one per proc
+  assert.equal(threadLines.length, 7,
+    `expected one resident thread per process, got: ${threadLines}`);
+  for (const l of threadLines) assert.match(l, /Tid: \d+/);
+  // lsass's thread sits BENEATH its parent process line
   const parentIdx = c.lines.findIndex((l) => l.includes("lsass.exe"));
-  const threadIdx = c.lines.findIndex((l) => l.includes("THREAD "));
+  const threadIdx = c.lines.findIndex((l) => l.includes("Tid: 408"));
   assert.ok(parentIdx !== -1 && threadIdx > parentIdx, "thread not nested under parent");
 });
 
 test("!process handles empty/corrupt ThreadListHead without hanging", async () => {
   const { kernel } = await booted();
-  // synthetic System EPROCESS has a zeroed ThreadListHead — must be a no-op
+  // System carries one boot-seeded thread in its ThreadListHead ring
   const sys = kernel.findEprocessByPid(4n);
   const c = capture(kernel);
   c.exec(`!process ${sys} 7`);
-  assert.ok(!c.text().includes("THREAD "), "empty ring must not emit thread lines");
+  const sysThreads = c.lines.filter((l) => l.includes("Tid: 1024"));
+  assert.equal(sysThreads.length, 1, "seeded System thread must be listed");
 
   // corrupt ring pointing at itself must terminate
   const tleOff = kernel.tables.offsetOf("_ETHREAD", "ThreadListEntry");

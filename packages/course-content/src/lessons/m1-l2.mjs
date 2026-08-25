@@ -50,12 +50,13 @@ copy of the truth.
 DKOM is decades old yet still appears in the wild because so much tooling
 trusts the kernel's own lists unconditionally. A defender's answer is always
 the same move: **find a second opinion that does not flow through the thing
-being edited**, then diff. The main independent sources:
+being edited**, then diff. The main independent sources (each structure was
+introduced in m1.l0):
 
 | second opinion | why DKOM cannot touch it |
 |---|---|
-| handle-table scan | open handles keep object headers alive regardless of list membership |
-| KTHREAD cross-refs | every thread's \`ApcState.Process\` still points at the victim |
+| handle-table scan | open handles keep object headers alive regardless of list membership — enumerate \`SystemHandleInformation\` and group by target object; the victim's handles (e.g. \`kfsample.exe→kftarget.exe\`) are still open |
+| KTHREAD cross-refs | every thread's \`_KTHREAD.ApcState.Process\` (\`+0x98\` on 22H2) still points at the victim, and it still sits in the victim's \`ThreadListHead\` ring — attaching never touches the process list |
 | pool carving | the EPROCESS bytes themselves survive in place |
 | ETW process events | emitted at creation time, before any hiding |
 
@@ -74,10 +75,12 @@ BOOLEAN ProcessHasLiveThreads(PEPROCESS eproc)
 \`\`\`
 
 That last line is the quiet killer: **DKOM hides the process but forgets its
-threads** — \`ThreadListHead\`, quota blocks and the kernel handle table all
-still reference it. Hypervisor-backed views go further (the guest cannot
-edit what it cannot see), and classic KPP-style checks re-walk the list from
-independent roots on a timer.
+threads** — \`ThreadListHead\`, \`ApcState.Process\` and the handle tables all
+still reference it. See it from the debugger after your unlink:
+\`!process 0 0\` goes quiet, but \`!process <eproc> 7\` on the carved address
+still prints \`THREAD ... ApcState->kftarget.exe\`. Hypervisor-backed views
+go further (the guest cannot edit what it cannot see), and classic KPP-style
+checks re-walk the list from independent roots on a timer.
 
 You will implement exactly this class of detection in m1.l4: **KF-Sentinel
 v1** walks the process list, carves the EPROCESS pool window for name

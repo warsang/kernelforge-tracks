@@ -142,9 +142,12 @@ pool integrity monitor — and each later attack must evade the sensors built
 so far.
 
 **Module 1 — Windows Kernel Fundamentals & Manual Mapping**
+0. Kernel objects primer — the four places a process exists: `ActiveProcessLinks`, `KTHREAD→ApcState.Process`, handle tables (`SystemHandleInformation`), process-start telemetry
 1. Kernel landscape — `lm` reveals `kfprobe.sys`; `!process 0 0` finds
    `kfsample.exe` PID 312
 2. DKOM process hiding — unlink `kftarget.exe` from `PsActiveProcessHead`
+   (its seeded thread still shows `ApcState->kftarget.exe`; its
+   `kfsample.exe→kftarget.exe` handle stays open — the EDR cross-check)
 3. Kernel manual mapping — fix a loader driver's import resolution; capture
    the mapped payload's secret `DbgPrint`
 4. **Defense: KF-Sentinel v1** (`sentinel-m1`) — compile a sensor that carves
