@@ -44,6 +44,10 @@ const F = {
   m3l1f1: "795c965da66b249e55cd9d0f73b177afea944ec6d076f81092f9657c540db6d3",
   m3l1f2: "c7e616822f366fb1b5e0756af498cc11d2c0862edcb32ca65882f622ff39de1b",
   m3l1f3: "c55edb2e0282de46e56e00d9708090d56690bda1bf2fb2daa061067ba19f60dc",
+  // m3.l1.lab2 (author-your-own-hook): thunk VAs are deterministic —
+  // PsLookupProcessByProcessId is the 4th defineApi call => bases.thunk+0x30
+  m3l1f4: "1517f7b43bddbd7889d718031169acafe107f73b267df8a0d0c3b9f97223a862",
+  m3l1f5: "f8aa067dc961c4f182e93bda11cec69361b2b9882c88eeba3a1e3439aba80c34",
   m4l1f1: "50bac58f006cecfdbf8bc09893ee32e2bc3eaae6d5b92a6799645cc1463bf031",
   m4l1f2: "e00133bdd1fb36765d3379852981a2b2c7163f1a0cd1b826f82b516d6080d0d0",
   // --- windows-userland (sogen reference backend) ---
@@ -65,6 +69,65 @@ const F = {
   m10l1f2: "71489c0a57f4a2c1c4fd1dfdd85685d8f09a9ffe3f960f36a30191678e665e3d", // second boundary VA
   m10l1f3: "41571682d793c451794838c436413b18896cb0479575ca5ff59c160c38733537", // E9 detour target VA
 };
+
+// Starter source for m3.l1.lab2. The student must discover the export
+// address in the debugger and paste it into g_TargetFn before compiling.
+const HOOK_AUTHOR_STARTER = `// m3.l1.lab2 - author your own inline hook
+//
+// kfhook.sys showed you WHAT a detour looks like; now write one yourself.
+// The emulated nt! suppresses pid 666 lookups whenever the export prologue
+// reads as detoured (first byte == E9). Your job:
+//
+//   1. Boot the lab world and discover the export's address:
+//        kd> x nt!PsLookup*
+//        kd> u nt!PsLookupProcessByProcessId     ; note the patched prologue bytes
+//   2. Paste that address into g_TargetFn below.
+//   3. Compile & load, then prove it from the debugger:
+//        kd> !hookscan                           ; DETECTED INLINE HOOKS
+//        kd> !hooktest PsLookupProcessByProcessId 666
+
+#include <ntddk.h>
+
+// TODO(lab): replace 0 with the address you found via x / u / sym
+static PUCHAR g_TargetFn = (PUCHAR)0x0000000000000000;
+
+static VOID KfHookUnload(PDRIVER_OBJECT DriverObject)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    if ((ULONG_PTR)g_TargetFn == 0) {
+        DbgPrint("kfdetour: g_TargetFn not set - find the export address with x / u / sym\\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    // landing pad for the jmp: a lone RET keeps the model kernel alive.
+    // (Real detours copy the stolen instructions here instead of RET; see
+    // the lesson's defense section for why that matters to EDRs.)
+    PUCHAR tramp = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, 16, 'TdKf');
+    if (tramp == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    tramp[0] = 0xC3;
+
+    // jmp rel32: displacement is measured from the END of the instruction
+    LONG rel = (LONG)(tramp - (g_TargetFn + 5));
+    g_TargetFn[0] = 0xE9;
+    *(PLONG)(g_TargetFn + 1) = rel;
+
+    DbgPrint("kfdetour: prologue at %p now jumps to %p\\n", g_TargetFn, tramp);
+    DbgPrint("kfdetour: secret=kf-hook-author-ok\\n");
+
+    DriverObject->DriverUnload = KfHookUnload;
+    return STATUS_SUCCESS;
+}
+`;
 
 export const module1 = {
   id: "m1",
@@ -275,6 +338,41 @@ export const module3 = {
                 "!hooktest on the same lookup. Which symbolic NTSTATUS comes back now? " +
                 "Submit its name, e.g. STATUS_ACCESS_DENIED style.",
               points: 150,
+            },
+          ],
+        },
+        {
+          id: "m3.l1.lab2",
+          kind: "compiler",
+          title: "Author the detour yourself",
+          brief:
+            "Flip sides: find PsLookupProcessByProcessId's address in the debugger " +
+            "(x / u / sym), paste it into the driver template, compile and load it — " +
+            "your code writes the E9 detour that makes pid 666 unlookupable. Prove with " +
+            "!hookscan and !hooktest.",
+          scenario: "api-hook-blank",
+          compileTask: "inline-hook",
+          starterFiles: [
+            { path: "driver/kfhookauthor.c", content: HOOK_AUTHOR_STARTER },
+          ],
+          flags: [
+            {
+              id: "m3.l1.f4",
+              sha256: F.m3l1f4,
+              prompt:
+                "Before compiling: find the address of nt!PsLookupProcessByProcessId yourself " +
+                "(`x nt!PsLookup*`, then `u` or `sym <addr>`). Submit the full hex address " +
+                "with 0x prefix as shown by x.",
+              points: 150,
+            },
+            {
+              id: "m3.l1.f5",
+              sha256: F.m3l1f5,
+              prompt:
+                "After your driver loads and !hookscan reports the detour, !hooktest " +
+                "PsLookupProcessByProcessId 666 proves suppression — and the DbgPrint buffer " +
+                "holds your driver's secret line. Submit the secret value exactly.",
+              points: 200,
             },
           ],
         },

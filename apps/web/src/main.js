@@ -28,7 +28,10 @@ function kernel_processByName(kernel, name) {
   return kernel.processesByName.get(name) ?? null;
 }
 
+/** Starter code: catalog-provided source first, legacy hardcoded fallbacks after. */
 function getStarterCode(lab) {
+  const provided = (lab.starterFiles ?? []).find((f) => f.content?.trim());
+  if (provided) return provided.content;
   if (lab.id.includes("dkom")) {
     return `// DKOM process hiding — unlink kftarget.exe from ActiveProcessLinks
 //
@@ -73,6 +76,66 @@ async function persist() {
 
 const solvedCount = () => Object.keys(progress.solvedFlags).length;
 const totalPoints = () => progress.points ?? 0;
+
+// --------------------------------------------------- compiler-lab tasks
+// Each compiler lab declares `compileTask`; the task owns source validation
+// and post-run verification against live kernel state.
+
+function verifyDkomTask(kernel, loaded, status) {
+  const kftarget = kernel_processByName(kernel, "kftarget.exe");
+  if (!kftarget) {
+    status("err", "kftarget.exe not found in process list!");
+    return false;
+  }
+  const stillVisible = kernel.listProcesses().some((p) => p.name === "kftarget.exe");
+  const unloadSet = kernel.mem.u64(loaded.drvRec.va + 0x68n) !== 0n;
+  const printed = [...kernel.dbgLog].reverse().find((l) => l.includes("_LIST_ENTRY"));
+
+  if (stillVisible) {
+    status("warn", "!process still shows kftarget.exe — DKOM may not have worked.");
+  } else {
+    status("good", "✓ kftarget.exe hidden!");
+  }
+  if (!unloadSet) {
+    status("warn", "DriverUnload was not set on DriverObject.");
+  }
+  if (printed) {
+    status("mono", printed.trim());
+    const addr = printed.match(/LIST_ENTRY at:\s*([0-9a-f`]+)/i);
+    if (addr) status("good", `LIST_ENTRY @ 0x${addr[1].replace(/`/g, "")}`);
+  }
+  return !stillVisible;
+}
+
+const HOOK_API = "PsLookupProcessByProcessId";
+
+function verifyInlineHookTask(kernel, loaded, status) {
+  const detoured = kernel.isDetoured(HOOK_API);
+  const thunk = kernel.apiThunks.get(HOOK_API);
+  const printed = [...kernel.dbgLog].reverse().find((l) => l.includes("kfdetour:"));
+  const unloadSet = kernel.mem.u64(loaded.drvRec.va + 0x68n) !== 0n;
+
+  if (!detoured) {
+    status("err", "!hookscan would show nothing — your driver did not write an E9 to " +
+      `${HOOK_API}'s prologue. Did you paste the export address into g_TargetFn?`);
+    return false;
+  }
+  status("good", `✓ ${HOOK_API} prologue @ ${thunk ? "0x" + thunk.toString(16) : "?"} reads as detoured.`);
+  status("dim", "Prove it: !hookscan, then !hooktest PsLookupProcessByProcessId 666");
+  if (printed) {
+    status("mono", printed.trim());
+  }
+  if (!unloadSet) {
+    status("warn", "DriverUnload was not set on DriverObject.");
+  }
+  return true;
+}
+
+const COMPILE_TASKS = {
+  "dkom-hide": { validate: (src) => validateDriverSource(src, "dkom-hide"), verify: verifyDkomTask },
+  "inline-hook": { validate: (src) => validateDriverSource(src, "inline-hook"), verify: verifyInlineHookTask },
+};
+const taskFor = (lab) => COMPILE_TASKS[lab.compileTask ?? (lab.id.includes("dkom") ? "dkom-hide" : "")] ?? null;
 
 // ---------------------------------------------------------------- rendering
 
@@ -244,15 +307,20 @@ function renderLesson(lesson) {
     }
 
     if (lab.kind === "compiler") {
+      const task = taskFor(lab);
       const editor = h("textarea", {
         class: "code-editor", rows: 16, spellcheck: "false",
       }, getStarterCode(lab));
-      const compileBtn = h("button", { class: "primary" }, "Compile & Load Driver");
+      const compileBtn = h("button", { class: "primary" }, task ? "Compile & Load Driver" : "(unsupported lab)");
+      compileBtn.disabled = !task;
       const compileStatus = h("div", { class: "compile-status" });
+      const status = (cls, text) =>
+        compileStatus.append(h("div", { class: cls }, text));
       compileBtn.addEventListener("click", async () => {
+        if (!task) return;
         compileStatus.innerHTML = "";
         const src = editor.value;
-        const validation = validateDriverSource(src, "dkom-hide");
+        const validation = task.validate(src);
         if (!validation.ok) {
           for (const err of validation.errors)
             compileStatus.append(h("div", { class: "err" }, "✗ " + err));
@@ -266,16 +334,9 @@ function renderLesson(lesson) {
         if (!currentDebugger) {
           bootBtn?.click();
           if (!currentDebugger) {
-            compileStatus.append(h("div", { class: "err" }, "boot failed"));
+            status("err", "boot failed");
             return;
           }
-        }
-
-        // Find kftarget.exe
-        const kftarget = kernel_processByName(currentKernel, "kftarget.exe");
-        if (!kftarget) {
-          compileStatus.append(h("div", { class: "err" }, "kftarget.exe not found in process list!"));
-          return;
         }
 
         // Real compilation: in-browser wasm clang first, server bridge fallback.
@@ -284,24 +345,23 @@ function renderLesson(lesson) {
         try {
           ({ objBytes, via } = await compileDriverSource(src));
         } catch (err) {
-          compileStatus.append(h("div", { class: "err" }, "✗ compile failed: " + err.message));
+          status("err", "✗ compile failed: " + err.message);
           return;
         }
         const viaMsg = via === "wasm"
           ? "compiled in-browser (wasm clang)"
           : "compiled via server fallback";
-        compileStatus.append(h("div", { class: "good" }, `✓ ${viaMsg} (${objBytes.length} bytes)`));
+        status("good", `✓ ${viaMsg} (${objBytes.length} bytes)`);
 
         // Link + manual-map the student's actual bytes into emulated memory.
         let loaded;
         try {
           loaded = loadCompiledDriver(currentKernel, objBytes, { labId: lab.id });
         } catch (err) {
-          compileStatus.append(h("div", { class: "err" }, "✗ load failed: " + err.message));
+          status("err", "✗ load failed: " + err.message);
           return;
         }
-        compileStatus.append(h("div", { class: "good" },
-          `✓ mapped at 0x${loaded.base.toString(16)} as ${loaded.name}`));
+        status("good", `✓ mapped at 0x${loaded.base.toString(16)} as ${loaded.name}`);
 
         // Execute DriverEntry on the session's CPU engine (SEH-aware).
         const regPathBuf = currentKernel.allocPool(0x100);
@@ -311,39 +371,23 @@ function renderLesson(lesson) {
           loaded.image);
 
         if (result.status !== "ok") {
-          compileStatus.append(h("div", { class: "err" },
-            `✗ Driver faulted: ${result.error?.message ?? result.status}`));
+          status("err", `✗ Driver faulted: ${result.error?.message ?? result.status}`);
           for (const ex of currentKernel.exceptionTrace.splice(0)) {
-            compileStatus.append(h("div", { class: "warn" },
-              `${ex.handled ? "SEH handled" : "UNHANDLED"} @ ${ex.faultRip}: ${ex.detail}`));
+            status("warn", `${ex.handled ? "SEH handled" : "UNHANDLED"} @ ${ex.faultRip}: ${ex.detail}`);
           }
           return;
         }
-
-        // Verify against live kernel state mutated by the student's bytes.
-        const stillVisible = currentKernel.listProcesses().some((p) => p.name === "kftarget.exe");
-        const unloadSet = currentKernel.mem.u64(loaded.drvRec.va + 0x68n) !== 0n;
-        const printed = [...currentKernel.dbgLog].reverse().find((l) => l.includes("_LIST_ENTRY"));
-
-        if (stillVisible) {
-          compileStatus.append(h("div", { class: "warn" },
-            "!process still shows kftarget.exe — DKOM may not have worked."));
-        } else {
-          compileStatus.append(h("div", { class: "good" }, "✓ kftarget.exe hidden!"));
-        }
-        if (!unloadSet) {
-          compileStatus.append(h("div", { class: "warn" }, "DriverUnload was not set on DriverObject."));
-        }
-        if (printed) {
-          compileStatus.append(h("div", { class: "mono" }, printed.trim()));
-          const addr = printed.match(/LIST_ENTRY at:\s*([0-9a-f`]+)/i);
-          if (addr) {
-            compileStatus.append(h("div", { class: "good" },
-              `LIST_ENTRY @ 0x${addr[1].replace(/`/g, "")}`));
-          }
-        }
         currentDebugger.write(`${loaded.name}: DriverEntry executed on ${backendSel.value} backend.`);
-        currentDebugger.write(`Run !process 0 0 to verify kftarget.exe is hidden; lm shows your driver.`);
+
+        // Task-specific verification against live kernel state.
+        const ok = task.verify(currentKernel, loaded, status);
+        if (lab.compileTask === "inline-hook") {
+          currentDebugger.write(ok
+            ? `Detour is live — inspect it with !hookscan / !hooktest.`
+            : `No detour landed — check g_TargetFn and recompile.`);
+        } else {
+          currentDebugger.write(`Run !process 0 0 to verify kftarget.exe is hidden; lm shows your driver.`);
+        }
       });
       card.append(editor, h("div", { class: "controls" }, compileBtn), compileStatus);
     }

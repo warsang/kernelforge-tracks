@@ -26,6 +26,15 @@ const REQUIRED_PATTERNS = {
     { pattern: /DbgPrint/i,
       hint: "You must DbgPrint the address of the _LIST_ENTRY you overwrote so you can submit the flag." },
   ],
+  // m3.l1.lab2 — author-your-own-inline-hook
+  "inline-hook": [
+    { pattern: /0x[0-9a-fA-F]{12,16}|g_TargetFn\s*=/i,
+      hint: "Set g_TargetFn to the export's address. Discover it in the debugger with `x nt!PsLookup*`, `u nt!PsLookupProcessByProcessId` or `sym` — do NOT guess." },
+    { pattern: /0xE9|0xe9/,
+      hint: "Write the E9 (jmp rel32) opcode over the target prologue." },
+    { pattern: /DbgPrint/i,
+      hint: "DbgPrint the hooked address (and the secret line) so the lab can verify your detour landed." },
+  ],
 };
 
 export function validateDriverSource(source, labKind) {

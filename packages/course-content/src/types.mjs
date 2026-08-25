@@ -16,6 +16,7 @@
  * @property {string} brief
  * @property {string} [scenario]    scenario/fixture id in the track runtime
  * @property {{path: string, content: string}[]} [starterFiles]
+ * @property {string} [compileTask] compiler-lab task key (driver-builder validation + run checks)
  * @property {FlagDef[]} flags
  *
  * @typedef {Object} LessonDef

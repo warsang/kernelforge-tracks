@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v3 has ten modules / twelve lessons / twenty-seven flags", () => {
+test("catalog v3 has ten modules / twelve lessons / twenty-nine flags", () => {
   assert.equal(catalog.version, 3);
   assert.equal(catalog.modules.length, 10);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   assert.equal(lessons.length, 12);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 27);
+  assert.equal(flags.length, 29);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -52,6 +52,9 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m3.l1.f1": "PsLookupProcessByProcessId",
     "m3.l1.f2": "666",
     "m3.l1.f3": "STATUS_SUCCESS",
+    // m3.l1.lab2: deterministic 4th thunk (bases.thunk + 0x30) + driver secret
+    "m3.l1.f4": "0xfffff80100000030",
+    "m3.l1.f5": "kf-hook-author-ok",
     "m4.l1.f1": "0xfffff90000001200",
     "m4.l1.f2": "kf-pool-guard-ok",
     // windows-userland: sogen reference backend world constants

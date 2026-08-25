@@ -18,8 +18,23 @@
 #define RESTRICTED_POINTER
 #define ALLOCATE_DESCRIPTION(x)
 
+/* WDK source-annotation macros (no-ops here; real WDK carries metadata) */
+#define _In_
+#define _In_opt_
+#define _Inout_
+#define _Inout_opt_
+#define _Out_
+#define _Out_opt_
+#define _Return_type_success_(x)
+#define _Must_inspect_result_
+
 #ifndef C_ASSERT
 #define C_ASSERT(e) typedef char __C_ASSERT__[(e) ? 1 : -1]
+
+/* --- SAL annotations --------------------------------------------------------
+ * No-op spellings of the WDK source annotations so tutorial driver code
+ * compiles unmodified (_In_ PDRIVER_OBJECT etc.). The real WDK expands these
+ * to rich metadata; for teaching they vanish. */
 #endif
 
 #define CONTAINING_RECORD(address, type, field) \

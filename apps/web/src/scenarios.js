@@ -541,6 +541,41 @@ scenarios["api-hook"] = {
 };
 
 /**
+ * Authoring variant of the hook world: same nt! model that gates lookups on
+ * live prologue bytes, but NO detour is installed and no kfhook.sys exists.
+ * The student compiles their own detour writer against it (m3.l1.lab2).
+ */
+function setupApiHookBlank(kernel) {
+  const API = "PsLookupProcessByProcessId";
+  const KFHOOK_HIDDEN_PID = 666n;
+  // gate behavior on LIVE prologue bytes: once the student's driver writes
+  // an E9 over the thunk, PID 666 lookups start failing — exactly like the
+  // pre-built kfhook.sys world, except here the bytes come from THEIR code
+  const orig = kernel.apiImpls.get(API);
+  kernel.defineApi(API, function (pid, outPtr) {
+    if (kernel.isDetoured(API) && BigInt(pid) === KFHOOK_HIDDEN_PID) {
+      kernel.dbgLog.push(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
+      return 0xc000000bn;
+    }
+    return orig(pid, outPtr);
+  });
+}
+
+scenarios["api-hook-blank"] = {
+  title: "api-hook-blank — author your own detour",
+  description:
+    "A clean 22H2 world whose PsLookupProcessByProcessId suppresses pid 666 " +
+    "whenever its prologue reads as detoured. Find the export's address, " +
+    "compile a driver that writes an E9 over it, prove the suppression.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupApiHookBlank(session.kernel);
+    session.kind = "api-hook-blank";
+    return session;
+  },
+};
+
+/**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
  * one trailing guard. Student audits (!poolfind), repairs with eb, verifies
