@@ -62,6 +62,19 @@ async function loadSysrootInto(mod) {
   }
 }
 
+/** Fetch WDK teaching headers (ntddk.h etc.) into clang's in-memory FS. */
+async function loadWdkHeadersInto(mod) {
+  const manifest = await (await fetch(new URL("headers-manifest.json", DIST_URL))).json();
+  for (const [vpath, b64] of Object.entries(manifest)) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const dir = vpath.split("/").slice(0, -1).join("/");
+    if (dir && !mod.FS.analyzePath(dir).exists) mod.FS.mkdirTree(dir);
+    mod.FS.writeFile(vpath, bytes);
+  }
+}
+
 /** Compile C source -> x64 COFF object bytes (real clang, in-browser). */
 async function compileToObj(source) {
   const { clangMod: clang } = await getModules();
@@ -70,9 +83,11 @@ async function compileToObj(source) {
   try {
     clang.FS.mkdirTree("/work");
     clang.FS.writeFile(inName, source);
+    await loadWdkHeadersInto(clang);
     const code = clang.callMain([
       "--target=x86_64-pc-windows-msvc",
       "-O1", "-ffreestanding", "-fno-stack-protector",
+      "-isystem", "/wdm/include",
       "-c", inName, "-o", outName,
     ]);
     if (code !== 0) return { ok: false, error: "compilation failed (see stderr)" };
