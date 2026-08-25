@@ -9,6 +9,7 @@
 import { SparseMemory } from "@kernelforge/ntsim/src/memory.mjs";
 import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
+import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 
 /** Dev flag planted by boot-default; index.html overrides via process.env. */
@@ -502,10 +503,14 @@ function setupApiHook(kernel) {
   kernel.installDetour(API, detourTarget);
   kernel.inlineHooks.push({ api: API, thunk: kernel.apiThunks.get(API), target: detourTarget, module: "kfhook.sys" });
 
-  // searchable evidence on the detour page
-  kernel.mem.writeAnsi(detourTarget + 0x40n,
+  // deterministic .text grid for the static-analysis lab (m10): exactly
+  // 0x800 / 16 = 128 recoverable function boundaries starting at detourTarget
+  writeFunctionGrid(kernel.mem, detourTarget, 0x800);
+
+  // searchable evidence on a dedicated page (kept out of the .text grid)
+  kernel.mem.writeAnsi(detourTarget + 0x2000n,
     "kfhook: PsLookupProcessByProcessId detoured");
-  kernel.mem.writeAnsi(detourTarget + 0x80n,
+  kernel.mem.writeAnsi(detourTarget + 0x2080n,
     "kfhook: protected pid=666");
 
   kernel.loadedModules.push({
@@ -575,6 +580,84 @@ scenarios["pool-corrupt"] = {
     session.kind = "pool-corrupt";
     return session;
   },
+};
+
+/**
+ * windows-userland worlds (packages/sogen-runtime reference backend): a
+ * headless Sauerbraten process under a sogen-style userspace emulator.
+ * Sessions carry .world + .consoleEngine instead of .kernel — the pane
+ * registry routes them to the userland console.
+ */
+scenarios["sauer-recon"] = {
+  title: "sauer-recon — emulated game process",
+  description:
+    "Boots the headless Sauerbraten process model in the sogen runtime: " +
+    "module list, heap entity array, live health state. Hunt the local " +
+    "player with scans and !damage.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("sauer-recon");
+    return {
+      kind: "sauer-recon",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
+scenarios["sauer-hook"] = {
+  title: "sauer-hook — detoured input path",
+  description:
+    "Same game process; a cheat stub rewrote cl_sendinput's prologue into an " +
+    "E9 trampoline to an aim-assist routine. hookscan it, resolve the target, " +
+    "repair with eb and prove it with !inputtest.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("sauer-hook");
+    return {
+      kind: "sauer-hook",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
+/**
+ * linux-kernel worlds (packages/v86-lab): a real i386 buildroot guest under
+ * v86. Boot requires the vendored bundle + image; without them the lab card
+ * surfaces an instructive BundleMissingError instead of failing silently.
+ */
+async function bootLinuxWorld(worldId) {
+  const { bootLinuxSession, fetchGuestImage } = await import("@kernelforge/v86-lab");
+  const image = await fetchGuestImage();
+  const session = await bootLinuxSession({ worldId, image });
+  return { kind: worldId, linux: session };
+}
+
+scenarios["lkm-hello"] = {
+  title: "lkm-hello — buildroot guest",
+  description:
+    "Boots the i386 Linux guest. Write your module in the editor, ship it into " +
+    "the guest, insmod it and read dmesg over serial.",
+  boot: () => bootLinuxWorld("lkm-hello"),
+};
+
+scenarios["syscall-trace"] = {
+  title: "syscall-trace — kprobe world",
+  description:
+    "Same guest; /root/trigger fires execve storms. Register a kprobe and read " +
+    "your handler's KFFLAG output from the serial stream.",
+  boot: () => bootLinuxWorld("syscall-trace"),
+};
+
+scenarios["task-hide"] = {
+  title: "task-hide — kfvillain loaded",
+  description:
+    "The villain rootkit hides decoy tasks during init. Measure nr_threads vs " +
+    "/proc visibility, then make it confess through your detector.",
+  boot: () => bootLinuxWorld("task-hide"),
 };
 
 export function getScenario(id) {

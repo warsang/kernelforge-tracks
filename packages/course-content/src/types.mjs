@@ -7,7 +7,7 @@
  * @property {string} prompt        shown before solving
  * @property {number} points        CTF scoring
  *
- * @typedef {"ntsim"|"compiler"|"windbg"|"quiz"} LabKind
+ * @typedef {"ntsim"|"compiler"|"windbg"|"quiz"|"sogen"|"linux"} LabKind
  *
  * @typedef {Object} LabDef
  * @property {string} id
@@ -28,7 +28,8 @@
  * @typedef {Object} CourseModule
  * @property {string} id
  * @property {string} title
- * @property {"windows-user"|"windows-kernel"|"linux"|"hypervisor"|"uefi"|"misc"} track
+ * @property {"windows-user"|"windows-kernel"|"windows-userland"|"linux-kernel"|"reversing"
+ *           |"linux"|"hypervisor"|"uefi"|"misc"} track
  * @property {string} summary
  * @property {LessonDef[]} lessons
  *

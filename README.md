@@ -101,11 +101,13 @@ node scripts/scrape-vergilius.mjs --family windows-7 --build sp1
 Data source: VergiliusProject (CC0 — see their terms.html). Tables drive every
 offset in ntsim and the debugger; switching build = swapping the table dir.
 
-## Shipped modules (windows-kernel track)
+## Shipped modules
 
 Answers are plain question responses (names, PIDs, hex addresses, symbolic
 NTSTATUS) normalized trim+lowercase then sha256-checked; no FLAG{} wrapper.
 Ground truth lives with instructors; see docs/plan.md for the build-out plan.
+
+**Track: windows-kernel (ntsim)**
 
 **Module 1 — Windows Kernel Fundamentals & Manual Mapping**
 1. Kernel landscape — `lm` reveals `kfprobe.sys`; `!process 0 0` finds
@@ -129,20 +131,57 @@ An upstream overflow smashed one of `kfpooler.sys`'s trailing pool guards.
 Locate the block (`!poolfind KfPb`), rewrite the guard with `eb`, verify
 (`!poolverify`), capture the checksum secret.
 
+**Track: windows-userland (sogen)**
+
+**Module 5 — Userland Recon Under an Emulator** (`sauer-recon`)
+A headless Sauerbraten process under a sogen-style emulator: enumerate
+modules (`lm`), two-scan for live health state with `!damage` as oracle,
+locate the local player entity and its health field offset.
+
+**Module 6 — Userland Hooks & Input Flow** (`sauer-hook`)
+A cheat stub rewrote `cl_sendinput` into an E9 trampoline to an aim-assist
+routine. `hookscan` it, resolve the target, repair with `eb`, prove honest
+flow with `!inputtest`.
+
+**Track: linux-kernel (v86)**
+
+**Modules 7–9 — Linux LKM / Syscall Tracing / Rootkit Detection**
+(`lkm-hello`, `syscall-trace`, `task-hide`)
+A real i386 buildroot guest boots via v86 in the browser tab: write LKMs in
+the IDE pane, ship them into the guest, insmod, read dmesg over serial.
+m7 module basics + frozen syscall ABI; m8 kprobe-based execve tracing;
+m9 detect a task-unlinking villain rootkit via nr_threads vs /proc
+accounting, then make it confess through your completion path.
+
+**Track: reversing (ghidra)**
+
+**Module 10 — Static Analysis with Ghidra-Grade Tooling** (`api-hook`)
+Function-boundary recovery over a driver image (`!funcs`) and rel32 detour
+resolution; pseudocode via Ghidra's native decompiler engine compiled to
+wasm once vendored (loud degrade until then).
+
 ## Roadmap (see docs/plan.md)
 
-- Phase 2: Sogen fork (Windows userland track, real ntdll) + Sauerbraten headless target
-- Phase 3: v86 Linux track (i386 Buildroot, LKM labs)
 - Phase 4: shadow-EPT hypervisor module (ept-sim)
 - Phase 5: UEFI bootkit simulator
 - Phase 6: BYOVD/misconfiguration labs (RACEAC-style TOCTOU, mhyprot2 pattern)
-- Infra: browsercc WASM fork (X86+BPF LLVM backends) to move compilation fully client-side;
-  deeper API harness breadth (speakeasy-class), IRP/IOCTL-driven malware labs
+- Sogen WASM core vendor step: replace the reference userland backend with
+  real PE execution against Wine-derived DLLs (packages/sogen-runtime/vendor)
+- Playable Sauerbraten client in-browser: gated behind the GUI spike
+  (docs/spike-sogen-gui.md); headless labs are fully shippable without it
+- Infra: browsercc WASM fork (X86+BPF LLVM backends) to move compilation
+  fully client-side; deeper API harness breadth (speakeasy-class),
+  IRP/IOCTL-driven malware labs; real kernel-dump carve (kdmp-parser) to
+  anchor ntoskrnl pages with genuine bytes
 
 ## Legal notes
 
 - No AssaultCube anywhere (license prohibits commercial use + cheat-content redistribution).
 - Sauerbraten engine is ZLIB (commercial OK); ship ZERO stock media — link official installer.
-- Sogen fork will be GPL-2.0, protocol-isolated from proprietary content.
+- Sogen core is GPL-2.0; vendored bundles follow the ntsim-unicorn policy
+  (pinned source + rebuild recipe). Emulation roots ship Wine-derived DLLs
+  (LGPL) built by tools/build-wine-root.mjs — never Microsoft's.
+- v86 is BSD-2-Clause; guest kernel/modules are GPL-2.0 with sources in-repo.
+- Ghidra decompiler engine is Apache-2.0. Full inventory: docs/legal.md.
 - Vergilius tables: CC0. Dumps: vendor links only.
 - Educational/defensive framing; responsible-use policy ships with the platform.

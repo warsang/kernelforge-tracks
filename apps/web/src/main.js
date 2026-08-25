@@ -11,6 +11,7 @@ import { validateDriverSource } from "./driver-builder.mjs";
 import { loadCompiledDriver } from "@kernelforge/ntsim-analyzer/src/compiled.mjs";
 import { compileDriverSource, warmupCompiler } from "@kernelforge/compiler-worker/index.browser.mjs";
 import { loadTables } from "./tables.js";
+import { paneFor } from "./panes.js";
 import { createDebugger } from "./debugger.js";
 import { createDebugConsole, disposeConsoles } from "./console.js";
 import { renderAnalyzer } from "./analyzer.js";
@@ -21,6 +22,7 @@ const app = document.getElementById("app");
 let progress = emptyProgress();
 let currentDebugger = null;
 let currentKernel = null;
+let currentSession = null;
 
 function kernel_processByName(kernel, name) {
   return kernel.processesByName.get(name) ?? null;
@@ -171,10 +173,13 @@ function renderLesson(lesson) {
       onSubmit: (line) => currentDebugger?.exec(line),
     });
 
+    const pane = paneFor(lab.kind) ?? {};
+    const backends = pane.backends ?? [
+      { value: "js", label: "CPU: JsInterpreter (deterministic)" },
+      { value: "unicorn", label: "CPU: Unicorn (QEMU wasm)" },
+    ];
     const backendSel = h("select", {},
-      h("option", { value: "js" }, "CPU: JsInterpreter (deterministic)"),
-      h("option", { value: "unicorn" }, "CPU: Unicorn (QEMU wasm)"),
-    );
+      backends.map((b) => h("option", { value: b.value }, b.label)));
     const bootBtn = h("button", {
       class: "primary",
       onclick: async () => {
@@ -183,24 +188,27 @@ function renderLesson(lesson) {
         const dbg = await consoleReady;
         try {
           const scenario = getScenario(lab.scenario);
-          const factory = await resolveBackend(backendSel.value);
-          const dumpWorld = await tryLoadDumpWorld();
-          const carvedState = await tryLoadCarvedState();
-          const session = await scenario.boot({
+          const factory = pane.rawBoot ? null : await resolveBackend(backendSel.value);
+          const dumpWorld = pane.noDump ? null : await tryLoadDumpWorld();
+          const io = pane.rawBoot ? {} : {
             makeBackend: (mem) => factory(mem),
             loadTables: () => loadTables(),
             dumpWorld,
-            carvedState,
-          });
+            carvedState: pane.noDump ? null : await tryLoadCarvedState(),
+          };
+          const session = await scenario.boot(io);
           dbg.innerHTML = "";
-          currentKernel = session.kernel;
-          currentDebugger = createDebugger(session.kernel, dbg);
-          if (session.dumpPagesLoaded > 0) {
+          currentSession = session;
+          currentKernel = session.kernel ?? null;
+          currentDebugger = pane.createDebugger
+            ? pane.createDebugger(session, dbg)
+            : createDebugger(session.kernel, dbg);
+          if (!pane.noDump && session.dumpPagesLoaded > 0) {
             currentDebugger.write(
               `CARVED-DUMP MODE: ${session.dumpPagesLoaded} genuine pages ` +
               `(ntoskrnl/CI/cng) loaded at true VAs from a public kernel dump.`);
           }
-          if (dumpWorld) {
+          if (dumpWorld && !pane.noDump) {
             currentDebugger.write(
               `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +
               `${dumpWorld.meta.moduleCount} modules extracted from a genuine ` +
@@ -222,6 +230,18 @@ function renderLesson(lesson) {
       h("h2", null, lab.title + " ", h("code", { class: "kind" }, lab.kind)),
       h("p", null, lab.brief),
     );
+
+    // pane-registered editors (e.g. linux LKM IDE)
+    if (pane.attachEditor) {
+      const editorStatus = h("div", { class: "compile-status" });
+      card.append(pane.attachEditor({
+        h,
+        lab,
+        status: (text, cls = "dim") => editorStatus.append(h("div", { class: cls }, text)),
+        getSession: () => ({ linux: currentSession?.linux ?? null }),
+      }));
+      card.append(editorStatus);
+    }
 
     if (lab.kind === "compiler") {
       const editor = h("textarea", {

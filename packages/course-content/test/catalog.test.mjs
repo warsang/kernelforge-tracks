@@ -4,16 +4,23 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v2 has four modules / six lessons / twelve flags", () => {
-  assert.equal(catalog.version, 2);
-  assert.equal(catalog.modules.length, 4);
+test("catalog v3 has ten modules / twelve lessons / twenty-seven flags", () => {
+  assert.equal(catalog.version, 3);
+  assert.equal(catalog.modules.length, 10);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 6);
+  assert.equal(lessons.length, 12);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 12);
+  assert.equal(flags.length, 27);
 });
 
-test("lesson chain is linear m1.l1 -> m4.l1", () => {
+test("tracks span kernel, userland and linux", () => {
+  const tracks = new Set(catalog.modules.map((m) => m.track));
+  for (const t of ["windows-kernel", "windows-userland", "linux-kernel", "reversing"]) {
+    assert.ok(tracks.has(t), `missing track ${t}`);
+  }
+});
+
+test("lesson chain is linear m1.l1 -> m10.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -47,6 +54,24 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m3.l1.f3": "STATUS_SUCCESS",
     "m4.l1.f1": "0xfffff90000001200",
     "m4.l1.f2": "kf-pool-guard-ok",
+    // windows-userland: sogen reference backend world constants
+    "m5.l1.f1": "0x00400000",
+    "m5.l1.f2": "0x021000d0",
+    "m5.l1.f3": "0x24",
+    "m6.l1.f1": "0x004532a0",
+    "m6.l1.f2": "0x0046f010",
+    "m6.l1.f3": "kf-input-restored",
+    // linux-kernel: frozen i386 ABI + guest-seeded secrets
+    "m7.l1.f1": "128",
+    "m7.l1.f2": "kf-lkm-hello",
+    "m8.l1.f1": "11",
+    "m8.l1.f2": "kf-trace-ok",
+    "m9.l1.f1": "3",
+    "m9.l1.f2": "kf-detector-ok",
+    // reversing: static analysis over the api-hook world
+    "m10.l1.f1": "128",
+    "m10.l1.f2": "0xfffff8055a601010",
+    "m10.l1.f3": "0xfffff8055a601000",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)
