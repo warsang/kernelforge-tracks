@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true
+  },
+  "include": [
+    "apps/*/src/**/*",
+    "packages/*/src/**/*",
+    "tools/**/*.mjs"
+  ],
+  "exclude": ["**/node_modules", "**/dist", "**/vendor"]
+}

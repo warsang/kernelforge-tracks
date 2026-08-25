@@ -577,6 +577,48 @@ scenarios["pool-corrupt"] = {
   },
 };
 
+/**
+ * windows-userland worlds (packages/sogen-runtime reference backend): a
+ * headless Sauerbraten process under a sogen-style userspace emulator.
+ * Sessions carry .world + .consoleEngine instead of .kernel — the pane
+ * registry routes them to the userland console.
+ */
+scenarios["sauer-recon"] = {
+  title: "sauer-recon — emulated game process",
+  description:
+    "Boots the headless Sauerbraten process model in the sogen runtime: " +
+    "module list, heap entity array, live health state. Hunt the local " +
+    "player with scans and !damage.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("sauer-recon");
+    return {
+      kind: "sauer-recon",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
+scenarios["sauer-hook"] = {
+  title: "sauer-hook — detoured input path",
+  description:
+    "Same game process; a cheat stub rewrote cl_sendinput's prologue into an " +
+    "E9 trampoline to an aim-assist routine. hookscan it, resolve the target, " +
+    "repair with eb and prove it with !inputtest.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("sauer-hook");
+    return {
+      kind: "sauer-hook",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
 export function getScenario(id) {
   const s = scenarios[id];
   if (!s) throw new Error(`unknown scenario "${id}"`);

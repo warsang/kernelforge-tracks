@@ -10,6 +10,7 @@ import { getScenario, tryLoadDumpWorld, tryLoadCarvedState } from "./scenarios.j
 import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
 import { compileDriverSource, warmupCompiler } from "@kernelforge/compiler-worker/index.browser.mjs";
 import { loadTables } from "./tables.js";
+import { paneFor } from "./panes.js";
 import { createDebugger } from "./debugger.js";
 import { createDebugConsole, disposeConsoles } from "./console.js";
 
@@ -163,10 +164,13 @@ function renderLesson(lesson) {
       onSubmit: (line) => currentDebugger?.exec(line),
     });
 
+    const pane = paneFor(lab.kind) ?? {};
+    const backends = pane.backends ?? [
+      { value: "js", label: "CPU: JsInterpreter (deterministic)" },
+      { value: "unicorn", label: "CPU: Unicorn (QEMU wasm)" },
+    ];
     const backendSel = h("select", {},
-      h("option", { value: "js" }, "CPU: JsInterpreter (deterministic)"),
-      h("option", { value: "unicorn" }, "CPU: Unicorn (QEMU wasm)"),
-    );
+      backends.map((b) => h("option", { value: b.value }, b.label)));
     const bootBtn = h("button", {
       class: "primary",
       onclick: async () => {
@@ -176,8 +180,8 @@ function renderLesson(lesson) {
         try {
           const scenario = getScenario(lab.scenario);
           const factory = await resolveBackend(backendSel.value);
-          const dumpWorld = await tryLoadDumpWorld();
-          const carvedState = await tryLoadCarvedState();
+          const dumpWorld = pane.noDump ? null : await tryLoadDumpWorld();
+          const carvedState = pane.noDump ? null : await tryLoadCarvedState();
           const session = await scenario.boot({
             makeBackend: (mem) => factory(mem),
             loadTables: () => loadTables(),
@@ -185,14 +189,16 @@ function renderLesson(lesson) {
             carvedState,
           });
           dbg.innerHTML = "";
-          currentKernel = session.kernel;
-          currentDebugger = createDebugger(session.kernel, dbg);
-          if (session.dumpPagesLoaded > 0) {
+          currentKernel = session.kernel ?? null;
+          currentDebugger = pane.createDebugger
+            ? pane.createDebugger(session, dbg)
+            : createDebugger(session.kernel, dbg);
+          if (!pane.noDump && session.dumpPagesLoaded > 0) {
             currentDebugger.write(
               `CARVED-DUMP MODE: ${session.dumpPagesLoaded} genuine pages ` +
               `(ntoskrnl/CI/cng) loaded at true VAs from a public kernel dump.`);
           }
-          if (dumpWorld) {
+          if (dumpWorld && !pane.noDump) {
             currentDebugger.write(
               `REAL-DUMP MODE: ${dumpWorld.meta.processCount} processes, ` +
               `${dumpWorld.meta.moduleCount} modules extracted from a genuine ` +
