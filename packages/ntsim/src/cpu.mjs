@@ -604,6 +604,8 @@ export class JsInterpreter {
     // 8c/8d lea
     if (p === 0x8d) {
       const { reg, rm } = this.decodeModrm(opsize);
+      // LEA uses the effective address itself — resolve any pending RIP-rel
+      this.#resolveRm(rm);
       this.writeReg(reg, opsize, rm.kind === "mem" ? rm.addr : this.readReg(reg, opsize));
       return;
     }
