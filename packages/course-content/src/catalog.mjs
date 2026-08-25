@@ -30,6 +30,9 @@ import m7l1Body from "./lessons/m7-l1.mjs";
 import m8l1Body from "./lessons/m8-l1.mjs";
 import m9l1Body from "./lessons/m9-l1.mjs";
 import m10l1Body from "./lessons/m10-l1.mjs";
+import m11l1Body from "./lessons/m11-l1.mjs";
+import m12l1Body from "./lessons/m12-l1.mjs";
+import m13l1Body from "./lessons/m13-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -64,6 +67,16 @@ const F = {
   m10l1f1: "2747b7c718564ba5f066f0523b03e17f6a496b06851333d2d59ab6d863225848", // recovered function count (kfhook.sys grid)
   m10l1f2: "71489c0a57f4a2c1c4fd1dfdd85685d8f09a9ffe3f960f36a30191678e665e3d", // second boundary VA
   m10l1f3: "41571682d793c451794838c436413b18896cb0479575ca5ff59c160c38733537", // E9 detour target VA
+  // m11: paging foundations (answers verified deterministic against the 22h2 paged boot)
+  m11l1f1: "5ca025c5014c8952a23d1c125b2ee525862b64fdcf484c6dd28d180d73e5f173", // KUSER physical address via !vtop (0x101000)
+  m11l1f2: "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451", // process count in !process 0 0 (7)
+  m11l1f3: "e5b564a7a4059dccb9c20cd678603a6f30c5f3db3af9b421e7f87eb37b030337", // KUSER exec class from !pte (nx)
+  // m12: SMM vault exfil
+  m12l1f1: "c712810a09830eb312aa0fe16773c426021e275ca28c79163e8c7e10dd24ace5", // exfiltrated secret string
+  m12l1f2: "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", // D_OPEN after D_LCK set (0)
+  // m13: SMBASE relocation
+  m13l1f1: "59559e557dba68f6c1bf096dcbd52ca7f6e5f2bd7ea2d8a058c5cf63204df292", // save-state SMBASE offset (0xfb04)
+  m13l1f2: "513c129dfdc2aee92e26719e958855caca7d77c892d76fc576ba8efb946e2831", // planted-stub magic at landing2 (mf2k)
 };
 
 export const module1 = {
@@ -635,7 +648,172 @@ export const module10 = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// m11-m13: SMM / SMRAM track (guest paging + chipset emulation)
+// ---------------------------------------------------------------------------
+
+export const module11 = {
+  id: "m11",
+  title: "x64 Paging & the SMM Landscape",
+  track: "smm",
+  summary:
+    "Boot the platform's first guest-paged kernel: walk real 4-level page " +
+    "tables with !vtop/!pte/!cr, meet KUSER_SHARED_DATA's dual mapping, and " +
+    "decode a Q35-style chipset whose SMRAM door was never locked.",
+  lessons: [
+    {
+      id: "m11.l1",
+      title: "Page tables you can touch, an SMI you can't mask",
+      body: m11l1Body,
+      requires: ["m10.l1"],
+      labs: [
+        {
+          id: "m11.l1.lab1",
+          kind: "windbg",
+          title: "Walk the MMU",
+          brief:
+            "Boot the smm-foundations world. Use !vtop, !pte and !cr to answer " +
+            "three questions about how this kernel really maps memory.",
+          scenario: "smm-foundations",
+          flags: [
+            {
+              id: "m11.l1.f1",
+              sha256: F.m11l1f1,
+              prompt:
+                "!vtop 0xfffff78000000000 maps the kernel alias of KUSER_SHARED_DATA. " +
+                "Submit the physical address it reports (0x-prefixed hex).",
+              points: 150,
+            },
+            {
+              id: "m11.l1.f2",
+              sha256: F.m11l1f2,
+              prompt:
+                "How many processes does !process 0 0 show in this world? Submit the decimal count.",
+              points: 100,
+            },
+            {
+              id: "m11.l1.f3",
+              sha256: F.m11l1f3,
+              prompt:
+                "!pte 0x7ffe0000 ends with the page's exec class. Is KUSER_SHARED_DATA " +
+                "mapped X or NX here? Submit nx or x (lowercase).",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module12 = {
+  id: "m12",
+  title: "Ring-0 → SMM Escalation",
+  track: "smm",
+  summary:
+    "Write the exploit yourself: open the unlocked SMRAM vault from ring 0, " +
+    "patch the SMI handler with your own bytes, close the door behind you, " +
+    "and make ring -2 exfiltrate its secrets through port 0xB2.",
+  lessons: [
+    {
+      id: "m12.l1",
+      title: "Open the vault, patch the handler, steal the secret",
+      body: m12l1Body,
+      requires: ["m11.l1"],
+      labs: [
+        {
+          id: "m12.l1.lab1",
+          kind: "compiler",
+          title: "SMI-handler hijack for fun and exfiltration",
+          brief:
+            "Compile your ring-0 exploit in the IDE, load it into the smm-vault " +
+            "world, and let the modeled SMI run YOUR handler below ring 0.",
+          scenario: "smm-vault",
+          starterFiles: [
+            { path: "driver/smm_vault.c", content: "" },
+            { path: "driver/ntddk_subset.h", content: "" },
+            { path: "Makefile", content: "" },
+          ],
+          flags: [
+            {
+              id: "m12.l1.f1",
+              sha256: F.m12l1f1,
+              prompt:
+                "After the SMI fires, the landing page dump shows an ASCII secret. " +
+                "Submit it (lowercase, hyphens included).",
+              points: 300,
+            },
+            {
+              id: "m12.l1.f2",
+              sha256: F.m12l1f2,
+              prompt:
+                "Finish by setting D_LCK from your driver, then run !smmc: what is " +
+                "D_OPEN now? Submit 0 or 1.",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module13 = {
+  id: "m13",
+  title: "SMBASE Relocation Persistence",
+  track: "smm",
+  summary:
+    "The capstone: rewrite the save-state's SMBASE field before RSM so the " +
+    "next SMI enters code YOU planted — persistence below ring 0, then lock " +
+    "the door and prove your own exploit dead.",
+  lessons: [
+    {
+      id: "m13.l1",
+      title: "Relocate SMBASE, plant your stub, survive reboot-less forever",
+      body: m13l1Body,
+      requires: ["m12.l1"],
+      labs: [
+        {
+          id: "m13.l1.lab1",
+          kind: "compiler",
+          title: "Two SMIs, one relocated CPU",
+          brief:
+            "Extend your vault exploit: relocate SMBASE via the save state and " +
+            "plant a stub at the new base. The lab fires two SMIs; the second one " +
+            "is yours.",
+          scenario: "smm-reloc",
+          starterFiles: [
+            { path: "driver/smm_reloc.c", content: "" },
+            { path: "driver/ntddk_subset.h", content: "" },
+            { path: "Makefile", content: "" },
+          ],
+          flags: [
+            {
+              id: "m13.l1.f1",
+              sha256: F.m13l1f1,
+              prompt:
+                "Which save-state offset (SMBASE-relative) holds SMBASE itself? " +
+                "Submit as 0x-prefixed lowercase hex — this is the canonical anchor " +
+                "from SDM Vol.3 ch.34.",
+              points: 200,
+            },
+            {
+              id: "m13.l1.f2",
+              sha256: F.m13l1f2,
+              prompt:
+                "If relocation worked, landing #2 shows a 4-byte magic your stub wrote. " +
+                "Submit that magic (lowercase).",
+              points: 300,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 3,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10],
+  version: 4,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10,
+    module11, module12, module13],
 };

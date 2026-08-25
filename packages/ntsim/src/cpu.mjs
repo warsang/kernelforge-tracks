@@ -191,10 +191,12 @@ export class JsInterpreter {
       }
       rm = { kind: "mem", addr };
     } else if (mod !== 3) {
-      // RIP-relative special case
+      // RIP-relative special case: resolved lazily against the END of the
+      // instruction (this.rip after any immediates are consumed), because
+      // x86 computes it from the following instruction's address.
       if (rm === 5 && mod === 0) {
         const disp = sx(this.fetch(4), 32);
-        rm = { kind: "mem", addr: (this.rip + disp) & M64 };
+        rm = { kind: "mem", pendingRipRel: disp, addr: 0n };
       } else {
         // REX.B extends the memory-indirect register too
         rm = { kind: "mem", addr: this.readReg(this.rexB ? (rm | 8) : rm, 8) };
@@ -217,13 +219,23 @@ export class JsInterpreter {
     return { mod, reg, rm };
   }
 
+  /** Resolve a pending RIP-relative rm against the current (post-immediate) RIP. */
+  #resolveRm(rm) {
+    if (rm && rm.kind === "mem" && rm.pendingRipRel !== undefined) {
+      rm.addr = (this.rip + BigInt(rm.pendingRipRel)) & M64;
+      delete rm.pendingRipRel;
+    }
+    return rm;
+  }
+
   loadOp(rm, size) {
-    return rm.kind === "reg" ? this.readReg(rm.reg ?? 0, size) : this.loadMem(rm.addr, size);
+    if (rm.kind !== "reg") { this.#resolveRm(rm); return this.loadMem(rm.addr, size); }
+    return this.readReg(rm.reg ?? 0, size);
   }
 
   storeOp(rm, size, val) {
     if (rm.kind === "reg") this.writeReg(rm.reg ?? 0, size, val);
-    else this.storeMem(rm.addr, size, val);
+    else { this.#resolveRm(rm); this.storeMem(rm.addr, size, val); }
   }
 
   loadMem(addr, size) {
@@ -537,13 +549,13 @@ export class JsInterpreter {
           return;
         }
         case 2: { // call near r/m
-          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          const target = rm.kind === "mem" ? (this.#resolveRm(rm), this.loadMem(rm.addr, 8)) : this.readReg(rm.reg ?? reg, 8);
           this.pushVal(this.rip);
           this.rip = target & M64;
           return;
         }
         case 4: { // jmp near r/m
-          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          const target = rm.kind === "mem" ? (this.#resolveRm(rm), this.loadMem(rm.addr, 8)) : this.readReg(rm.reg ?? reg, 8);
           this.rip = target & M64;
           return;
         }

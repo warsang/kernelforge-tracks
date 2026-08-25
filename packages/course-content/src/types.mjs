@@ -29,7 +29,7 @@
  * @property {string} id
  * @property {string} title
  * @property {"windows-user"|"windows-kernel"|"windows-userland"|"linux-kernel"|"reversing"
- *           |"linux"|"hypervisor"|"uefi"|"misc"} track
+ *           |"linux"|"hypervisor"|"uefi"|"misc"|"smm"} track
  * @property {string} summary
  * @property {LessonDef[]} lessons
  *
