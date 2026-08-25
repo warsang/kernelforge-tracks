@@ -120,6 +120,10 @@ offset in ntsim and the debugger; switching build = swapping the table dir.
 
 ## Shipped modules
 
+All lessons are freely navigable — pick any module from the sidebar and jump
+straight in. Completion order and points are still tracked; progression
+guides, it never gates.
+
 Answers are plain question responses (names, PIDs, hex addresses, symbolic
 NTSTATUS) normalized trim+lowercase then sha256-checked; no FLAG{} wrapper.
 Ground truth lives with instructors; see docs/plan.md for the build-out plan.

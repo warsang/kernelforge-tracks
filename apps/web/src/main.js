@@ -2,7 +2,7 @@ import "./styles.css";
 import { marked } from "marked";
 import { catalog } from "@kernelforge/course-content";
 import {
-  checkFlag, submitFlagForProgress, isLessonUnlocked,
+  checkFlag, submitFlagForProgress,
   emptyProgress, resolveBackend,
 } from "@kernelforge/lab-runtime";
 import { loadProgress, saveProgress } from "@kernelforge/lab-runtime/storage.browser";
@@ -234,15 +234,17 @@ function renderSidebar() {
     onclick: () => renderAnalyzer(document.getElementById("main")),
   }, "⚒ Driver Analyzer");
   sidebar.append(analyzerBtn);
+  // Free navigation: every lesson is selectable so players can jump straight
+  // to the topics they care about. The progression chain stays in the data
+  // and still drives points/completion marks — it guides, it no longer gates.
   for (const mod of catalog.modules) {
     sidebar.append(h("h2", null, mod.title));
     for (const lesson of mod.lessons) {
-      const unlocked = isLessonUnlocked(lesson, progress);
       const done = progress.completedLessons.includes(lesson.id);
       sidebar.append(h("button", {
-        class: `lesson ${unlocked ? "" : "locked"} ${done ? "done" : ""}`,
-        onclick: () => unlocked && renderLesson(lesson),
-      }, `${done ? "✔" : unlocked ? "▸" : "🔒"} ${lesson.title}`));
+        class: `lesson ${done ? "done" : ""}`,
+        onclick: () => renderLesson(lesson),
+      }, `${done ? "✔" : "▸"} ${lesson.title}`));
     }
   }
 }
