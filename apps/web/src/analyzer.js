@@ -76,6 +76,9 @@ export function renderAnalyzer(main) {
   const ioctlBtn = el("button", {}, "Send IOCTL");
   ioctlBtn.disabled = true;
 
+  const autoIrpBtn = el("button", { title: "Send CREATE/CLOSE + every harvested CTL_CODE with synthetic buffers" }, "Auto-drive IRPs");
+  autoIrpBtn.disabled = true;
+
   const unloadBtn = el("button", {}, "Call DriverUnload");
   unloadBtn.disabled = true;
 
@@ -93,7 +96,7 @@ export function renderAnalyzer(main) {
     el("div", { class: "analyzer-controls" },
       el("span", { class: "dim" }, "IOCTL:"),
       ioctlCode, ioctlIn, el("span", { class: "dim" }, "out bytes:"), ioctlOut,
-      ioctlBtn, unloadBtn),
+      ioctlBtn, autoIrpBtn, unloadBtn),
     out,
   );
   main.append(card);
@@ -237,7 +240,16 @@ export function renderAnalyzer(main) {
       renderReport(report);
       log(`loaded ${file.name} (${bytes.length} bytes, engine=${opts.backendName})`, "ok");
       ioctlBtn.disabled = false;
+      autoIrpBtn.disabled = false;
       unloadBtn.disabled = false;
+
+      if (report.harvestedIoctls?.length) {
+        const sec = el("div", { class: "section" },
+          el("h3", null, `Harvested CTL_CODEs (${report.harvestedIoctls.length})`));
+        sec.append(el("div", { class: "mono dim" },
+          report.harvestedIoctls.map((h) => h.hex).join(", ")));
+        out.prepend(sec);
+      }
 
       // analyzeDriver returns the live kernel session for interactive IOCTLs
       session = report.__session;
@@ -273,6 +285,39 @@ export function renderAnalyzer(main) {
       }
     } finally {
       ioctlBtn.disabled = false;
+    }
+  });
+
+  autoIrpBtn.addEventListener("click", async () => {
+    if (!session) return;
+    autoIrpBtn.disabled = true;
+    try {
+      const { harvestCtlCodes, autoDriveIrps } =
+        await import("@kernelforge/ntsim-analyzer/src/autoirp.mjs");
+      const harvested = harvestCtlCodes(session.image.bytes, parsePe(session.image.bytes), {});
+      liveLine(`auto-drive: MJ_CREATE + ${harvested.length} harvested code(s) + MJ_CLOSE`, "dim");
+      const results = await autoDriveIrps(session.kernel, session.device, {
+        sendIrp,
+        harvested,
+        maxCodes: 32,
+      });
+      for (const r of results) {
+        renderIoctl({ ...r, majorName: r.majorName === "DEVICE_CONTROL" ? `DEVICE_CONTROL ${(r.ioctl ?? 0n)?.toString(16) ?? ""}` : r.majorName });
+        for (const line of session.kernel.dbgLog.splice(0)) liveLine(line, "mono");
+        for (const ex of session.kernel.exceptionTrace.splice(0)) {
+          liveLine(`[seh] ${ex.faultRip}: ${ex.handled ? "handled" : "UNHANDLED"} — ${ex.detail}`,
+            ex.handled ? "warn" : "err");
+        }
+        for (const v of session.kernel.irqlViolations.splice(0)) {
+          liveLine(`[irql] ${v.name} at IRQL ${v.irql}`, "err");
+        }
+      }
+      if (session.kernel.bugcheck || session.kernel.crash) {
+        liveLine(`bugcheck during auto-drive: ${JSON.stringify(session.kernel.bugcheck ?? session.kernel.crash)}`, "err");
+        unloadBtn.disabled = true;
+      }
+    } finally {
+      autoIrpBtn.disabled = false;
     }
   });
 
