@@ -85,3 +85,41 @@ test("DKOM hide then verify via !process 0 0 (lab flow)", async () => {
   const hidden = kd.execute(`dt nt!_EPROCESS 0x${target.toString(16)}`);
   assert.match(hidden, /kftarget\.exe/);
 });
+
+// ---- guest paging introspection -------------------------------------------
+
+async function pagedKd() {
+  const k = new NtKernel({ paging: true });
+  await k.loadTablesFromDir(tablesDir);
+  k.bootstrap();
+  return new KdEngine(k);
+}
+
+test("!vtop translates KUSER alias under paging", async (t) => {
+  const kd = await pagedKd();
+  const out = kd.execute("!vtop 0xfffff78000000000");
+  assert.match(out, /maps to physical/);
+  assert.doesNotMatch(out, /ERROR/);
+});
+
+test("!pte walks a mapped VA and shows NX/X", async (t) => {
+  const kd = await pagedKd();
+  const out = kd.execute("!pte 0x7ffe0000");
+  assert.match(out, /contains/);
+  assert.match(out, /\bV/);
+  assert.match(out, /NX/); // KUSER mapped non-executable
+});
+
+test("!cr reports PG/PAE/LMA and DTB", async (t) => {
+  const kd = await pagedKd();
+  const out = kd.execute("!cr");
+  assert.match(out, /pg=1/);
+  assert.match(out, /pae=1/);
+  assert.match(out, /lma=1/);
+  assert.match(out, /DirectoryTableBase/);
+});
+
+test("paging-off session refuses !vtop politely", async (t) => {
+  const kd = await booted();
+  assert.match(kd.execute("!vtop 0x1000"), /paging is not enabled/);
+});
