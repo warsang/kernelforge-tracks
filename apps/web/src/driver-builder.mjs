@@ -1,11 +1,14 @@
 /**
  * driver-builder.mjs — bridges student C source to executable ntsim drivers.
  *
- * Students write kernel-mode C in the browser editor. The builder validates
- * their structural approach, then generates equivalent x86-64 machine code
- * wrapped as a loadable PE image. This is NOT a C compiler — it's a guided
- * builder that teaches what the driver must do while producing working native
- * code. The COFF path (compiler-worker) is the "real compiler" escalation.
+ * Legacy guided-builder path. Students write kernel-mode C in the editor;
+ * this module validates the structural approach and can emit equivalent
+ * hand-assembled x86-64 for quick simulations.
+ *
+ * LIVE LABS NO LONGER USE THE SIMULATION: the compiler-lab flow links real
+ * clang COFF via ntsim-analyzer/loadCompiledDriver and executes the
+ * student's actual bytes on the emulated CPU (see main.js compiler branch).
+ * runDkomDriver/loadDkomDriver are retained for their unit tests only.
  */
 
 import { PeBuilder } from "@kernelforge/ntsim/src/pebuilder.mjs";

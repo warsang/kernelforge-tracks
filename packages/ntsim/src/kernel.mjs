@@ -437,7 +437,7 @@ export class NtKernel {
         case "d": return BigInt.asIntN(64, v).toString();
         case "u": return v.toString();
         case "x": case "X": return v.toString(16).padStart(conv === "X" ? 8 : 8, conv === "X" ? "XXXXXXXXXXXXXXXX".slice(0, 8) : "00000000");
-        case "p": return `ffff${v.toString(16).padStart(12, "0")}`;
+        case "p": return v === 0n ? "0000000000000000" : v.toString(16).padStart(16, "0");
         case "w": case "Z": {
           // %wZ = UNICODE_STRING*
           const usLen = this.mem.u16(v);

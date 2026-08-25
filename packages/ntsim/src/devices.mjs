@@ -63,7 +63,9 @@ export const DRIVER_OBJECT = {
   DRIVER_SECTION: 0x30,
   DRIVER_INIT: 0x38,
   DRIVER_STARTIO: 0x40,
-  DRIVER_UNLOAD: 0x48,
+  // 0x68 matches compiler-worker/include/wdm.h's teaching _DRIVER_OBJECT —
+  // compiled student drivers write DriverUnload here (real x64 is 0x48).
+  DRIVER_UNLOAD: 0x68,
   MAJOR_FUNCTION: 0x70, // 28 x u64 slots -> ends 0x150
 };
 

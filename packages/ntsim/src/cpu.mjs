@@ -448,7 +448,9 @@ export class JsInterpreter {
     if (p === 0x69 || p === 0x6b) {
       const { reg, rm } = this.decodeModrm(opsize);
       const a = this.loadOp(rm, opsize);
-      const b = p === 0x69 ? this.fetch(opsize) : BigInt.asIntN(8, BigInt(this.fetch8()));
+      // 69 takes imm32 (sign-extended) even in 64-bit form
+      const b = p === 0x69 ? sx(this.fetch(opsize === 2 ? 2 : 4), opsize === 2 ? 16 : 32)
+                           : BigInt.asIntN(8, BigInt(this.fetch8()));
       this.writeReg(reg, opsize, a * b);
       return;
     }
@@ -511,10 +513,20 @@ export class JsInterpreter {
       const names = ["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"];
       const size = p === 0x80 ? 1 : opsize;
       const { reg, rm } = this.decodeModrm(size);
-      const immSize = p === 0x81 ? size : 1;
+      // x86 encoding: 80 -> imm8, 81 -> imm16/imm32 (sign-extended to 64),
+      // 83 -> imm8 sign-extended. Never a full imm64.
+      let b;
+      if (p === 0x80 || p === 0x83) {
+        const raw = BigInt(this.fetch8());
+        b = sx(p === 0x83 ? raw : raw & ((1n << BigInt(size * 8)) - 1n),
+               size === 2 && p === 0x83 ? 8 : 8);
+        if (p === 0x80) b &= (1n << BigInt(size * 8)) - 1n;
+        else b &= M64;
+      } else {
+        const raw = this.fetch(size === 2 ? 2 : 4);
+        b = size === 2 ? raw : sx(raw, 32) & M64;
+      }
       const a = this.loadOp(rm, size);
-      const immRaw = immSize === 1 ? BigInt(this.fetch8()) : this.fetch(size);
-      const b = p === 0x83 ? sx(BigInt(immRaw), 8) & ((1n << BigInt(size*8))-1n) : immRaw;
       const r = this.alu(names[reg], a, b, size);
       if (names[reg] !== "cmp") this.storeOp(rm, size, r);
       return;

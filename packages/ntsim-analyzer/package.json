@@ -6,6 +6,11 @@
   "description": "Run-any-driver analysis harness over ntsim: upload .sys -> map -> DriverEntry -> IOCTLs -> report",
   "exports": {
     ".": "./src/index.mjs",
-    "./src/index.mjs": "./src/index.mjs"
+    "./src/index.mjs": "./src/index.mjs",
+    "./src/compiled.mjs": "./src/compiled.mjs"
+  },
+  "dependencies": {
+    "@kernelforge/compiler-worker": "*",
+    "@kernelforge/ntsim": "*"
   }
 }

@@ -104,12 +104,25 @@ export function linkDriver(objFiles, resolveExternal, preferredImageBase = 0x140
           case REL.REL32 + 2:
           case REL.REL32 + 3:
           case REL.REL32 + 4: {
-            // rel to next instruction: disp = target - (field + 4)
+            // rel to next instruction: disp = target - (field + 4).
+            // BigInt end-to-end: bitwise ops would silently coerce through
+            // Int32 and corrupt any target more than 2GB from the image
+            // (e.g. pool/thunk regions above or below the load base).
             const nextInstr = fieldAbsInImage + 4n;
-            const disp = Number(BigInt(targetAddr) - nextInstr);
+            const disp = BigInt(targetAddr) - nextInstr;
+            const signed = BigInt.asIntN(32, disp);
+            if (signed !== disp) {
+              throw new Error(
+                `REL32 out of range for ${sym?.name}: target 0x${targetAddr.toString(16)} ` +
+                `is ${disp} bytes from field — cannot encode`,
+              );
+            }
+            const u = BigInt.asUintN(32, disp);
             const b = outBuf; // patch in-place
-            b[fo] = disp & 0xff; b[fo + 1] = (disp >> 8) & 0xff;
-            b[fo + 2] = (disp >> 16) & 0xff; b[fo + 3] = (disp >> 24) & 0xff;
+            b[fo] = Number(u & 0xffn);
+            b[fo + 1] = Number((u >> 8n) & 0xffn);
+            b[fo + 2] = Number((u >> 16n) & 0xffn);
+            b[fo + 3] = Number((u >> 24n) & 0xffn);
             break;
           }
           case REL.ABS: { // 64-bit absolute
