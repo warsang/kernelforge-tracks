@@ -137,9 +137,10 @@ test("pool-corrupt world has three KfPb blocks, one smashed guard", async () => 
   const c = capture(kernel);
   c.exec("!poolfind KfPb");
   const t = c.text();
-  assert.match(t, /0xfffff90000001000/);
-  assert.match(t, /0xfffff90000001200.*CORRUPTED at guard\[0\] \(got 0xde/);
-  assert.match(t, /expected pattern/);
+  assert.match(t, /0xfffff90000001000.*guard @ 0xfffff90000001080/);
+  assert.match(t, /0xfffff90000001200.*CORRUPTED at guard\[0\] @ 0xfffff90000001280 \(got 0xde/);
+  // repair hint must carry the EXACT guard address (block start != guard)
+  assert.match(t, /eb 0xfffff90000001280 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5/);
 });
 
 test("pool repair flow: verify fails until guard healed, then secret prints", async () => {
@@ -153,6 +154,7 @@ test("pool repair flow: verify fails until guard healed, then secret prints", as
   const bad = capture(kernel);
   bad.exec("!poolverify");
   assert.match(bad.text(), /1 corrupted allocation/);
+  assert.match(bad.text(), /guard @ 0xfffff90000001280 guard\[0\]=0xde/);
   assert.equal(healedCalls, 0);
 
   // wrong-byte repair keeps verification red

@@ -232,6 +232,24 @@ export class UnicornCpuBackend {
     this.#dirty.clear();
   }
 
+  /**
+   * Explicitly map [base, base+size) into the unicorn address space
+   * (page-wise uc_mem_map) and push any SparseMemory content in. Called by
+   * NtKernel.materializeModuleRange when a module joins the `lm` list so the
+   * image is readable/executable immediately instead of waiting for a run's
+   * demand sync. Idempotent — already-mapped pages are skipped.
+   */
+  mapRange(base, size) {
+    let addr = toU64(BigInt(base)) & ~0xfffn;
+    const end = addr + toU64(BigInt(size));
+    for (; addr < end; addr += BigInt(this.PAGE)) {
+      this.#ensurePageMapped(addr);
+      if (this.mem.hasPage(addr)) {
+        this.#rawWrite(addr, this.mem.read(addr, this.PAGE));
+      }
+    }
+  }
+
   // ----------------------------------------------------------- stack access
 
   #takePendingRip() {

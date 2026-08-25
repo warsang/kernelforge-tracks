@@ -297,6 +297,7 @@ function populateFromDump(kernel, tables, world) {
     full: `\\SystemRoot\\system32\\drivers\\${PROBE_FLAG}.sys`, lab: true,
   });
   kernel.loadedModules = mods;
+  kernel.materializeModuleRange(0xfffff8055a000000n, 0x8000);
 
   // lab probe module content: flag path as UTF-16 + ANSI, searchable via s/
   {
@@ -413,6 +414,7 @@ function setupManualMap(kernel) {
     base: LOADER_BASE, sizeOfImage: 0x8000, name: "kfloader.sys",
     full: "\\SystemRoot\\system32\\drivers\\kfloader.sys", lab: true,
   });
+  kernel.materializeModuleRange(LOADER_BASE, 0x8000);
 }
 
 scenarios["manual-map"] = {
@@ -460,6 +462,7 @@ function setupIrqlDpc(kernel) {
     base: KFDPC_BASE, sizeOfImage: 0x8000, name: "kfdpc.sys",
     full: "\\SystemRoot\\system32\\drivers\\kfdpc.sys", lab: true,
   });
+  kernel.materializeModuleRange(KFDPC_BASE, 0x8000);
 }
 
 scenarios["irql-dpc"] = {
@@ -517,6 +520,10 @@ function setupApiHook(kernel) {
     base: KFHOOK_BASE, sizeOfImage: 0x8000, name: "kfhook.sys",
     full: "\\SystemRoot\\system32\\drivers\\kfhook.sys", lab: true,
   });
+  // whole image readable (db/s/u) and mapped in the emulator address space:
+  // a detour target must be inspectable across its full extent, not just on
+  // the pages evidence strings happened to touch
+  kernel.materializeModuleRange(KFHOOK_BASE, 0x8000);
 }
 
 scenarios["api-hook"] = {
@@ -566,6 +573,7 @@ function setupPoolCorrupt(kernel) {
     base: 0xfffff8055a700000n, sizeOfImage: 0x8000, name: "kfpooler.sys",
     full: "\\SystemRoot\\system32\\drivers\\kfpooler.sys", lab: true,
   });
+  kernel.materializeModuleRange(0xfffff8055a700000n, 0x8000);
 }
 
 scenarios["pool-corrupt"] = {

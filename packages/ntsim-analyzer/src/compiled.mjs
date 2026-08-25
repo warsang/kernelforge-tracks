@@ -95,6 +95,9 @@ export function loadCompiledDriver(kernel, objBytes, opts = {}) {
       name,
       full: `\\SystemRoot\\system32\\drivers\\${name}`,
     });
+    // back the whole image extent (headers included) so !dh / s -a / u work
+    // across it, and pre-map it in the emulator address space (unicorn)
+    kernel.materializeModuleRange?.(mapped.base, mapped.imageSize);
   }
   if (!kernel.loadedDrivers.some((d) => d.name === name)) {
     kernel.loadedDrivers.push({ name, base: mapped.base, imageSize: mapped.imageSize });

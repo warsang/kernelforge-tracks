@@ -173,6 +173,7 @@ export class NtKernel {
       "_EPROCESS", "_ETHREAD", "_KPROCESS", "_KTHREAD", "_LIST_ENTRY",
       "_UNICODE_STRING", "_OBJECT_TYPE", "_OBJECT_HEADER", "_HANDLE_TABLE",
       "_PS_PROTECTION", "_KLDR_DATA_TABLE_ENTRY", "_LDR_DATA_TABLE_ENTRY",
+      "_MMVAD", "_MMVAD_SHORT",
     ];
     this.tables = await StructTables.loadDir(dir, names);
   }
@@ -600,6 +601,40 @@ export class NtKernel {
   }
 
   // ------------------------------------------------------------ introspection
+
+  /**
+   * Materialize zero-filled backing for the module image range
+   * [base, base+size) so debugger reads (db/dq/s/!dh/u) and guest fetches
+   * see a fully mapped region instead of "unmapped" holes between the few
+   * evidence pages a scenario wrote. Idempotent per page. When the CPU
+   * backend exposes mapRange() (Unicorn), the same span is pre-mapped in
+   * the emulator's address space so `lm`-listed modules are executable and
+   * readable without waiting for a run's demand sync.
+   *
+   * Callers should invoke this whenever a module is appended to
+   * loadedModules. Real dump modules are deliberately NOT materialized —
+   * their non-resident ranges are pedagogically meaningful.
+   * @returns {number} pages materialized (0 when everything was backed)
+   */
+  materializeModuleRange(base, size) {
+    const start = BigInt(base) & ~0xfffn;
+    const end = BigInt(base) + BigInt(size);
+    if (end <= start) return 0;
+    let fresh = 0;
+    for (let p = start; p < end; p += 0x1000n) {
+      if (!this.mem.hasPage(p)) {
+        // int3 padding rather than zeros: real .text alignment padding is
+        // 0xCC-filled, static analysis treats CC as a boundary edge, and
+        // stray execution of an unmapped-in-reality page halts loudly
+        this.mem.write(p, new Uint8Array(0x1000).fill(0xcc));
+        fresh++;
+      }
+    }
+    if (typeof this.cpu?.mapRange === "function") {
+      try { this.cpu.mapRange(start, end - start); } catch { /* optional */ }
+    }
+    return fresh;
+  }
 
   listProcesses() {
     const t = this.tables;

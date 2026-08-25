@@ -13,7 +13,9 @@
  */
 
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
+import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
+import { disassemble, liftAliasHex } from "./disasm.mjs";
 
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
 
@@ -46,6 +48,125 @@ function parseAddr(s) {
   return null;
 }
 
+/**
+ * Parse a WinDbg-style length/count argument into a Number.
+ * Handles the `L`/`l` prefix form (`db 0x… L100` -> 0x100 bytes, matching
+ * WinDbg's default hex radix), plain decimals (back-compat: `128` -> 128)
+ * and 0x-prefixed values. Throws on garbage so callers can report usage.
+ * WinDbg backtick digit separators are stripped.
+ */
+function parseLen(tok) {
+  if (tok == null) throw new Error("missing length");
+  const t = String(tok).replace(/`/g, "").trim();
+  const m = t.match(/^[Ll]\+?(0x[0-9a-fA-F]+|[0-9a-fA-F]+)$/); // L / L+
+  if (m) {
+    // WinDbg's default radix is 16, so `L40` means 0x40 — always hex here
+    const v = parseInt(m[1], 16);
+    if (!Number.isFinite(v)) throw new Error(`bad length "${tok}"`);
+    return v;
+  }
+  if (/^0x[0-9a-fA-F]+$/.test(t)) {
+    const v = parseInt(t, 16);
+    if (!Number.isFinite(v)) throw new Error(`bad length "${tok}"`);
+    return v;
+  }
+  if (/^[0-9]+$/.test(t)) {
+    const v = parseInt(t, 10);
+    if (!Number.isFinite(v)) throw new Error(`bad length "${tok}"`);
+    return v;
+  }
+  throw new Error(`bad length "${tok}"`);
+}
+
+/** Strip WinDbg backticks from address-ish text. */
+const unquote = (s) => String(s ?? "").replace(/`/g, "");
+
+/**
+ * Tiny expression evaluator for the `?` command: hex/dec numbers, symbols
+ * resolvable by `resolver`, registers via `@name`, unary +/-/~, and binary
+ * + - * / % & | ^ << >> with C precedence and parentheses. BigInt throughout.
+ */
+export function evalExpr(expr, resolver) {
+  const src = String(expr ?? "");
+  let pos = 0;
+  const skip = () => { while (pos < src.length && /\s/.test(src[pos])) pos++; };
+  const peek = () => { skip(); return src[pos]; };
+
+  function parsePrimary() {
+    skip();
+    if (src[pos] === "(") {
+      pos++;
+      const v = parseBinary(0);
+      if (src[pos] !== ")") throw new Error("expected ')'");
+      pos++;
+      return v;
+    }
+    if (src[pos] === "-") { pos++; return -parsePrimary(); }
+    if (src[pos] === "+") { pos++; return parsePrimary(); }
+    if (src[pos] === "~") { pos++; return ~parsePrimary(); }
+    if (src[pos] === "@") {
+      pos++;
+      const m = /^[A-Za-z0-9]+/.exec(src.slice(pos));
+      if (!m) throw new Error("bad register");
+      pos += m[0].length;
+      const v = resolver("@", m[0].toLowerCase());
+      if (v === null || v === undefined) throw new Error(`unknown register @${m[0]}`);
+      return v;
+    }
+    const numM = /^0x[0-9a-fA-F`]+|^[0-9`]+(?![a-zA-Z_])|^`?[0-9a-fA-F]{8,}`?/.exec(src.slice(pos));
+    if (numM && numM[0]) {
+      const t = unquote(numM[0]);
+      pos += numM[0].length;
+      // windbg default radix is 16: bare numbers parse as hex when they
+      // contain a-f or are >= 8 digits; plain decimals stay decimal
+      if (/^0x/i.test(t)) return BigInt(t);
+      if (/^[0-9]+$/.test(t)) return BigInt(t);
+      return BigInt("0x" + t);
+    }
+    const symM = /^[A-Za-z_][A-Za-z0-9_!.]*/.exec(src.slice(pos));
+    if (symM) {
+      pos += symM[0].length;
+      const v = resolver("sym", symM[0]);
+      if (v === null || v === undefined) throw new Error(`cannot resolve '${symM[0]}'`);
+      return v;
+    }
+    throw new Error(`unexpected token at '${src.slice(pos, pos + 10)}'`);
+  }
+
+  const LEVELS = [
+    ["|"], ["^"], ["&"],
+    ["<<", ">>"], ["+", "-"], ["*", "/", "%"],
+  ];
+  function parseBinary(minLevel) {
+    if (minLevel >= LEVELS.length) return parsePrimary();
+    let left = parseBinary(minLevel + 1);
+    for (;;) {
+      skip();
+      const op = LEVELS[minLevel].find((o) => src.startsWith(o, pos));
+      if (!op) return left;
+      pos += op.length;
+      const right = parseBinary(minLevel + 1);
+      switch (op) {
+        case "|": left |= right; break;
+        case "^": left ^= right; break;
+        case "&": left &= right; break;
+        case "<<": left <<= right; break;
+        case ">>": left >>= right; break;
+        case "+": left += right; break;
+        case "-": left -= right; break;
+        case "*": left *= right; break;
+        case "/": left /= right; break;
+        case "%": left %= right; break;
+      }
+      left = BigInt.asUintN(64, left);
+    }
+  }
+  const v = parseBinary(0);
+  skip();
+  if (pos !== src.length) throw new Error(`trailing input at '${src.slice(pos)}'`);
+  return BigInt.asUintN(64, v);
+}
+
 function fmtAddr(v) {
   return "0x" + v.toString(16).padStart(16, "0");}
 
@@ -75,7 +196,11 @@ function walkableFields(tables, typeName) {
     const base = String(f.base ?? "");
     const isPtr = /\*$/.test(base);            // e.g. "struct _KPCR*" — pointer
     const embedded = /^(struct|union)\b/.test(base) && !isPtr;
-    if (embedded && base !== "struct _EX_FAST_REF" && base !== "struct _LIST_ENTRY") continue;
+    // small scalar-like embeddeds render as raw qwords; everything else skips
+    const simpleEmbedded = base === "struct _EX_FAST_REF"
+      || base === "struct _EX_PUSH_LOCK"
+      || base === "struct _LIST_ENTRY";
+    if (embedded && !simpleEmbedded) continue;
     out.push(f);
   }
   return out.sort((a, b) => a.offset - b.offset);
@@ -105,6 +230,46 @@ export function createCommands(kernel) {
     try { v = BigInt(token); } catch { return null; }
     if (v > 0xffffn) return v;
     return kernel.findEprocessByPid(v);
+  };
+
+  /**
+   * Resolve a WinDbg-style address argument to BigInt, or null when it is
+   * not an address we can interpret:
+   *   0x… / bare-hex / decimal (backticks stripped) | nt!Export | Export |
+   *   module!+off / module+off / module+offset.
+   * Exports resolve through the kernel API-thunk table; module bases come
+   * from the loaded-module list (sym() below handles the reverse mapping).
+   */
+  const resolveArg = (tok) => {
+    const t = unquote(tok ?? "").trim();
+    if (!t) return null;
+    // numeric forms: 0x-hex always; pure digits are DECIMAL (matches
+    // BigInt() semantics used by every other handler); longer mixed
+    // alphanumeric strings read as bare hex (windbg copy-paste style)
+    let num = null;
+    const tq = t.replace(/`/g, "");
+    if (/^0x[0-9a-fA-F]+$/.test(tq)) num = BigInt(tq);
+    else if (/^[0-9]+$/.test(tq)) num = BigInt(tq);
+    else if (/^[0-9a-fA-F]{8,}$/.test(tq) && /[a-fA-F]/.test(tq)) num = BigInt("0x" + tq);
+    if (num !== null) return num;
+    // export symbol: nt!PsLookupProcessByProcessId or bare name
+    const exportName = t.match(/^(?:nt|ntoskrnl(?:\.exe)?)!([A-Za-z0-9_]+)$/i)?.[1]
+      ?? (/^[A-Z][A-Za-z0-9_]{3,}$/.test(t) ? t : null);
+    if (exportName) {
+      const thunk = kernel.apiThunks?.get(exportName);
+      if (thunk !== undefined) return thunk;
+    }
+    // module-relative: kfhook.sys+0x1000 / nt+0x1000
+    const rel = t.match(/^([A-Za-z0-9_.\\]+?)(?:!)?\+(?:0x)?([0-9a-fA-F]+)$/i);
+    if (rel) {
+      const want = rel[1].toLowerCase().replace(/\.(sys|exe|dll)$/, "");
+      const mod = (kernel.loadedModules ?? []).find((m) => {
+        const nm = String(m.name).toLowerCase();
+        return nm === want || nm.replace(/\.(sys|exe|dll)$/, "") === want;
+      });
+      if (mod) return mod.base + BigInt(parseInt(rel[2], 16));
+    }
+    return null;
   };
 
   /**
@@ -213,6 +378,25 @@ export function createCommands(kernel) {
 
   const kindNote = (k) => `ChildSP               RetAddr               Call Site`;
 
+  /** Lift branch-target literals of one decoded instruction into kernel
+   *  space and symbolize against loaded modules. */
+  const disasmLine = (insn, hiBase) => {
+    const branchy = /^(jmp|call|loop[a-z]*|j[a-z]{1,4})$/i.test(insn.mnemonic)
+      && !insn.opStr.includes("["); // direct transfers only
+    let op = insn.opStr;
+    if (branchy) {
+      op = liftAliasHex(op, hiBase);
+      op = op.replace(/0x([0-9a-fA-F]+)/g, (m, hex) => {
+        const v = BigInt("0x" + hex);
+        const canonical = v === 0n || (v >> 47n) === 0x1ffffn;
+        if (!canonical) return m;
+        const s = sym(v);
+        return s ? `${m} (${s})` : m;
+      });
+    }
+    return `${insn.mnemonic}${op ? " " + op : ""}`;
+  };
+
   const stack = (args, w, header) => {
     let sp;
     try { sp = kernel.cpu.kernel.cpu.regs.rsp; } catch { sp = undefined; }
@@ -241,27 +425,33 @@ export function createCommands(kernel) {
     help(args, w) {
       w("commands:");
       w("  lm                        loaded modules");
+      w("  !drivers                  driver objects (loadedDrivers + lm merge)");
+      w("  !drvobj [name|addr]       DRIVER_OBJECT walk incl. MajorFunction table");
       w("  !process 0 [flags]        process list (flag bit2=0x4 walks threads)");
       w("  !process <addr|pid> [f]   detail _EPROCESS walk; 0x4 = ThreadListHead");
       w("  !eproc <addr|pid>         short summary");
       w("  !token <addr|pid>         decode Token EX_FAST_REF + raw dump");
       w("  !pcr [addr] / !kpcr       KPCR -> PRCB -> CurrentThread chain");
-      w("  !ps                       alias for !process 0 0");
-      w("  !pt                       current thread summary");
+      w("  !ps / !pt                 alias for !process 0 0 / current thread summary");
       w("  !prcb [addr]              _KPRCB field walk");
-      w("  dt <Type>                 layout-only mode (symbol-only)");
+      w("  dt <Type> [addr]          struct layout or memory walk from build tables");
       w("  dt <Type> <Field>         single field lookup");
       w("  !dh <module|base>         parse PE headers from memory");
       w("  s [-a] <start> <len> <pat> search memory (hex bytes or \"text\" w/ -a)");
-      w("  !prcb [addr]              _KPRCB field walk");
-      w("  dt <Type>                 layout-only mode (symbol-only)");
-      w("  dt <Type> <Field>         single field lookup");
       w("  k | kp | kv | ks          stack (rip frame + module+offset; no unwind data)");
       w("  !analyze [-v]             modeled crash/state analysis");
       w("  sym <addr>                resolve module+offset");
+      w("  x <pattern>               symbol listing, wildcards: x nt!Ps*");
+      w("  ? <expr>                  evaluate expression (? nt!DbgPrint+0x10)");
+      w("  u [addr|sym] [n|Ln]       unassemble n instructions (default rip, 12)");
+      w("  uf <addr|sym>             unassemble until ret/jmp");
+      w("  da <addr> [len]           display ASCII string");
+      w("  du <addr> [len]           display UTF-16 string");
       w("  !thread [addr]            _ETHREAD walk (default: PRCB.CurrentThread)");
-      w("  dt <Type> [addr]          walk any loaded type");
       w("  eb <a> <b1> [b2...]       write bytes into mapped memory");
+      w("  db <a> [n|Ln] | dq <a> [n|Ln]   hex dump bytes/qwords (L40 => hex length)");
+      w("  r                         register context | clear");
+      w("  --- lab extensions -------------------------------------------------");
       w("  !mmstate / !mmrun         manual-map loader state / run (manual-map lab)");
       w("  !irql [n]                 current IRQL (name) / force a level (lab ext)");
       w("  !dpcs / !dpcdrain         DPC queue contents / drain at <= DISPATCH");
@@ -271,7 +461,6 @@ export function createCommands(kernel) {
       w("  !poolverify               sweep all allocation guards");
       w("  !funcs <module>           static function recovery over a module");
       w("  !decomp <addr>            decompile (needs vendored wasm; static info otherwise)");
-      w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -549,14 +738,14 @@ export function createCommands(kernel) {
     },
 
     s(args, w) {
-      // usage: s [-a] <startAddr> <len> <hex bytes | "ascii">
+      // usage: s [-a] <startAddr> <len|Llen> <hex bytes | "ascii">
       let ascii = false;
       const a = [...args];
       if (a[0] === "-a") { ascii = true; a.shift(); }
       let start, len, pat = [];
       try {
         start = BigInt(a[0]);
-        len = Number(a[1]);
+        len = parseLen(a[1] ?? "128");
         if (ascii) {
           const q = a.slice(2).join(" ").replace(/^"|"$/g, "");
           pat = [...q].map((ch) => ch.charCodeAt(0));
@@ -564,11 +753,30 @@ export function createCommands(kernel) {
           pat = a.slice(2).join("").match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [];
         }
       } catch { return w('usage: s [-a] <start> <len> <hex | "text"> ', "err"); }
+      if (!Number.isFinite(len) || len <= 0) return w("s: bad length", "err");
       if (!pat.length) return w("s: empty pattern", "err");
       if (start < 0n) start = BigInt.asUintN(64, start);
-      const why = memFault(start, len);
-      if (why) return w(memErr(start, why), "err");
-      const hay = mem.read(start, len);
+      len = Math.min(len, 0x100000);
+      // Degrade page-wise instead of failing wholesale: search the largest
+      // contiguously backed prefix and say so when the span crosses into
+      // unmapped memory (real WinDbg faults; our worlds prefer partial hits).
+      let avail = 0n;
+      if (mem.canRead(start, 1)) {
+        let cur = start;
+        const endVa = start + BigInt(len);
+        while (cur < endVa) {
+          const pageEnd = (cur & ~0xfffn) + 0x1000n;
+          const chunkEnd = pageEnd < endVa ? pageEnd : endVa;
+          if (!mem.canRead(cur, Number(chunkEnd - cur))) break;
+          cur = chunkEnd;
+        }
+        avail = cur - start;
+      }
+      if (avail === 0n) return w(memErr(start, memFault(start, 1) ?? "unmapped"), "err");
+      if (avail < BigInt(len)) {
+        w(`note: range partially mapped — searching first ${avail} bytes only`, "dim");
+      }
+      const hay = mem.read(start, Number(avail));
       let hits = 0;
       outer:
       for (let i = 0; i + pat.length <= hay.length; i++) {
@@ -635,14 +843,216 @@ export function createCommands(kernel) {
 
     sym(args, w) {
       try {
-        const va = BigInt(args[0] ?? "0x0");
+        const va = args[0] ? (resolveArg(args[0]) ?? BigInt(args[0])) : 0n;
         w(sym(va) ?? `${fmtAddr(va)} <no module>`);
       } catch { w("usage: sym <address>", "err"); }
     },
 
+    async u(args, w) {
+      // usage: u [addr|symbol] [count|Lcount] — default: rip, 12 instructions
+      let idx = 0;
+      let va = kernel.cpu.regs.rip ?? 0n;
+      let from = "rip";
+      if (args[0] && !/^[Ll]/.test(args[0])) {
+        va = resolveArg(unquote(args[0]));
+        if (va === null) return w(`u: cannot resolve "${args[0]}"`, "err");
+        from = unquote(args[0]);
+        idx = 1;
+      }
+      let count = 12;
+      if (args[idx]) {
+        try { count = parseLen(args[idx]); } catch { return w("u: bad count (try: u <addr> L20)", "err"); }
+      }
+      count = Math.min(Math.max(count, 1), 256);
+      const hiBase = BigInt.asUintN(64, va) & ~0xffffffffn;
+      try {
+        const insns = await disassemble(mem, va, { count });
+        if (!insns.length) return w(`u: no decodable instructions at ${fmtAddr(va)}`, "err");
+        w(`unassembly from ${from} (${from === "rip" ? fmtAddr(va) : sym(va) ?? fmtAddr(va)}):`, "hdr");
+        for (const i of insns) {
+          const bytes = i.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+          w(`${fmtAddr(i.va)}  ${bytes.padEnd(21)} ${disasmLine(i, hiBase)}`);
+        }
+      } catch (e) {
+        w(memErr(va, e.message === "unmapped" ? "unmapped" : e.message), "err");
+      }
+    },
+
+    async uf(args, w) {
+      // usage: uf <addr|symbol> — unassemble until unconditional ret/jmp
+      if (!args[0]) return w("usage: uf <addr|symbol>   e.g. uf nt!PsLookupProcessByProcessId", "err");
+      const va = resolveArg(unquote(args[0]));
+      if (va === null) return w(`uf: cannot resolve "${args[0]}"`, "err");
+      const hiBase = BigInt.asUintN(64, va) & ~0xffffffffn;
+      try {
+        const insns = await disassemble(mem, va, { count: 128, stopAfterRet: true });
+        w(`function at ${sym(va) ?? fmtAddr(va)}:`, "hdr");
+        for (const i of insns) {
+          const bytes = i.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+          w(`${fmtAddr(i.va)}  ${bytes.padEnd(21)} ${disasmLine(i, hiBase)}`);
+        }
+        if (insns.length >= 128) w("... (cap reached — no terminating ret found)", "dim");
+      } catch (e) {
+        w(memErr(va, e.message === "unmapped" ? "unmapped" : e.message), "err");
+      }
+    },
+
+    da(args, w) {
+      // usage: da <addr> [len|Llen] — ASCII string display (NUL-terminated)
+      const addr = args[0] ? resolveArg(unquote(args[0])) : null;
+      if (addr === null) return w("usage: da <addr> [len]", "err");
+      let len;
+      try { len = parseLen(args[1] ?? "64"); } catch { return w("da: bad length", "err"); }
+      len = Math.min(len, 512);
+      const why = memFault(addr, len);
+      if (why) return w(memErr(addr, why), "err");
+      const bytes = mem.read(addr, len);
+      let out = "";
+      for (const b of bytes) {
+        if (b === 0) break;
+        out += b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
+      }
+      w(`"${out}"`);
+    },
+
+    du(args, w) {
+      // usage: du <addr> [len|Llen] — UTF-16LE string display
+      const addr = args[0] ? resolveArg(unquote(args[0])) : null;
+      if (addr === null) return w("usage: du <addr> [len]", "err");
+      let len;
+      try { len = parseLen(args[1] ?? "64"); } catch { return w("du: bad length", "err"); }
+      len = Math.min(len & ~1, 512);
+      const why = memFault(addr, len);
+      if (why) return w(memErr(addr, why), "err");
+      const chars = [];
+      for (let i = 0; i < len; i += 2) {
+        const c = mem.u16(addr + BigInt(i));
+        if (c === 0) break;
+        chars.push(c >= 32 && c < 127 ? c : 46); // '.' for non-printables
+      }
+      w(`"${String.fromCharCode(...chars)}"`);
+    },
+
+    x(args, w) {
+      // usage: x <pattern> — symbol listing with * / ? wildcards.
+      // Sources: modeled nt! export thunks (apiThunks). windbg-style output:
+      //   <addr> nt!<name>
+      let pat = args.join("") || "*";
+      pat = pat.replace(/^(?:nt|ntoskrnl(?:\.exe)?)!/i, "");
+      const rx = new RegExp("^" + pat.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+      const hits = [...(kernel.apiThunks ?? []).entries()]
+        .filter(([name]) => rx.test(name))
+        .sort(([a], [b]) => a.localeCompare(b));
+      if (!hits.length) return w(`no symbols match '${args.join("")}'`, "dim");
+      for (const [name, thunk] of hits) {
+        w(`${fmtAddr(thunk)} nt!${name}`);
+      }
+      w(`(${hits.length} match(es))`, "dim");
+    },
+
+    "?"(args, w) {
+      if (!args.length) return w("usage: ? <expr>   e.g. ? nt!PsLookupProcessByProcessId + 0x10", "err");
+      const exprText = args.join(" ");
+      const resolver = (kind, key) => {
+        if (kind === "@") {
+          const regs = kernel.cpu?.regs ?? {};
+          if (key in regs) return BigInt.asUintN(64, BigInt(regs[key]));
+          return null;
+        }
+        // module+offset inside expressions: nt+0x1000, kfhook.sys+0x40
+        const rel = key.match(/^([A-Za-z0-9_.]+?)\+(?:0x)?([0-9a-fA-F]+)$/i);
+        if (rel) {
+          const v = resolveArg(rel[1] + "+0x" + rel[2]);
+          if (v !== null) return v;
+        }
+        return resolveArg(key);
+      };
+      try {
+        const v = evalExpr(exprText, resolver);
+        w(`Evaluate expression: ${v.toString(16).padStart(16, "0")} = ${v.toString()}`);
+      } catch (e) {
+        w(`? : ${e.message}`, "err");
+      }
+    },
+
+    "!drivers"(args, w) {
+      const mods = kernel.loadedModules ?? [];
+      const drivers = kernel.loadedDrivers ?? [];
+      const rows = new Map();
+      for (const d of drivers) {
+        rows.set(String(d.name), {
+          name: String(d.name), base: BigInt(d.base), size: BigInt(d.imageSize ?? 0),
+          lab: false,
+        });
+      }
+      for (const m of mods) {
+        rows.set(String(m.name), {
+          name: String(m.name), base: m.base, size: BigInt(m.sizeOfImage ?? 0),
+          lab: !!m.lab,
+        });
+      }
+      w("start             end                 module name", "hdr");
+      for (const r of rows.values()) {
+        w(`${fmtAddr(r.base)} ${fmtAddr(r.base + r.size)} ${r.name}` +
+          (r.lab ? "   <-- suspicious" : ""));
+      }
+      w(`(${rows.size} driver object(s))`, "dim");
+    },
+
+    "!drvobj"(args, w) {
+      const target = args[0];
+      if (!target) {
+        const recs = [...(kernel.driverObjects ?? new Map()).values()];
+        if (!recs.length) return w("usage: !drvobj <name|addr>   (no DRIVER_OBJECTs created yet)", "err");
+        w("Driver objects:", "hdr");
+        for (const r of recs) w(`  ${fmtAddr(r.va)}  ${r.name}`);
+        return;
+      }
+      let rec = null;
+      let va = resolveArg(unquote(target));
+      if (va !== null) rec = (kernel.driverObjects ?? new Map()).get(va);
+      if (!rec) {
+        const byName = [...(kernel.driverObjects ?? new Map()).values()]
+          .find((r) => r.name.toLowerCase() === target.toLowerCase().replace(/\.sys$/, "")
+            || `${r.name}`.toLowerCase() === target.toLowerCase());
+        if (byName) { rec = byName; va = byName.va; }
+      }
+      if (!rec) return w(`!drvobj: no DRIVER_OBJECT for '${target}' (compile+load a driver first, or list with !drvobj)`, "err");
+
+      w(`DRIVER_OBJECT ${fmtAddr(va)} (${rec.name})`, "hdr");
+      const rd = (off) => mem.u64(va + off);
+      const typeSize = mem.u32(va + BigInt(DRIVER_OBJECT.TYPE));
+      w(`  Type/Size           : 0x${typeSize.toString(16)}`);
+      w(`  DeviceObject        : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DEVICE_OBJECT)))}`);
+      w(`  Flags               : 0x${rd(BigInt(DRIVER_OBJECT.FLAGS)).toString(16)}`);
+      w(`  DriverStart         : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DRIVER_START)))}` +
+        (rd(BigInt(DRIVER_OBJECT.DRIVER_START)) ? `  (${rec.name})` : ""));
+      w(`  DriverSize          : 0x${rd(BigInt(DRIVER_OBJECT.DRIVER_SIZE)).toString(16)}`);
+      const usLen = mem.u16(va + BigInt(DRIVER_OBJECT.DRIVER_NAME));
+      const usBuf = rd(BigInt(DRIVER_OBJECT.DRIVER_NAME) + 8n);
+      w(`  DriverName          : "${usLen ? mem.readUtf16(usBuf, usLen / 2) : ""}"`);
+      w(`  DriverSection       : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DRIVER_SECTION)))}`);
+      w(`  DriverInit          : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DRIVER_INIT)))}`);
+      w(`  DriverStartIo       : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DRIVER_STARTIO)))}`);
+      w(`  DriverUnload        : ${fmtAddr(rd(BigInt(DRIVER_OBJECT.DRIVER_UNLOAD)))}` +
+        (rd(BigInt(DRIVER_OBJECT.DRIVER_UNLOAD)) ? "" : "  (not set)"), "warn");
+      w("  MajorFunction table :", "hdr");
+      for (const [code, name] of Object.entries(IRP_MJ_NAMES)) {
+        const fn = rd(BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) + BigInt(Number(code) * 8));
+        const isDefault = fn === rec.defaultMajorThunk;
+        w(`    [+0x${(Number(code) * 8 + DRIVER_OBJECT.MAJOR_FUNCTION).toString(16).padStart(3, "0")}] IRP_MJ_${name.padEnd(22)} ${fmtAddr(fn)}${isDefault ? "  (IopInvalidDeviceRequest)" : ""}`,
+          isDefault ? "dim" : "");
+      }
+    },
+    "!drivobj"(args, w) { commands["!drvobj"](args, w); }, // alias (both spellings seen in the wild)
+
     db(args, w) {
-      let addr; try { addr = BigInt(args[0] ?? "0x0"); } catch { return w("db: bad address", "err"); }
-      const len = Math.min(Number(args[1] ?? 128), 512);
+      let addr = args[0] ? resolveArg(args[0]) : 0n;
+      if (addr === null) return w("db: bad address", "err");
+      let len;
+      try { len = parseLen(args[1] ?? "128"); } catch { return w("db: bad length (try: db <addr> L40)", "err"); }
+      len = Math.min(len, 512);
       if (addr !== 0n) {
         const why = memFault(addr, len);
         if (why) return w(memErr(addr, why), "err");
@@ -657,8 +1067,11 @@ export function createCommands(kernel) {
     },
 
     dq(args, w) {
-      let addr; try { addr = BigInt(args[0] ?? "0x0"); } catch { return w("dq: bad address", "err"); }
-      const count = Math.min(Number(args[1] ?? 8), 64);
+      let addr = args[0] ? resolveArg(args[0]) : 0n;
+      if (addr === null) return w("dq: bad address", "err");
+      let count;
+      try { count = parseLen(args[1] ?? "8"); } catch { return w("dq: bad count (try: dq <addr> L8)", "err"); }
+      count = Math.min(count, 64);
       if (addr !== 0n) {
         const why = memFault(addr, count * 8);
         if (why) return w(memErr(addr, why), "err");
@@ -809,24 +1222,31 @@ export function createCommands(kernel) {
       const tag = args[0].toLowerCase();
       const blocks = (kernel.poolAllocs ?? []).filter((a) => a.tag.toLowerCase() === tag);
       if (!blocks.length) return w(`!poolfind: no blocks tagged "${args[0]}"`, "dim");
-      w(`pool blocks tagged '${args[0]}':`, "hdr");
+      w(`pool blocks tagged '${args[0]}' (guard lives at user_addr + size, NOT at the block itself):`, "hdr");
       let corrupted = 0;
+      const smashed = [];
       for (const b of blocks) {
         let guard = "intact";
+        const gaddr = b.addr + BigInt(b.size);
         for (let i = 0; i < 16; i++) {
-          const got = mem.u8(b.addr + BigInt(b.size) + BigInt(i));
+          const got = mem.u8(gaddr + BigInt(i));
           if (got !== 0xa5) {
-            guard = `CORRUPTED at guard[${i}] (got 0x${got.toString(16)}, expected 0xa5)`;
+            guard = `CORRUPTED at guard[${i}] @ ${fmtAddr(gaddr + BigInt(i))} (got 0x${got.toString(16)}, expected 0xa5)`;
             corrupted++;
+            smashed.push({ b, gaddr });
             break;
           }
         }
-        w(`  ${fmtAddr(b.addr)}  size=0x${b.size.toString(16)}  ${b.freed ? "freed" : "active"}  guard: ${guard}`,
+        w(`  ${fmtAddr(b.addr)}  size=0x${b.size.toString(16)}  ${b.freed ? "freed" : "active"}  guard @ ${fmtAddr(gaddr)}: ${guard}`,
           guard === "intact" ? "" : "warn");
       }
       if (corrupted) {
-        w(`repair: rewrite the smashed guard with 'eb' (expected pattern: ` +
-          `a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5), then !poolverify`, "dim");
+        for (const { b, gaddr } of smashed) {
+          w(`repair this block's guard — copy-paste (writes the full 16-byte A5 trailer at its EXACT address):`,
+            "dim");
+          w(`eb ${fmtAddr(gaddr)} a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5`);
+        }
+        w("then confirm with !poolverify", "dim");
       } else {
         w("all guards read A5 patterns", "good");
       }
@@ -841,11 +1261,13 @@ export function createCommands(kernel) {
       }
       w(`!poolverify: ${bad.length} corrupted allocation(s):`, "err");
       for (const b of bad) {
-        const got = mem.u8(b.addr + BigInt(b.size));
+        const gaddr = b.addr + BigInt(b.size);
+        const got = mem.u8(gaddr);
         w(`  ${fmtAddr(b.addr)} tag='${b.tag}' size=0x${b.size.toString(16)} ` +
-          `guard[0]=0x${got.toString(16)} (expected 0xa5)`, "warn");
+          `guard @ ${fmtAddr(gaddr)} guard[0]=0x${got.toString(16)} (expected 0xa5)`, "warn");
+        w(`  repair: eb ${fmtAddr(gaddr)} a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5 a5`, "dim");
       }
-      w("hint: !poolfind <tag> shows expected bytes; repair with 'eb'", "dim");
+      w("note: eb writes are live in the same memory !poolverify sweeps — no reload needed", "dim");
     },
 
     "!funcs"(args, w) {
@@ -931,6 +1353,7 @@ export function createCommands(kernel) {
           base: mm.payloadBase, sizeOfImage: 0x4000, name: "mmpayload.sys",
           full: "\\SystemRoot\\system32\\mmpayload.sys",
         });
+        kernel.materializeModuleRange(mm.payloadBase, 0x4000);
       }
     },
   };
@@ -951,7 +1374,7 @@ export function createDebugger(kernel, out) {
     out.appendChild(line);
     out.scrollTop = out.scrollHeight;
   };
-  const exec = (line) => {
+  const exec = async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     write(`kd> ${trimmed}`, "prompt");
@@ -970,7 +1393,7 @@ export function createDebugger(kernel, out) {
         ? `Couldn't resolve "${cmd}" — did you mean "!${near}"? (try help)`
         : `Couldn't resolve "${cmd}" — try help`, "err");
     }
-    else try { fn(args, write, out); } catch (e) { write(`error: ${e.message}`, "err"); }
+    else try { await fn(args, write, out); } catch (e) { write(`error: ${e.message}`, "err"); }
   };
   return { exec, write };
 }

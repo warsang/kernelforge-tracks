@@ -8,7 +8,7 @@ const TYPES = [
   "_EPROCESS", "_ETHREAD", "_KPROCESS", "_KTHREAD", "_LIST_ENTRY",
   "_UNICODE_STRING", "_OBJECT_TYPE", "_OBJECT_HEADER", "_HANDLE_TABLE",
   "_PS_PROTECTION", "_KLDR_DATA_TABLE_ENTRY", "_LDR_DATA_TABLE_ENTRY",
-  "_KPCR", "_KPRCB",
+  "_KPCR", "_KPRCB", "_MMVAD", "_MMVAD_SHORT",
 ];
 
 export async function loadTables(fetchImpl = fetch, build = "windows-10/22h2") {
