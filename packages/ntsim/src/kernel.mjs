@@ -13,6 +13,7 @@ import { JsInterpreter, M64 } from "./cpu.mjs";
 import { installWinApi } from "./winapi.mjs";
 import { SymbolEngine } from "./symbols.mjs";
 import { tryDispatchException } from "./seh.mjs";
+import { Mmu, TranslatedMemory } from "./paging.mjs";
 
 const DEFAULT_BASES = {
   kva: 0xfffff80000000000n,
@@ -61,10 +62,30 @@ export class NtKernel {
   constructor(opts = {}) {
     // Adopt the injected backend's memory so guest, kernel model, and CPU
     // all share ONE address space (JsInterpreter default binds its own).
-    this.mem = opts.cpu?.mem ?? new SparseMemory();
+    const raw = opts.cpu?.mem ?? new SparseMemory();
+    this.rawMem = raw;
+    this.cpu = opts.cpu;
+
+    // Guest paging: the raw store becomes physically addressed, and the
+    // kernel-facing `mem` is a translating facade. Only the JS interpreter
+    // executes through translation today; injected backends keep raw memory
+    // and must program their own CRs (see backend contract).
+    this.paging = !!opts.paging && !opts.cpu;
+    if (this.paging) {
+      const tm = new TranslatedMemory();
+      this.mmu = new Mmu(raw, { demandMap: opts.demandMap ?? true });
+      tm.attach(this.mmu);
+      this.mem = tm;
+      this.cr3 = this.mmu.newAddressSpace();
+      this.mmu.enablePaging(this.cr3);
+    } else {
+      this.mmu = null;
+      this.mem = raw;
+    }
+
     this.tables = opts.tables ?? new StructTables();
-    this.cpu = opts.cpu ?? new JsInterpreter(this.mem);
-    this.cpu.mem = this.mem;
+    if (!this.cpu) this.cpu = new JsInterpreter(this.mem);
+    this.cpu.mem = opts.cpu ? raw : this.mem;
     // Unified register surface: expose `rip` on backends whose regfile lacks
     // it (JsInterpreter tracks RIP separately from the GPR dict).
     if (this.cpu.regs && !("rip" in this.cpu.regs)) {
@@ -222,6 +243,46 @@ export class NtKernel {
       { name: "HAL.dll", base: 0xfffff8052b000000n, imageSize: 0x40000 },
       { name: "kfbootkit.sys", base: 0xfffff80539000000n, imageSize: 0x8000 },
     );
+
+    // ------------------------------------------------------- guest paging
+    if (this.paging) {
+      // DirectoryTableBase in every EPROCESS (KPROCESS is embedded at offset 0)
+      let dtbOff = 0n;
+      try { dtbOff = BigInt(this.tables.offsetOf("_KPROCESS", "DirectoryTableBase")); } catch { /* best effort */ }
+      if (dtbOff > 0n) {
+        for (const addr of this.processesByName.values()) {
+          this.mem.w64(addr + dtbOff, this.cr3 & ~0xfffn);
+        }
+      }
+
+      // KUSER_SHARED_DATA: one physical frame, two VA views — the classic
+      // user 0x7FFE0000 and the kernel alias 0xFFFFF780`00000000.
+      const kuserFrame = this.mmu.frameAlloc();
+      const kuser = new Uint8Array(4096);
+      const w32at = (off, v) => {
+        kuser[off] = v & 0xff; kuser[off+1] = (v>>>8)&0xff; kuser[off+2] = (v>>>16)&0xff; kuser[off+3] = (v>>>24)&0xff;
+      };
+      w32at(0x000, 1);            // modeled TickCountLowDeprecated
+      w32at(0x2c4, 10);           // NtMajorVersion 10
+      w32at(0x2c8, 0);            // NtMinorVersion 0
+      w32at(0x300, 2);            // SuiteMask ~ Server
+      kuser[0x304] = 1;           // KdDebuggerEnabled
+      this.rawMem.write(kuserFrame, kuser);
+      for (const va of [0x7ffe0000n, 0xfffff78000000000n]) {
+        this.mmu.mapPage(va, kuserFrame, { write: false, nx: true });
+      }
+      this.kuserSharedData = 0x7ffe0000n;
+    }
+  }
+
+  /** Guest-VA -> guest-PA via the MMU (null when unmapped / paging off). */
+  vtop(va) {
+    return this.paging ? (this.mmu.lookup(va)?.pa ?? null) : BigInt(va);
+  }
+
+  /** Raw leaf PTE for a guest VA under paging (null otherwise). */
+  readPte(va) {
+    return this.paging ? this.mmu.readPte(va) : null;
   }
 
   // -------------------------------------------------------------- pool

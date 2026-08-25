@@ -87,6 +87,10 @@ export class HybridCpuBackend {
     // have consumed prefixes/opcodes before refusing it.
     const startRip = this.js.opcodeStart ?? this.js.rip;
     for (const name of R64) this.uc.regs[name] = this.js.regs[name];
+    // control registers ride along so a paged session stays paged in QEMU
+    for (const cr of ["cr0", "cr3", "cr4", "efer"]) {
+      if (this.js[cr] !== undefined) this.uc.setCR?.(cr, this.js[cr]);
+    }
     this.js.rip = startRip;
     this.uc.rip = startRip;
     this.uc.halted = false;
@@ -135,6 +139,16 @@ export class HybridCpuBackend {
   }
 
   // ------------------------------------------------------------ control
+
+  getCR(name) {
+    const eng = this.activeEngine;
+    return eng.getCR ? eng.getCR(name) : eng[name];
+  }
+  setCR(name, v) {
+    const eng = this.activeEngine;
+    if (eng.setCR) eng.setCR(name, v);
+    else eng[name] = v;
+  }
 
   reset(rip) {
     this.js.reset(rip);
