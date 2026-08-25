@@ -24,6 +24,20 @@ const DEFAULT_BASES = {
   driver: 0xfffff80200000000n, // DRIVER_OBJECT / analyzer scratch
 };
 
+/** Offset between the eproc base and the synthesized KTHREAD region. Chosen
+ *  well past any lab carve window over the EPROCESS array, and kept under
+ *  bit 47 when eproc uses a low base (blog-lab worlds). */
+const KTHRD_REGION_STRIDE = 0x4000000n;
+
+/** Cross-process handle references seeded at boot (owner -> victim pairs).
+ *  These make the classic EDR cross-check real: hide a process via DKOM and
+ *  its open handles are still enumerated by other processes' handle tables. */
+const SEED_HANDLE_REFS = [
+  { owner: "services.exe", target: "lsass.exe", access: 0x1fffff },
+  { owner: "winlogon.exe", target: "lsass.exe", access: 0x1fffff },
+  { owner: "kfsample.exe", target: "kftarget.exe", access: 0x143a }, // VM_READ|VM_WRITE|VM_OPERATION-ish
+];
+
 /** Software-visible IRQL names (x64). Levels >= 3 are device/clock/IPI/high;
  *  precise sub-naming varies by platform so we label the band generically. */
 export const IRQL_NAMES = {
@@ -98,13 +112,14 @@ export class NtKernel {
       });
     }
     const B = opts.bases ?? {};
-    /** @type {typeof DEFAULT_BASES} */
+    /** @type {typeof DEFAULT_BASES & {kthrd: bigint}} */
     this.bases = {
       kva: B.kva ?? DEFAULT_BASES.kva,
       pool: B.pool ?? DEFAULT_BASES.pool,
       thunk: B.thunk ?? DEFAULT_BASES.thunk,
       eproc: B.eproc ?? DEFAULT_BASES.eproc,
       driver: B.driver ?? DEFAULT_BASES.driver,
+      kthrd: B.kthrd ?? ((B.eproc ?? DEFAULT_BASES.eproc) + KTHRD_REGION_STRIDE),
     };
     this.buildName = opts.buildName ?? "synthetic-22h2";
 
@@ -151,6 +166,11 @@ export class NtKernel {
 
     /** @type {Map<string, bigint>} name -> EPROCESS va */
     this.processesByName = new Map();
+
+    /** @type {Array<{handle:bigint, ownerEproc:bigint, targetEproc:bigint,
+     *                grantedAccess:number}>} cross-process object references
+     *  (EDR handle-table cross-check source; see ZwQuerySystemInformation) */
+    this.objectHandles = [];
 
     /** captured DbgPrint lines */
     this.dbgLog = [];
@@ -240,6 +260,22 @@ export class NtKernel {
     this.mem.w64(headAddr, linkAddrs[0]);
     this.mem.w64(headAddr + 8n, linkAddrs[linkAddrs.length - 1]);
 
+    // ------------------------------------------------ threads & cross-refs
+    // One seeded _ETHREAD per process wired into its owner's ThreadListHead
+    // ring, with KTHREAD.ApcState.Process stamped back at the owner EPROCESS,
+    // plus per-process _HANDLE_TABLE blobs and a few cross-process handle
+    // records. Rationale: ActiveProcessLinks is only ONE of the places a
+    // process exists. DKOM can unlink the list; it cannot retract the
+    // ApcState pointer of every thread that ever ran in the process, nor the
+    // handles other processes hold against it. These are the independent
+    // sources EDRs diff the process list against (lessons m1.l2 / m1.l4).
+    //
+    // Skipped under guest paging: demand-mapped seed pages would consume
+    // MMU frames ahead of the paging fixtures and shift every physical
+    // address those labs assert on. Paging worlds (SMM/paging tracks) keep
+    // their pristine layout.
+    if (!this.paging) this.seedProcessThreads();
+
     // scenario modules visible via `lm` — kfbootkit.sys is the L1 flag target
     this.loadedDrivers.push(
       { name: "ntoskrnl.exe", base: 0xfffff8052b800000n, imageSize: 0x800000 },
@@ -281,6 +317,126 @@ export class NtKernel {
   /** Guest-VA -> guest-PA via the MMU (null when unmapped / paging off). */
   vtop(va) {
     return this.paging ? (this.mmu.lookup(va)?.pa ?? null) : BigInt(va);
+  }
+
+  // -------------------------------------------------- threads & cross-refs
+
+  /** KTHREAD.ApcState byte offset for the active build (null if absent). */
+  apcStateOffset() {
+    try { return this.tables.offsetOf("_KTHREAD", "ApcState"); } catch { return null; }
+  }
+
+  /**
+   * Synthesize boot-time thread & handle state (called by bootstrap):
+   *   - one _ETHREAD per DEFAULT_PROCESS: CLIENT_ID, ThreadListHead ring,
+   *     ActiveThreads=1, and KTHREAD.ApcState.Process -> owner EPROCESS.
+   *     This is the EDR cross-reference that survives DKOM: unlinking
+   *     ActiveProcessLinks does not retract any thread's ApcState pointer.
+   *   - a _HANDLE_TABLE blob per process behind EPROCESS.ObjectTable, plus
+   *     SEED_HANDLE_REFS records in kernel.objectHandles so handle-table
+   *     enumeration finds processes the list no longer shows.
+   * Each feature degrades independently when the active build's tables lack
+   * its fields (win7 KTHREAD carries ApcStatePointer, not ApcState).
+   */
+  seedProcessThreads() {
+    const t = this.tables;
+    const mem = this.mem;
+    let cidOff, tleOff;
+    try {
+      cidOff = t.offsetOf("_ETHREAD", "Cid");
+      tleOff = t.offsetOf("_ETHREAD", "ThreadListEntry");
+    } catch {
+      return; // build lacks basic thread fields — no seeding
+    }
+    let tlhOff = null, atOff = null, otOff = null;
+    try { tlhOff = t.offsetOf("_EPROCESS", "ThreadListHead"); } catch { /* ring off */ }
+    try { atOff = t.offsetOf("_EPROCESS", "ActiveThreads"); } catch { /* counter off */ }
+    try { otOff = t.offsetOf("_EPROCESS", "ObjectTable"); } catch { /* table ptr off */ }
+    const apcOff = this.apcStateOffset();
+
+    const ethreadSize = t.has("_ETHREAD")
+      ? BigInt(Number(t.sizeOf("_ETHREAD"))) : 0x600n;
+    const htSize = t.has("_HANDLE_TABLE")
+      ? BigInt(Number(t.sizeOf("_HANDLE_TABLE"))) : 0x100n;
+    const align16 = (v) => (v + 15n) & ~15n;
+
+    // deterministic kthrd-region layout: [HT per proc][ETHREAD per proc]
+    let cursor = this.bases.kthrd;
+    for (const p of DEFAULT_PROCESSES) {
+      const eproc = this.processesByName.get(p.name);
+      if (!eproc) continue;
+      if (otOff !== null) mem.w64(eproc + otOff, cursor); // ObjectTable -> blob
+      cursor += align16(htSize);
+    }
+
+    const threadsByPid = new Map();
+    let i = 0;
+    for (const p of DEFAULT_PROCESSES) {
+      const eproc = this.processesByName.get(p.name);
+      if (!eproc) continue;
+      const thr = cursor;
+      cursor += align16(ethreadSize);
+      mem.w64(thr + cidOff, BigInt(p.pid));              // CLIENT_ID.UniqueProcess
+      mem.w64(thr + cidOff + 8n, BigInt(0x400 + i * 4)); // CLIENT_ID.UniqueThread
+      if (tlhOff !== null) {
+        const head = eproc + tlhOff;
+        const entry = thr + tleOff;
+        mem.w64(head, entry);
+        mem.w64(head + 8n, entry);
+        mem.w64(entry, head);
+        mem.w64(entry + 8n, head);
+      }
+      if (atOff !== null) mem.w32(eproc + atOff, 1);
+      if (apcOff !== null) mem.w64(thr + apcOff, eproc); // ApcState.Process
+      threadsByPid.set(BigInt(p.pid), thr);
+      i++;
+    }
+    this.threadsByPid = threadsByPid;
+    if (!this.currentThread) this.currentThread = threadsByPid.get(4n) ?? null;
+
+    // deterministic cross-process object references (EDR handle cross-check)
+    this.objectHandles.length = 0;
+    let h = 0x10n;
+    for (const ref of SEED_HANDLE_REFS) {
+      const ownerEproc = this.processesByName.get(ref.owner);
+      const targetEproc = this.processesByName.get(ref.target);
+      if (!ownerEproc || !targetEproc) continue;
+      this.objectHandles.push({
+        handle: h,
+        ownerEproc,
+        targetEproc,
+        grantedAccess: ref.access,
+      });
+      h += 4n;
+    }
+  }
+
+  /**
+   * Walk an EPROCESS.ThreadListHead ring; returns [{addr, tid, backed}]
+   * (tid via CLIENT_ID.UniqueThread when readable). Guards against empty
+   * rings, self-loops and unbacked dump pointers.
+   */
+  threadsOf(eproc) {
+    const t = this.tables;
+    const out = [];
+    let tlhOff, tleOff, cidOff;
+    try {
+      tlhOff = t.offsetOf("_EPROCESS", "ThreadListHead");
+      tleOff = t.offsetOf("_ETHREAD", "ThreadListEntry");
+      cidOff = t.offsetOf("_ETHREAD", "Cid");
+    } catch { return out; }
+    const head = eproc + tlhOff;
+    let cur = this.mem.u64(head);
+    const seen = new Set();
+    while (cur && cur !== head && !seen.has(cur) && out.length < 64) {
+      seen.add(cur);
+      const base = cur - tleOff;
+      let tid = null;
+      try { tid = this.mem.u64(base + cidOff + 8n); } catch { /* unreadable */ }
+      out.push({ addr: base, tid });
+      cur = this.mem.u64(cur);
+    }
+    return out;
   }
 
   /** Raw leaf PTE for a guest VA under paging (null otherwise). */

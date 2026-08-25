@@ -15,8 +15,20 @@ extern PEPROCESS PsInitialSystemProcess;
 
 typedef enum _SYSTEM_INFORMATION_CLASS {
     SystemProcessInformation = 5,
+    SystemHandleInformation = 16,
+    SystemExtendedHandleInformation = 64,
     SystemProcessIdInformation = 0x50,
 } SYSTEM_INFORMATION_CLASS;
+
+/* ntsim-modeled handle entry (EX-style layout; see lesson m1.l2) */
+typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX {
+    ULONG UniqueProcessId;
+    ULONG HandleAttributes;
+    ULONG GrantedAccess;
+    USHORT HandleValue;
+    USHORT CreatorBackTraceIndex;
+    PVOID Object;
+} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
 
 NTSTATUS ZwOpenProcess(PHANDLE ProcessHandle, unsigned int DesiredAccess,
                        POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId);

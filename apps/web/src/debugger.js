@@ -17,6 +17,7 @@ import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs"
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
+import { RET_MARKER as UC_RET_MARKER } from "@kernelforge/ntsim-unicorn/src/backend.mjs";
 import { disassemble, liftAliasHex } from "./disasm.mjs";
 
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
@@ -294,11 +295,12 @@ export function createCommands(kernel) {
     for (let steps = 0; cur && cur !== head && steps < cap * 2; steps++) {
       if (seen.has(cur)) break; // corrupt ring
       seen.add(cur);
-      const entry = cur + tleOff;
-      const backed = typeof mem.canRead !== "function" || mem.canRead(entry, 16);
+      // `cur` is a _LIST_ENTRY address inside some _ETHREAD (Flink target);
+      // the thread base sits tleOff bytes below it.
+      const backed = typeof mem.canRead === "function" && mem.canRead(cur, 16);
       out.push({ addr: cur, backed });
       if (!backed) break;       // cannot follow a chain we cannot read
-      const next = mem.u64(entry);
+      const next = mem.u64(cur);
       if (!next || next === cur) break;
       cur = next;
     }
@@ -309,9 +311,10 @@ export function createCommands(kernel) {
   const threadLines = (eproc, w) => {
     const threads = listThreads(eproc);
     if (!threads.length) return 0;
-    let cidOff = null, tleOff = null;
+    let cidOff = null, tleOff = null, apcOff = null;
     try { cidOff = BigInt(tables.offsetOf("_ETHREAD", "Cid")); } catch { /* optional */ }
     try { tleOff = BigInt(tables.offsetOf("_ETHREAD", "ThreadListEntry")); } catch { /* optional */ }
+    try { apcOff = BigInt(tables.offsetOf("_KTHREAD", "ApcState")); } catch { /* optional */ }
     for (const t of threads) {
       // walkers carry _LIST_ENTRY addresses; WinDbg prints _ETHREAD bases
       const base = tleOff !== null ? t.addr - tleOff : t.addr;

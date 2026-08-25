@@ -157,6 +157,13 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null, carvedSt
       mem.w64(entry, headAddr);
       mem.w64(entry + 8n, headAddr);
       mem.w32(lsassEproc + BigInt(tables.offsetOf("_EPROCESS", "ActiveThreads")), 1);
+      // KTHREAD.ApcState.Process -> owner EPROCESS: the EDR cross-reference
+      // that survives DKOM (see lessons m1.l0 / m1.l2). _KTHREAD embeds at
+      // offset 0 of _ETHREAD, so the KTHREAD offset addresses this blob too.
+      try {
+        const apcOff = BigInt(tables.offsetOf("_KTHREAD", "ApcState"));
+        mem.w64(ethread + apcOff, lsassEproc);
+      } catch { /* build without KTHREAD.ApcState */ }
     } catch { /* build without thread-list fields */ }
   }
 
@@ -369,6 +376,11 @@ function populateFromDump(kernel, tables, world) {
         mem.w64(headAddr + 8n, entry);
         mem.w64(entry, headAddr);
         mem.w64(entry + 8n, headAddr);
+        // KTHREAD.ApcState.Process -> owner (EDR cross-ref, lessons m1.l0/m1.l2)
+        try {
+          const apcOff = BigInt(t.offsetOf("_KTHREAD", "ApcState"));
+          mem.w64(th + apcOff, owner);
+        } catch { /* build without KTHREAD.ApcState */ }
       } catch { /* build without thread-list fields */ }
     }
   }

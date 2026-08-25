@@ -240,6 +240,78 @@ export function installWinApiExt(kernel, ctx) {
   });
   k.define("KeRemoveQueueApc", () => 1n);
 
+  // ------------------------------------------------ process attach (KAPC_STATE)
+  //
+  // KeStackAttachProcess rotates the calling thread's KTHREAD.ApcState into
+  // another process's address space: the current state is saved both into
+  // KTHREAD.SavedApcState and the caller's PKAPC_STATE buffer, then
+  // ApcState.Process points at the target EPROCESS and ApcStateIndex flips
+  // to 1. Detach restores from the caller's buffer. ntsim models the
+  // metadata rotation exactly — address spaces themselves are abstracted
+  // away elsewhere (cf. MmCopyVirtualMemory below).
+  //
+  // Detection relevance: an attached thread's ApcState.Process still names
+  // its target EPROCESS even after that process is DKOM-unlinked.
+  // Offsets resolve lazily through kernel.tables: this module installs at
+  // construction time, before loadTablesFromDir may swap in the real build.
+  const off = (type, field) => {
+    try { return kernel.tables.offsetOf(type, field); } catch { return null; }
+  };
+  const eprocName = (eproc) => {
+    const o = off("_EPROCESS", "ImageFileName");
+    return o === null || !eproc ? "?" : mem.readAnsi(eproc + o, 15);
+  };
+  // MODELED KAPC_STATE buffer divergence: callers receive
+  //   +0x10 ULONG64 saved ApcState.Process
+  //   +0x18 UCHAR   saved ApcStateIndex
+  // (offsets mirror the real struct so student C code can read .Process)
+  const APC_BUF_PROC = 0x10n;
+  const APC_BUF_IDX = 0x18n;
+  k.define("KeStackAttachProcess", (proc, apcState) => {
+    const thr = kernel.currentThread;
+    const kApcOff = off("_KTHREAD", "ApcState");
+    if (!thr || kApcOff === null) {
+      kernel.dbgLog.push("[attach] KeStackAttachProcess: no thread context — no-op");
+      return undefined;
+    }
+    const kSavedApcOff = off("_KTHREAD", "SavedApcState");
+    const kApcIdxOff = off("_KTHREAD", "ApcStateIndex");
+    proc = ptrSizeMask(proc);
+    const oldProc = mem.u64(thr + kApcOff);
+    const oldIdx = kApcIdxOff !== null ? mem.u8(thr + kApcIdxOff) : 0;
+    if (apcState) {
+      mem.w64(apcState + APC_BUF_PROC, oldProc);
+      mem.w8(apcState + APC_BUF_IDX, oldIdx);
+    }
+    if (kSavedApcOff !== null) mem.w64(thr + kSavedApcOff, oldProc);
+    mem.w64(thr + kApcOff, proc);
+    if (kApcIdxOff !== null) mem.w8(thr + kApcIdxOff, oldIdx | 1);
+    kernel.dbgLog.push(
+      `[attach] thread ${thr.toString(16)}: ApcState.Process ` +
+      `${eprocName(oldProc)} -> ${eprocName(proc)} (ApcStateIndex=${oldIdx | 1})`);
+    return undefined;
+  });
+  k.define("KeUnstackDetachProcess", (apcState) => {
+    const thr = kernel.currentThread;
+    const kApcOff = off("_KTHREAD", "ApcState");
+    if (!thr || kApcOff === null) {
+      kernel.dbgLog.push("[attach] KeUnstackDetachProcess: no thread context — no-op");
+      return undefined;
+    }
+    const kSavedApcOff = off("_KTHREAD", "SavedApcState");
+    const kApcIdxOff = off("_KTHREAD", "ApcStateIndex");
+    let savedProc = apcState ? mem.u64(apcState + APC_BUF_PROC) : 0n;
+    let savedIdx = apcState ? mem.u8(apcState + APC_BUF_IDX) : 0;
+    if (!savedProc && kSavedApcOff !== null) savedProc = mem.u64(thr + kSavedApcOff);
+    mem.w64(thr + kApcOff, ptrSizeMask(savedProc));
+    if (kSavedApcOff !== null) mem.w64(thr + kSavedApcOff, 0n);
+    if (kApcIdxOff !== null) mem.w8(thr + kApcIdxOff, savedIdx & ~1);
+    kernel.dbgLog.push(
+      `[attach] thread ${thr.toString(16)}: detached -> ApcState.Process ` +
+      `${eprocName(savedProc)} (ApcStateIndex=${savedIdx & ~1})`);
+    return undefined;
+  });
+
   // KeRemoveQueueDpc lives in winapi.mjs (drained-flag model on kernel.queueDpc
   // records) — do not shadow it here.
 
@@ -792,6 +864,55 @@ export function installWinApiExt(kernel, ctx) {
     mem.w32(resultLen, 0x10 + name.length * 2);
     return STATUS_SUCCESS;
   });
+
+  // --------------------------------------------- ZwQuerySystemInformation
+  //
+  // MODELED LAYOUT (documented divergence): SystemHandleInformation (class
+  // 16) and SystemExtendedHandleInformation (class 64) both return an
+  // EX-style entry table:
+  //   +0x00 ULONG  UniqueProcessId   (owner)
+  //   +0x04 ULONG  HandleAttributes
+  //   +0x08 ULONG  GrantedAccess
+  //   +0x0c USHORT HandleValue
+  //   +0x0e USHORT CreatorBackTraceIndex
+  //   +0x10 PVOID  Object            (target EPROCESS)
+  // entry size 24; buffer = ULONG NumberOfHandles + pad + entries.
+  // This is EDR cross-reference source #3: handles other processes hold
+  // against a DKOM-hidden target still enumerate here.
+  const SYS_HANDLE_ENTRY_SIZE = 24n;
+  const sysHandleInfoImpl = (cls, sysInfo, len, retLen) => {
+    const c = Number(BigInt.asUintN(32, BigInt(cls)));
+    if (c !== 16 && c !== 64) {
+      kernel.dbgLog.push(
+        `[winapi] ZwQuerySystemInformation(class ${c}) unmodeled -> STATUS_INVALID_INFO_CLASS`);
+      return 0xc0000003n;
+    }
+    const entries = kernel.objectHandles ?? [];
+    const needed = 8n + BigInt(entries.length || 1) * SYS_HANDLE_ENTRY_SIZE;
+    if (retLen) mem.w64(retLen, needed);
+    if (!sysInfo || BigInt(len) < needed) return 0xc0000004n; // INFO_LENGTH_MISMATCH
+    const pidOff = (() => {
+      try { return kernel.tables.offsetOf("_EPROCESS", "UniqueProcessId"); } catch { return null; }
+    })();
+    const pidOf = (eproc) =>
+      pidOff === null ? 0 : Number(mem.u32(eproc + pidOff));
+    mem.w32(sysInfo, entries.length);
+    mem.w32(sysInfo + 4n, 0);
+    let off2 = 8n;
+    for (const h of entries) {
+      mem.w32(sysInfo + off2, pidOf(h.ownerEproc));
+      mem.w32(sysInfo + off2 + 4n, 0);                   // HandleAttributes
+      mem.w32(sysInfo + off2 + 8n, h.grantedAccess >>> 0);
+      mem.w16(sysInfo + off2 + 12n, Number(h.handle & 0xffffn));
+      mem.w16(sysInfo + off2 + 14n, 0);                  // CreatorBackTraceIndex
+      mem.w64(sysInfo + off2 + 16n, h.targetEproc);      // Object
+      off2 += SYS_HANDLE_ENTRY_SIZE;
+    }
+    kernel.dbgLog.push(`[winapi] SystemHandleInformation: ${entries.length} handle(s) enumerated`);
+    return STATUS_SUCCESS;
+  };
+  k.define("ZwQuerySystemInformation", sysHandleInfoImpl);
+  k.define("NtQuerySystemInformation", (...a) => impls.ZwQuerySystemInformation(...a));
 
   // ------------------------------------------------------------------- Mm
 

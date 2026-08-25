@@ -64,8 +64,11 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
     assert.ok(lessons.length >= 6, `expected >=6 lesson buttons (4 modules), got ${lessons.length}`);
     assert.match(doc.querySelector(".points").textContent, /0 flags · 0 pts/);
 
-    // open the first (unlocked) lesson -> lab card with boot controls renders
-    lessons.find((b) => !b.className.includes("locked")).click();
+    // open a lesson with a lab runner (m1.l0 is a reading-only primer) ->
+    // lab card with boot controls renders
+    [...doc.querySelectorAll("button.lesson")]
+      .find((b) => b.textContent.includes("The x64 kernel landscape"))
+      .click();
     assert.ok(doc.body.textContent.includes("Boot / Reset"), "lab runner not rendered");
     assert.ok(doc.querySelector("select"), "backend picker missing");
     assert.ok(doc.querySelectorAll(".flag").length >= 2, "flag prompts missing");
