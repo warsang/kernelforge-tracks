@@ -13,6 +13,7 @@
  */
 
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
+import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
 
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
 
@@ -36,9 +37,17 @@ function hexBytes(bytes) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
 }
 
-function fmtAddr(v) {
-  return "0x" + v.toString(16).padStart(16, "0");
+/** Parse 0x-prefixed (or bare hex) address text into BigInt; null on garbage. */
+function parseAddr(s) {
+  try {
+    if (/^0x[0-9a-fA-F]+$/.test(s)) return BigInt(s);
+    if (/^[0-9a-fA-F]{8,}$/.test(s)) return BigInt("0x" + s);
+  } catch { /* fallthrough */ }
+  return null;
 }
+
+function fmtAddr(v) {
+  return "0x" + v.toString(16).padStart(16, "0");}
 
 function fmtValue(bytes /* LE Uint8Array */) {
   let v = 0n;
@@ -260,6 +269,8 @@ export function createCommands(kernel) {
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
       w("  !poolverify               sweep all allocation guards");
+      w("  !funcs <module>           static function recovery over a module");
+      w("  !decomp <addr>            decompile (needs vendored wasm; static info otherwise)");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
@@ -835,6 +846,44 @@ export function createCommands(kernel) {
           `guard[0]=0x${got.toString(16)} (expected 0xa5)`, "warn");
       }
       w("hint: !poolfind <tag> shows expected bytes; repair with 'eb'", "dim");
+    },
+
+    "!funcs"(args, w) {
+      // static function recovery over a module extent (ghidra-decompiler)
+      if (!args[0]) { w("usage: !funcs <module>", "err"); return; }
+      const want = args[0].toLowerCase().replace(/\.sys$/, "");
+      const mod = (kernel.loadedModules ?? []).find((m) =>
+        m.name.toLowerCase().replace(/\.sys$/, "") === want);
+      if (!mod) { w(`module '${args[0]}' not found — try lm`, "err"); return; }
+      const size = Number(mod.sizeOfImage ?? 0);
+      const res = analyzeExtent(mem, BigInt(mod.base), Math.min(size, 0x10000));
+      if (!res.count) {
+        w(`${mod.name}: no code pages materialized for analysis`, "dim");
+        return;
+      }
+      w(`${mod.name} — ${res.count} function(s) recovered:`, "hdr");
+      for (const f of res.funcs.slice(0, 32)) {
+        const rel = res.rel32.find((r) => r.site === f.start);
+        w(`  ${fmtAddr(f.start)}${rel ? `  E9 -> ${fmtAddr(rel.target)}` : ""}`);
+      }
+      if (res.count > 32) w(`  ... ${res.count - 32} more`);
+      if (res.rel32.length) {
+        w("rel32 transfer sites at boundary edges:", "hdr");
+        for (const r of res.rel32) w(`  ${fmtAddr(r.site)} -> ${fmtAddr(r.target)}`, "warn");
+      }
+    },
+
+    "!decomp"(args, w) {
+      // pseudocode via the vendored Ghidra native decompiler; loud degrade
+      const addr = args[0] ? parseAddr(args[0]) : null;
+      if (addr === null) { w("usage: !decomp <addr>  (static !funcs works without the wasm)", "err"); return; }
+      ghidraDecompile(new Uint8Array(0), addr, addr)
+        .then(({ c }) => w(c.split("\n").slice(0, 40).join("\n"), "code"))
+        .catch((e) => {
+          w(`!decomp: ${e.message}`, "warn");
+          const t = resolveRel32(mem, addr);
+          if (t !== null) w(`static: ${fmtAddr(addr)} is a rel32 transfer to ${fmtAddr(t)}`, "dim");
+        });
     },
 
     "!mmstate"(args, w) {

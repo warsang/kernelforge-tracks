@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@kernelforge/course-content": "*",
+    "@kernelforge/ghidra-decompiler": "*",
     "@kernelforge/lab-runtime": "*",
     "@kernelforge/ntsim": "*",
     "@kernelforge/sogen-runtime": "*",

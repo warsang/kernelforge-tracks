@@ -27,11 +27,12 @@ The console exposes this directly:
 Boot the \`api-hook\` world (Module 3's detoured driver) and use the
 static-analysis commands instead of the live-behavior ones:
 
-1. \`!funcs\` on the hooked driver → submit how many functions the
-   boundary scan recovers.
+1. \`!funcs kfhook.sys\` → submit how many functions the boundary scan
+   recovers.
 2. Submit the VA where the scan places the *second* recovered function.
-3. Resolve the detour statically: which function does the patched
-   prologue transfer control to? Submit its recovered symbol name.
+3. The detoured export's prologue is a \`E9 rel32\` trampoline into
+   kfhook.sys (\`!hookscan\` resolves it for you). Submit that target VA
+   as full 16-digit hex with 0x prefix.
 
 ## Defensive framing
 

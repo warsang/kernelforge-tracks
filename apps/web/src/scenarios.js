@@ -9,6 +9,7 @@
 import { SparseMemory } from "@kernelforge/ntsim/src/memory.mjs";
 import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
+import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 
 /** Dev flag planted by boot-default; index.html overrides via process.env. */
@@ -502,10 +503,14 @@ function setupApiHook(kernel) {
   kernel.installDetour(API, detourTarget);
   kernel.inlineHooks.push({ api: API, thunk: kernel.apiThunks.get(API), target: detourTarget, module: "kfhook.sys" });
 
-  // searchable evidence on the detour page
-  kernel.mem.writeAnsi(detourTarget + 0x40n,
+  // deterministic .text grid for the static-analysis lab (m10): exactly
+  // 0x800 / 16 = 128 recoverable function boundaries starting at detourTarget
+  writeFunctionGrid(kernel.mem, detourTarget, 0x800);
+
+  // searchable evidence on a dedicated page (kept out of the .text grid)
+  kernel.mem.writeAnsi(detourTarget + 0x2000n,
     "kfhook: PsLookupProcessByProcessId detoured");
-  kernel.mem.writeAnsi(detourTarget + 0x80n,
+  kernel.mem.writeAnsi(detourTarget + 0x2080n,
     "kfhook: protected pid=666");
 
   kernel.loadedModules.push({

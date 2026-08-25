@@ -29,6 +29,7 @@ import m6l1Body from "./lessons/m6-l1.mjs";
 import m7l1Body from "./lessons/m7-l1.mjs";
 import m8l1Body from "./lessons/m8-l1.mjs";
 import m9l1Body from "./lessons/m9-l1.mjs";
+import m10l1Body from "./lessons/m10-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -59,6 +60,10 @@ const F = {
   m8l1f2: "9c220b3766ff32192d40855481cf872f90cc0e9ecc4cf211f55b8a6efb2a84bc", // kprobe trace secret
   m9l1f1: "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce", // hidden task count
   m9l1f2: "4c368c365d47c10df5f46f7a56f46bbf2af86534cc884196e2878b34feddd0d2", // villain surrender secret
+  // --- reversing (ghidra decompiler pane over the api-hook world) ---
+  m10l1f1: "2747b7c718564ba5f066f0523b03e17f6a496b06851333d2d59ab6d863225848", // recovered function count (kfhook.sys grid)
+  m10l1f2: "71489c0a57f4a2c1c4fd1dfdd85685d8f09a9ffe3f960f36a30191678e665e3d", // second boundary VA
+  m10l1f3: "41571682d793c451794838c436413b18896cb0479575ca5ff59c160c38733537", // E9 detour target VA
 };
 
 export const module1 = {
@@ -575,7 +580,62 @@ export const module9 = {
 };
 
 
+
+export const module10 = {
+  id: "m10",
+  title: "Static Analysis with Ghidra-Grade Tooling",
+  track: "reversing",
+  summary:
+    "Function-boundary recovery and decompilation in the browser: Ghidra's " +
+    "native decompiler engine as an analysis pane over live emulated worlds.",
+  lessons: [
+    {
+      id: "m10.l1",
+      title: "From bytes to functions to pseudocode",
+      body: m10l1Body,
+      requires: ["m9.l1"],
+      labs: [
+        {
+          id: "m10.l1.lab1",
+          kind: "windbg",
+          title: "Recover control flow statically",
+          brief:
+            "Boot the api-hook world and analyze it without executing anything: " +
+            "!funcs recovers kfhook.sys's functions; !hookscan resolves the detour.",
+          scenario: "api-hook",
+          flags: [
+            {
+              id: "m10.l1.f1",
+              sha256: F.m10l1f1,
+              prompt:
+                "Run !funcs kfhook.sys. How many functions does the boundary scan " +
+                "recover? Submit the decimal count.",
+              points: 150,
+            },
+            {
+              id: "m10.l1.f2",
+              sha256: F.m10l1f2,
+              prompt:
+                "Submit the VA where !funcs places the SECOND recovered function, " +
+                "as full 16-digit hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m10.l1.f3",
+              sha256: F.m10l1f3,
+              prompt:
+                "!hookscan resolves the detoured export's E9 target inside kfhook.sys. " +
+                "Submit that target VA as full 16-digit hex with 0x prefix.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 3,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10],
 };

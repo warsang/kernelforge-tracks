@@ -78,7 +78,64 @@ Answers: corrupted block user VA (0x…), heal secret string.
 - Unit tests mirror existing patterns (`winapi.test.mjs`, `debugger.test.mjs`,
   scenario tests) for IRQL/DPC/pool/hook infra and each debugger command.
 
-## Later phases (unchanged from README)
+## Later phases
 
 Phase 2 Sogen/Sauerbraten userland track · Phase 3 v86 Linux LKM track ·
 Phase 4 shadow-EPT hypervisor · Phase 5 UEFI bootkit sim · Phase 6 BYOVD labs.
+
+## Phases 2–3 + Ghidra pane (implemented on feat/tracks-userland-linux-ghidra)
+
+Status: implemented 2026-08. Branch base: main @ 7cf7a81. Worktree:
+`../kf-phases234`. Catalog v3.
+
+### M0 — platform plumbing
+- apps/web pane registry (`panes.js`): lab.kind -> backends/debugger/editor;
+  main.js core flow untouched by tracks.
+- Vendored-wasm convention (from ntsim-unicorn): pinned provenance README +
+  rebuild recipe + lazy dynamic import + loud degrade.
+
+### Phase 2 — sogen userland track (modules 5–6)
+- `packages/sogen-runtime`: sogen-shaped session API over a deterministic
+  plain-JS reference backend; headless Sauerbraten world with pinned
+  constants (image base 0x00400000, entity array stride 0x40, local player
+  0x021000d0, health +0x24, cl_sendinput 0x004532a0, cheat stub 0x0046f010).
+- kd-style console engine: lm/pe/x/scan/eb/hookscan + !damage/!inputtest.
+- Wine root tooling: tools/build-wine-root.mjs (manifest + sha256s).
+- GUI decision gate: docs/spike-sogen-gui.md — playable client is a stretch
+  goal; OpenGL-in-wasm is the hard part (GPU paravirt is D3D/DXVK-shaped).
+- Upgrade path: vendor the real sogen wasm core behind the same API.
+- Instructor answers: m5 = 0x00400000 / 0x021000d0 / 0x24;
+  m6 = 0x004532a0 / 0x0046f010 / kf-input-restored.
+
+### Phase 3 — v86 linux track (modules 7–9)
+- `packages/v86-lab`: serial capture harness (KFFLAG extraction), lazy v86
+  session with instructive degrade, guest seed registry, dockerized buildroot
+  script (kprobes on, KASLR off), kfvillain rootkit source (GPL-2.0) overlay.
+- compiler-worker: ELF32 relocatable parser + i386 module staging
+  (parseElf / validateLinuxModule / stageLinuxModule); final linking happens
+  in-guest via gcc+insmod driven over serial.
+- Instructor answers: m7 = 128 (__NR_init_module i386) / kf-lkm-hello;
+  m8 = 11 (__NR_execve i386) / kf-trace-ok; m9 = 3 hidden tasks /
+  kf-detector-ok. Seeds single-sourced in packages/v86-lab/src/seeds.mjs.
+
+### Ghidra decompiler pane (module 10)
+- `packages/ghidra-decompiler`: deterministic x64 prologue boundary scan,
+  E9/E8 resolution, analyzeExtent helper, byte-stable function-grid writer
+  for scenario worlds; real pseudocode via Ghidra's native decompiler
+  compiled to wasm once vendored (loud DecompilerUnavailableError until then).
+- debugger commands: !funcs <module> (static recovery listing + rel32 sites),
+  !decomp <addr> (wasm path + static fallback info).
+- api-hook world extended with a byte-stable 128-function grid inside
+  kfhook.sys (evidence strings moved to a dedicated page).
+- Instructor answers: m10 = 128 functions / 0xfffff8055a601010 /
+  0xfffff8055a601000.
+
+### Integration checklist status
+- [x] catalog.version = 3; chain m1.l1 -> ... -> m10.l1 (linear).
+- [x] Lessons ship as markdown-in-JS under packages/course-content/src/lessons/.
+- [x] Unit tests per package (world constants, console flows, serial harness,
+      ELF staging, boundary scanner); lab-flow tests drive the real scenario +
+      command surface headless (labs-m2m4 pattern, labs-m10 added).
+- [x] npm test + tsc --build green at every commit.
+- Pending vendors: sogen wasm core, v86 bundle + bzImage artifact, ghidra
+  decompiler wasm (each documented in its package's vendor/README.md).
