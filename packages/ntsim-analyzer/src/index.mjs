@@ -55,6 +55,7 @@ function hexToBytes(hex) {
  *   autoIrp        true | {maxCodes?, inputPatterns?, outputLen?} — lifecycle
  *                  majors + harvested CTL_CODEs driven automatically post-entry
  *   runUnload      invoke DriverUnload after IOCTLs when present
+ *   paging         boot the kernel with guest paging enabled (JsInterpreter only)
  *   makeBackend    async (mem)=>CpuBackend factory override (browser unicorn path)
  * @returns {Promise<object>} report
  */
@@ -69,6 +70,7 @@ export async function analyzeDriver(imageBytes, opts = {}) {
     cpu,
     tables: opts.tables,
     bases: opts.bases,
+    paging: opts.paging,
   });
   const mem = kernel.mem;
   kernel.bootstrap();

@@ -44,6 +44,9 @@ export class KdEngine {
       case "!idt": return this.cmdIdt();
       case "!pool": return this.cmdPool();
       case "!dbgprint": case "!for_each_process": return this.cmdDbgLog();
+      case "!pte": return this.cmdPte(arg);
+      case "!vtop": return this.cmdVtop(arg);
+      case "!cr": return this.cmdCr();
       case "help": case "?": return this.cmdHelp();
       default:
         return `Couldn't resolve error at '${cmd}'`;
@@ -250,6 +253,69 @@ export class KdEngine {
       "  u [addr]                        unassemble",
       "  bp <addr> / bl / bc <n>         breakpoints",
       "  !idt / !pool / !dbgprint        kernel info",
+      "  !vtop <va>                      virtual -> physical (guest paging)",
+      "  !pte <va>                       page-table entry walk (guest paging)",
+      "  !cr                             control registers (cr0/cr3/cr4/efer)",
+    ].join("\n");
+  }
+
+  // ------------------------------------------------- guest paging introspection
+
+  #parseAddr(arg) {
+    if (!arg) return null;
+    const clean = arg.replace(/`/g, "").trim();
+    if (!/^0x[0-9a-f]+$/i.test(clean) && !/^[0-9a-f]+$/i.test(clean)) return null;
+    try { return BigInt(clean.startsWith("0x") || clean.startsWith("0X") ? clean : "0x" + clean); }
+    catch { return null; }
+  }
+
+  cmdVtop(arg) {
+    if (!this.k.paging) return `!vtop: guest paging is not enabled in this session`;
+    const va = this.#parseAddr(arg);
+    if (va === null) return `Usage: !vtop <virtual address>`;
+    const pa = this.k.vtop(va);
+    if (pa === null) {
+      return `!vtop ${dbgAddr(va)}\n  *** ERROR: unmapped (PTE not present)`;
+    }
+    return `!vtop ${dbgAddr(va)}\n  x64 PTE for ${dbgAddr(va)}\n  maps to physical ${dbgAddr(pa)}`;
+  }
+
+  cmdPte(arg) {
+    if (!this.k.paging) return `!pte: guest paging is not enabled in this session`;
+    const va = this.#parseAddr(arg);
+    if (va === null) return `Usage: !pte <virtual address>`;
+    const pte = this.k.readPte(va);
+    if (pte === null) return `!pte ${dbgAddr(va)}\n  Va ${dbgAddr(va)}\n  *** ERROR: no PTE (unmapped or demand-filled on access)`;
+    const flag = (bit, ch, set) => set ? ch : "-";
+    const flags = [
+      flag(0, "V", (pte & 1n) !== 0n),
+      (pte & 2n) !== 0n ? "W" : "R",
+      (pte & 4n) !== 0n ? "U" : "S",
+      (pte & BigInt(0x8000000000000000n)) !== 0n ? "NX" : "X ",
+    ].join(" ");
+    return [
+      `!pte ${dbgAddr(va)}`,
+      `                     PTE at ${dbgAddr(this.k.mmu.walkToPte(va) ?? 0n)}`,
+      `                    contains ${dbgAddr(pte)}`,
+      `                          pfn ${((pte & 0x000ffffffffff000n) >> 12n).toString(16).padStart(5, "0")}  ${flags}`,
+    ].join("\n");
+  }
+
+  cmdCr() {
+    // authoritative state lives in the Mmu under paging, else the backend
+    const cr = (name) => {
+      if (this.k.paging) {
+        return { cr0: this.k.mmu.cr0, cr3: this.k.mmu.cr3, cr4: this.k.mmu.cr4, efer: this.k.mmu.efer }[name];
+      }
+      const v = this.k.cpu[name];
+      return v === undefined ? 0n : BigInt(v);
+    };
+    const f = (v) => dbgAddr(BigInt(v)).replace("`", "");
+    return [
+      `cr0=${f(cr("cr0"))}  pg=${(cr("cr0") & 0x80000000n) !== 0n ? 1 : 0}`,
+      `cr3=${f(cr("cr3"))}   (DirectoryTableBase)`,
+      `cr4=${f(cr("cr4"))}  pae=${(cr("cr4") & 0x20n) !== 0n ? 1 : 0}`,
+      `efer=${f(cr("efer"))}  lma=${(cr("efer") & 0x400n) !== 0n ? 1 : 0}`,
     ].join("\n");
   }
 }

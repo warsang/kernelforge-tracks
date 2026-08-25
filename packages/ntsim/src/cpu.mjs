@@ -75,6 +75,13 @@ export class JsInterpreter {
     this.fault = null;
     /** when set, run() returns "returned" upon reaching this rip (call sentinel) */
     this.stopOnRip = null;
+    // control registers (CpuBackend contract). The interpreter never walks
+    // them itself — translation happens in the memory facade — but labs and
+    // the debugger read/write them, and HybridCpuBackend transfers them.
+    this.cr0 = 0x0000000000010031n;
+    this.cr3 = 0n;
+    this.cr4 = 0x0000000000370678n;
+    this.efer = 0x0000000000000500n;
   }
 
   reset(rip) {
@@ -137,7 +144,11 @@ export class JsInterpreter {
   // -- memory ----------------------------------------------------------------
 
   fetch8() {
-    const b = this.mem.read(this.rip, 1)[0];
+    // execute-permission-aware fetch when the memory facade offers one
+    // (TranslatedMemory.fetchBytes enforces NX under guest paging)
+    const b = (typeof this.mem.fetchBytes === "function"
+      ? this.mem.fetchBytes(this.rip, 1)
+      : this.mem.read(this.rip, 1))[0];
     this.rip += 1n;
     return b;
   }

@@ -16,10 +16,17 @@
  *   the handler mutates regs/RIP and stops emulation, and the outer loop
  *   resumes from the synthetic `ret` target.
  *
- * Kernel-space VAs (>= 2^63, real Windows kernel addresses) execute correctly:
- * the engine's TLB is switched to UC_TLB_VIRTUAL so softmmu does a clean 1:1
- * VA mapping instead of truncating through the 52-bit physical space (upstream
- * issue #2010). Hook callbacks observe architectural RIPs even there.
+ * Kernel-space VAs (>= 2^63, real Windows kernel addresses) execute correctly
+ * with the engine's TLB switched to UC_TLB_VIRTUAL (softmmu does a clean 1:1
+ * VA mapping instead of truncating through 52-bit physical space — upstream
+ * issue #2010). Hook callbacks observe architectural RIPs there.
+ *
+ * Guest paging ({guestPaging:true}): CR0/CR3/CR4 are programmable and QEMU
+ * genuinely walks host-built page tables (EFER goes in through an emulated
+ * wrmsr; spike-verified fetch/data/runs at canonical kernel VAs). CAVEAT:
+ * UC_HOOK_CODE is inert while CR0.PG=1 in this build, so API-thunk
+ * interception cannot work — paged ntsim sessions therefore run on
+ * JsInterpreter, whose memory facade performs the same walks.
  *
  * Fallback for vendored builds whose ctl() path is unavailable: pass
  * {execAliasTruncate:true} to createUnicornBackend() — pages at or above
@@ -87,9 +94,24 @@ export class UnicornCpuBackend {
   #aliasOwner = new Map();
   /** low-52-bit truncation fallback for builds without working ctl() TLB switch */
   #execAliasTruncate = false;
+  /** when true, keep QEMU's DEFAULT softmmu so guest page tables are walked */
+  #guestPaging = false;
+  /** host callback (va)=>void ensuring guest translation exists for internal scratch */
+  guestMapHook = null;
+  /** host callback (va)=>pa translating backend-internal accesses under paging */
+  hostXlate = null;
+
+  #va2pa(va) {
+    if (this.#guestPaging && this.hostXlate) {
+      const pa = this.hostXlate(BigInt(va));
+      if (pa !== null && pa !== undefined) return BigInt(pa);
+    }
+    return BigInt(va);
+  }
 
   constructor(mem, uc, opts = {}) {
     this.#execAliasTruncate = !!opts.execAliasTruncate;
+    this.#guestPaging = !!opts.guestPaging;
     this.mem = mem;
     this.uc = uc;
     this.engine = new uc.Unicorn(uc.ARCH_X86, uc.MODE_64);
@@ -110,9 +132,9 @@ export class UnicornCpuBackend {
     // VAs when paging is off (upstream issue #2010). The VIRTUAL tlb does a
     // clean 1:1 mapping instead. MUST go through the wrapper's ctl() which
     // builds a proper va_list buffer — raw fixed-arity ccalls silently no-op.
-    // Skipped under execAliasTruncate: that fallback NEEDS the physical TLB
-    // so executed accesses resolve into the low-52-bit alias space.
-    if (!this.#execAliasTruncate) {
+    // Skipped under execAliasTruncate (needs physical TLB for the alias
+    // space) and under guestPaging (QEMU must walk real page tables).
+    if (!this.#execAliasTruncate && !this.#guestPaging) {
       const UC_CTL_TLB_TYPE = 12;
       const ctlWord = (type, nr, rw) => ((type | (nr << 26) | (rw << 30)) >>> 0);
       this.engine.ctl(ctlWord(UC_CTL_TLB_TYPE, 1, 1), [{ type: "i32", value: 1 /* UC_TLB_VIRTUAL */ }]);
@@ -230,6 +252,18 @@ export class UnicornCpuBackend {
     return base;
   }
 
+  /**
+   * Under guest paging, backend-internal scratch VAs (ABI return marker,
+   * fallback stack) additionally need a valid GUEST translation, and their
+   * VA-keyed views must be kept out of sync so translated physical frames
+   * carry the truth.
+   */
+  #ensureGuestScratch(base) {
+    if (!this.#guestPaging || !this.guestMapHook) return;
+    try { this.guestMapHook(base); } catch { /* host decides fault policy */ }
+    this.#internal.add(base.toString(16));
+  }
+
   #ensurePageMapped(base) {
     base = toU64(BigInt(base)) & ~0xfffn;
     const ucBase = this.#ucAddrFor(base);
@@ -258,6 +292,7 @@ export class UnicornCpuBackend {
   /** Push every materialized SparseMemory page into unicorn. */
   #syncIn() {
     for (const [key, page] of this.mem.pages) {
+      if (this.#internal.has(key)) continue; // backend-internal VA views
       const base = BigInt("0x" + key);
       this.#ensurePageMapped(base);
       this.#rawWrite(this.#ucAddrFor(base), page);
@@ -299,13 +334,14 @@ export class UnicornCpuBackend {
   }
 
   popVal() {
-    const v = this.mem.u64(this.regs.rsp);
+    const pa = this.#va2pa(this.regs.rsp);
+    const v = this.mem.u64(pa);
     this.regs.rsp = (this.regs.rsp + 8n) & M64;
     return v;
   }
   pushVal(v) {
     this.regs.rsp = (this.regs.rsp - 8n) & M64;
-    this.mem.w64(this.regs.rsp, v & M64);
+    this.mem.w64(this.#va2pa(this.regs.rsp), v & M64);
   }
 
   // ------------------------------------------------------------------ hooks
@@ -417,10 +453,69 @@ export class UnicornCpuBackend {
     const rsp = toU64(this.regs.rsp);
     if (rsp > 0x1000n && rsp < M64 - 0x1000n) return;
     const base = 0x70000n;
+    this.#ensureGuestScratch(base);
     this.#ensurePageMapped(base);
     this.#ensurePageMapped(base + 0x1000n);
     this.regs.rsp = 0x7ff00n;
   }
+
+  // ------------------------------------------------------ control registers
+
+  /** Control-register surface (CpuBackend contract). Writing CR0/CR3/CR4
+   *  makes QEMU update its MMU state, enabling guest-table paging. */
+  #crReg(name) {
+    return { cr0: this.uc.X86_REG_CR0, cr3: this.uc.X86_REG_CR3, cr4: this.uc.X86_REG_CR4, efer: this.uc.X86_REG_EFER }[name];
+  }
+  getCR(name) {
+    const id = this.#crReg(name);
+    if (id === undefined) return this.#msrMirror.get(name) ?? 0n;
+    return toU64(this.engine.reg_read_i64(id));
+  }
+  setCR(name, value) {
+    const id = this.#crReg(name);
+    if (name === "efer" && id === undefined) {
+      // vendored build exposes no X86_REG_EFER — program the MSR through an
+      // emulated wrmsr (ECX=0xC0000080), then mirror it host-side.
+      this.#msrWrite(0xc0000080n, BigInt(value));
+      this.#msrMirror.set("efer", toU64(BigInt(value)));
+      return;
+    }
+    if (id === undefined) throw new CpuError(`unsupported control register ${name}`, 0n);
+    this.engine.reg_write_i64(id, toI64(value));
+  }
+
+  /**
+   * In-emulation wrmsr. Runs `wrmsr` from a scratch page with ECX/EDX:EAX
+   * preset; QEMU applies the MSR to live CPU state.
+   */
+  #msrWrite(msr, value) {
+    const STUB = 0x00bad000n;
+    this.#ensurePageMapped(STUB & ~0xfffn);
+    // Fill both views: identity physical page (used when paging is still
+    // off) and the host-translated frame (used if paging is already on).
+    const stubBytes = new Uint8Array([0x0f, 0x30, 0xf4]); // wrmsr ; hlt
+    const nopPage = new Uint8Array(this.PAGE).fill(0x90);
+    this.#rawWrite(STUB & ~0xfffn, nopPage);
+    this.#rawWrite(STUB & ~0xfffn, stubBytes);
+    const xpa = this.#va2pa(STUB & ~0xfffn);
+    if (xpa !== (STUB & ~0xfffn)) {
+      try {
+        this.#rawWrite(xpa, nopPage);
+        this.#rawWrite(xpa, stubBytes);
+      } catch { /* translation view unavailable yet */ }
+    }
+    this.engine.reg_write_i64(this.uc.X86_REG_ECX, toI64(msr));
+    this.engine.reg_write_i64(this.uc.X86_REG_RAX, toI64(BigInt.asUintN(32, value)));
+    this.engine.reg_write_i64(this.uc.X86_REG_RDX, toI64(BigInt.asUintN(64, value) >> 32n));
+    this.engine.reg_write_i64(this.uc.X86_REG_RIP, toI64(STUB));
+    const rc = this.#rawStart(STUB, 16);
+    if (rc !== 0 && rc !== undefined && rc !== null) {
+      // HLT-stop returns via halted flag rather than error in most builds
+      if (!this.engine.emu_halted?.()) throw new CpuError(`wrmsr stub failed (${rc})`, STUB);
+    }
+    this.halted = false;
+  }
+  #msrMirror = new Map();
 
   /**
    * Call a function using the Windows x64 ABI — prologue byte-for-byte
@@ -443,9 +538,11 @@ export class UnicornCpuBackend {
     const markerHook = this.addCodeHook(() => { returned = true; return true; }, RET_MARKER, RET_MARKER);
     // the marker page must be mapped/translatable for the hook to ever fire;
     // fill happens UC-side only so SparseMemory stays free of backend internals
-    const mpage = this.#ensurePageMapped(RET_MARKER & ~0xfffn);
-    this.#internal.add(mpage.toString(16));
-    this.#rawWrite(mpage, new Uint8Array(this.PAGE).fill(0xf4));
+    const markerPageBase = RET_MARKER & ~0xfffn;
+    this.#ensureGuestScratch(markerPageBase);
+    this.#ensurePageMapped(markerPageBase);
+    this.#internal.add(markerPageBase.toString(16));
+    this.#rawWrite(this.#va2pa(markerPageBase), new Uint8Array(this.PAGE).fill(0xf4));
 
     this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn
 
