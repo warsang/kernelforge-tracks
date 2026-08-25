@@ -21,6 +21,10 @@ packages/
                              deferred drains (DPC/work/APC), IRQL violation tracking
     winapi.mjs + winapi-ext  249 modeled ntoskrnl exports (registry, virtual FS, sections,
                              interlocked, events, Se/Ob/Mm/Po/Etw/WMI/FsRtl)
+    paging.mjs               guest x64 MMU: 4-level walker/builder, TranslatedMemory
+                             (demand-zero, NX/RW/U-S), #PF-shaped faults into SEH
+    smm.mjs                  Q35-style chipset (CF8/CFC, SMRAMC/D_LCK, TSEGMB),
+                             SMRAM ring-0 hiding, SMI latch + modeled RSM/SMBASE reloc
   ntsim-analyzer             run-any-.sys harness: map -> DriverEntry -> IOCTLs -> report
   ntsim-assets               VergiliusProject scraper -> per-build offset JSON (CC0);
                              kdmp.mjs (crash-dump parser) + carve-dump.mjs (genuine pages)
@@ -198,6 +202,23 @@ accounting, then make it confess through your completion path.
 Function-boundary recovery over a driver image (`!funcs`) and rel32 detour
 resolution; pseudocode via Ghidra's native decompiler engine compiled to
 wasm once vendored (loud degrade until then).
+
+**Track: smm (ring -2)**
+
+**Module 11 — x64 Paging & the SMM Landscape** (`smm-foundations`)
+First guest-paged boot: real 4-level tables. `!vtop`/`!pte`/`!cr` walk the
+MMU; `KUSER_SHARED_DATA` is dual-mapped to one frame; decode SMRAMC and
+find the unlocked door.
+
+**Module 12 — Ring-0 → SMM Escalation** (`smm-vault`)
+Write the exploit yourself: open SMRAM with one CF8/CFC write (D_OPEN on an
+unlocked platform), patch the SMI handler at `SMBASE+0x8000`, close to
+cover tracks, fire port 0xB2 — and let your bytes run in ring -2.
+
+**Module 13 — SMBASE Relocation Persistence** (`smm-reloc`)
+Capstone: rewrite the save-state's canonical `SMBASE @ +0xFB04` field
+before RSM so the *next* SMI enters code you planted. Then set D_LCK and
+prove your own exploit dead.
 
 ## Roadmap (see docs/plan.md)
 

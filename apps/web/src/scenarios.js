@@ -11,6 +11,7 @@ import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
+import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
 
 /** Dev flag planted by boot-default; index.html overrides via process.env. */
 export const PROBE_FLAG = "FLAG{kfprobe}";
@@ -797,3 +798,75 @@ export function getScenario(id) {
   if (!s) throw new Error(`unknown scenario "${id}"`);
   return s;
 }
+
+// ---------------------------------------------------------------------------
+// SMM / SMRAM worlds (guest-paged; JsInterpreter engine by design — UC_HOOK_CODE
+// is inert under CR0.PG in the wasm build, and these labs need thunk interception)
+// ---------------------------------------------------------------------------
+
+
+const SMM_SECRET = "KFSMM-EXFIL-2026";
+export const SMM_LANDING_VA = 0xffffe00010000000n;
+export const SMM_LANDING2_VA = 0xffffe00020000000n;
+
+async function bootSmmWorld(io, { reloc = false } = {}) {
+  // paged boot ignores the unicorn backend selector on purpose
+  void io?.makeBackend;
+  const loadTables = io.loadTables;
+  const mem = new SparseMemory();
+  const tables = await loadTables();
+  const kernel = new NtKernel({ tables, paging: true });
+  kernel.bootstrap();
+
+  const cs = new Chipset();
+  const smm = new SmmEngine(kernel, cs);
+  kernel.smm = smm;
+  kernel.cs = cs;
+
+  // SMRAM contents the labs care about
+  kernel.rawMem.writeAnsi(DEFAULT_SMBASE + 0x1000n, SMM_SECRET);
+
+  // firmware handler page starts as plain returns
+  kernel.rawMem.write(DEFAULT_SMBASE + 0x8000n, new Uint8Array([0xc3]));
+
+  kernel.smmLanding = SMM_LANDING_VA;
+  if (reloc) {
+    kernel.smmLanding2 = SMM_LANDING2_VA;
+    kernel.smmRelocTarget = 0x7e400000n;
+  }
+
+  return { kind: reloc ? "smm-vault-reloc" : "smm-foundations", kernel, debugger: null };
+}
+
+scenarios["smm-foundations"] = {
+  title: "smm-foundations — guest-paged world",
+  description:
+    "Boots ntsim with real x64 guest paging enabled: KUSER_SHARED_DATA dual-mapped, " +
+    "EPROCESS DirectoryTableBase wired. Use !vtop/!pte/!cr to explore the MMU.",
+  boot: (io) => bootSmmWorld(io),
+};
+
+scenarios["smm-vault"] = {
+  title: "smm-vault — locked-away secrets behind an unlocked SMRAMC",
+  description:
+    "The firmware parks secrets in SMRAM and trusts D_LCK... which nobody set. " +
+    "Open the vault from ring 0, patch the SMI handler, and make ring -2 hand you " +
+    "the goods through port 0xB2.",
+  boot: async (io) => {
+    const session = await bootSmmWorld(io);
+    session.kind = "smm-vault";
+    return session;
+  },
+};
+
+scenarios["smm-reloc"] = {
+  title: "smm-reloc — SMBASE relocation persistence",
+  description:
+    "Same vulnerable platform. Relocate SMBASE from inside your patched SMI " +
+    "handler so the next SMI enters code YOU planted below ring 0.",
+  boot: async (io) => {
+    const session = await bootSmmWorld(io, { reloc: true });
+    session.kind = "smm-reloc";
+    return session;
+  },
+};

@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v3 has ten modules / sixteen lessons / thirty-eight flags", () => {
-  assert.equal(catalog.version, 3);
-  assert.equal(catalog.modules.length, 10);
+test("catalog v4 has thirteen modules / nineteen lessons / forty-five flags", () => {
+  assert.equal(catalog.version, 4);
+  assert.equal(catalog.modules.length, 13);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 16);
+  assert.equal(lessons.length, 19);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 38);
+  assert.equal(flags.length, 45);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -20,7 +20,7 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l1 -> m10.l1", () => {
+test("lesson chain is linear m1.l1 -> m13.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -75,6 +75,14 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m10.l1.f1": "128",
     "m10.l1.f2": "0xfffff8055a601010",
     "m10.l1.f3": "0xfffff8055a601000",
+    // smm track: paging + chipset world constants
+    "m11.l1.f1": "0x10d000",
+    "m11.l1.f2": "7",
+    "m11.l1.f3": "nx",
+    "m12.l1.f1": "kfsmm-exfil-2026",
+    "m12.l1.f2": "0",
+    "m13.l1.f1": "0xfb04",
+    "m13.l1.f2": "mf2k",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

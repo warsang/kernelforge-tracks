@@ -75,6 +75,10 @@ export class JsInterpreter {
     this.fault = null;
     /** when set, run() returns "returned" upon reaching this rip (call sentinel) */
     this.stopOnRip = null;
+    /** port I/O hooks (CpuBackend contract): (port, size)=>value | undefined */
+    this.onPortRead = null;
+    /** (port, value, size)=>void — SMI triggers ride on this */
+    this.onPortWrite = null;
     // control registers (CpuBackend contract). The interpreter never walks
     // them itself — translation happens in the memory facade — but labs and
     // the debugger read/write them, and HybridCpuBackend transfers them.
@@ -187,10 +191,12 @@ export class JsInterpreter {
       }
       rm = { kind: "mem", addr };
     } else if (mod !== 3) {
-      // RIP-relative special case
+      // RIP-relative special case: resolved lazily against the END of the
+      // instruction (this.rip after any immediates are consumed), because
+      // x86 computes it from the following instruction's address.
       if (rm === 5 && mod === 0) {
         const disp = sx(this.fetch(4), 32);
-        rm = { kind: "mem", addr: (this.rip + disp) & M64 };
+        rm = { kind: "mem", pendingRipRel: disp, addr: 0n };
       } else {
         // REX.B extends the memory-indirect register too
         rm = { kind: "mem", addr: this.readReg(this.rexB ? (rm | 8) : rm, 8) };
@@ -213,13 +219,23 @@ export class JsInterpreter {
     return { mod, reg, rm };
   }
 
+  /** Resolve a pending RIP-relative rm against the current (post-immediate) RIP. */
+  #resolveRm(rm) {
+    if (rm && rm.kind === "mem" && rm.pendingRipRel !== undefined) {
+      rm.addr = (this.rip + BigInt(rm.pendingRipRel)) & M64;
+      delete rm.pendingRipRel;
+    }
+    return rm;
+  }
+
   loadOp(rm, size) {
-    return rm.kind === "reg" ? this.readReg(rm.reg ?? 0, size) : this.loadMem(rm.addr, size);
+    if (rm.kind !== "reg") { this.#resolveRm(rm); return this.loadMem(rm.addr, size); }
+    return this.readReg(rm.reg ?? 0, size);
   }
 
   storeOp(rm, size, val) {
     if (rm.kind === "reg") this.writeReg(rm.reg ?? 0, size, val);
-    else this.storeMem(rm.addr, size, val);
+    else { this.#resolveRm(rm); this.storeMem(rm.addr, size, val); }
   }
 
   loadMem(addr, size) {
@@ -415,6 +431,30 @@ export class JsInterpreter {
         return;
       }
       case p === 0xf4: this.halted = true; return;
+      case p === 0xe4 || p === 0xe5: { // in al/eax, imm8
+        const port = Number(this.fetch8());
+        const size = p === 0xe4 ? 1 : opsize;
+        this.writeReg(0, size, this.onPortRead?.(port, size) ?? 0xffffffffn);
+        return;
+      }
+      case p === 0xec || p === 0xed: { // in al/eax, dx
+        const port = Number(this.readReg(2, 2) & 0xffffn);
+        const size = p === 0xec ? 1 : opsize;
+        this.writeReg(0, size, this.onPortRead?.(port, size) ?? 0xffffffffn);
+        return;
+      }
+      case p === 0xe6 || p === 0xe7: { // out imm8, al/eax
+        const port = Number(this.fetch8());
+        const size = p === 0xe6 ? 1 : opsize;
+        this.onPortWrite?.(port, this.readReg(0, size), size);
+        return;
+      }
+      case p === 0xee || p === 0xef: { // out dx, al/eax
+        const port = Number(this.readReg(2, 2) & 0xffffn);
+        const size = p === 0xee ? 1 : opsize;
+        this.onPortWrite?.(port, this.readReg(0, size), size);
+        return;
+      }
     }
 
     // ALU family: 00-3d (add,or,adc,sbb,and,sub,xor,cmp) x forms 0..5
@@ -509,13 +549,13 @@ export class JsInterpreter {
           return;
         }
         case 2: { // call near r/m
-          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          const target = rm.kind === "mem" ? (this.#resolveRm(rm), this.loadMem(rm.addr, 8)) : this.readReg(rm.reg ?? reg, 8);
           this.pushVal(this.rip);
           this.rip = target & M64;
           return;
         }
         case 4: { // jmp near r/m
-          const target = rm.kind === "mem" ? this.loadMem(rm.addr, 8) : this.readReg(rm.reg ?? reg, 8);
+          const target = rm.kind === "mem" ? (this.#resolveRm(rm), this.loadMem(rm.addr, 8)) : this.readReg(rm.reg ?? reg, 8);
           this.rip = target & M64;
           return;
         }
@@ -564,6 +604,8 @@ export class JsInterpreter {
     // 8c/8d lea
     if (p === 0x8d) {
       const { reg, rm } = this.decodeModrm(opsize);
+      // LEA uses the effective address itself — resolve any pending RIP-rel
+      this.#resolveRm(rm);
       this.writeReg(reg, opsize, rm.kind === "mem" ? rm.addr : this.readReg(reg, opsize));
       return;
     }

@@ -14,3 +14,10 @@ export {
 export {
   classifyFault, parsePdata, parseUnwindInfo, tryDispatchException,
 } from "./seh.mjs";
+export { Mmu, TranslatedMemory, PTE, PageFault, isCanonical, canonicalize } from "./paging.mjs";
+export {
+  Chipset, SmmEngine, SAVE_STATE,
+  PORT_APMC, PORT_CF8, PORT_CFC,
+  SMRAMC_OFFSET, TSEGMB_OFFSET,
+  DEFAULT_TSEG_BASE, DEFAULT_SMBASE, SMI_ENTRY_OFFSET,
+} from "./smm.mjs";

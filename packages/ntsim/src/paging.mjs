@@ -79,6 +79,8 @@ export class Mmu {
     this.demandMap = opts.demandMap ?? true;
     this.nextFrame = opts.frameBase ?? 0x100000n; // skip low legacy IBV
     this.framesUsed = 0;
+    /** @type {{base:bigint,size:bigint}[]} VAs that map PA===VA (SMRAM/TSEG) */
+    this.identityRanges = [];
     /** @type {Map<string,{pa:bigint,w:boolean,u:boolean,x:boolean}>} */
     this.tlb = new Map();
     this.tlbLimit = 4096;
@@ -217,16 +219,33 @@ export class Mmu {
   /**
    * Ensure [va, va+len) is mapped, demand-allocating whole pages with
    * default flags. Used by TranslatedMemory before accesses that missed.
+   * VAs inside identityRanges map PA===VA (SMRAM/TSEG windows).
    */
   ensureRange(va, len, flags = { w: true, u: false, x: true }) {
     let cur = BigInt.asUintN(64, BigInt(va)) & ~PAGE_MASK;
     const end = (BigInt.asUintN(64, BigInt(va)) + BigInt(len) - 1n) & ~PAGE_MASK;
     for (; cur <= end; cur += BigInt(PAGE_SIZE)) {
       if (this.lookup(cur)) continue;
+      const ident = this.#identityPaFor(cur);
+      if (ident !== null) {
+        this.mapPage(cur, ident, { present: true, write: flags.w ?? true, user: false, nx: !flags.x, global: false });
+        if (!this.raw.hasPage(ident)) {
+          this.raw.write(ident, new Uint8Array(PAGE_SIZE)); // zero-back the frame
+        }
+        continue;
+      }
       this.mapPage(cur, this.frameAlloc(), {
-        present: true, write: flags.w, user: flags.u, nx: !flags.x, global: false,
+        present: true, write: flags.w ?? true, user: flags.u ?? false, nx: !flags.x, global: false,
       });
     }
+  }
+
+  #identityPaFor(va) {
+    const v = BigInt.asUintN(64, BigInt(va));
+    for (const r of this.identityRanges) {
+      if (v >= r.base && v < r.base + r.size) return v & ~PAGE_MASK;
+    }
+    return null;
   }
 
   /** Non-throwing probe: returns translation or null. */
