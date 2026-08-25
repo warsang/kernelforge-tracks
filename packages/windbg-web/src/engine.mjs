@@ -47,6 +47,8 @@ export class KdEngine {
       case "!pte": return this.cmdPte(arg);
       case "!vtop": return this.cmdVtop(arg);
       case "!cr": return this.cmdCr();
+      case "!smram": return this.cmdSmram();
+      case "!smmc": return this.cmdSmmc();
       case "help": case "?": return this.cmdHelp();
       default:
         return `Couldn't resolve error at '${cmd}'`;
@@ -256,10 +258,40 @@ export class KdEngine {
       "  !vtop <va>                      virtual -> physical (guest paging)",
       "  !pte <va>                       page-table entry walk (guest paging)",
       "  !cr                             control registers (cr0/cr3/cr4/efer)",
+      "  !smram / !smmc                  SMRAM state / SMRAMC decode (SMM labs)",
     ].join("\n");
   }
 
-  // ------------------------------------------------- guest paging introspection
+  // ---------------------------------------------------------- SMM introspection
+
+  cmdSmram() {
+    const smm = this.k.smm;
+    if (!smm) return `!smram: no SMM engine attached to this session`;
+    const cs = smm.chipset;
+    const f = (v) => dbgAddr(BigInt(v)).replace("`", "");
+    return [
+      `SMRAM  base=${f(cs.tsegBase)} end=${f(cs.tsegEnd)} size=${cs.tsegSize.toString(16)}`,
+      `       D_OPEN=${cs.dOpen ? 1 : 0} D_CLS=${cs.dCls ? 1 : 0} D_LCK=${cs.dLck ? 1 : 0} G_SMRAME=${cs.gSmrame ? 1 : 0}`,
+      `       ring0 visibility: ${cs.isSmramVisibleFromRing0(cs.tsegBase + 0x1000n) ? "OPEN" : "HIDDEN"}`,
+      `       SMBASE=${f(smm.currentSmbase)} entry=${f(smm.currentSmbase + 0x8000n)}`,
+      `       SMI: raised=${smm.stats.raised} exited=${smm.stats.exited} relocated=${smm.stats.relocated}${smm.chipset.smiPending ? " (PENDING)" : ""}`,
+    ].join("\n");
+  }
+
+  cmdSmmc() {
+    const smm = this.k.smm;
+    if (!smm) return `!smmc: no SMM engine attached to this session`;
+    const cs = smm.chipset;
+    return [
+      `PCI 0:0:0 reg 0x9d (SMRAMC) = 0x${cs.smramc.toString(16).padStart(2, "0")}`,
+      `  [3] D_OPEN  = ${cs.dOpen ? 1 : 0}   <- set to peek SMRAM from ring 0`,
+      `  [2] D_CLS   = ${cs.dCls ? 1 : 0}`,
+      `  [1] D_LCK   = ${cs.dLck ? 1 : 0}   <- locks D_OPEN/D_CLS until reset`,
+      `  [0] G_SMRAME= ${cs.gSmrame ? 1 : 0}`,
+    ].join("\n");
+  }
+
+  // -+ guest paging introspection
 
   #parseAddr(arg) {
     if (!arg) return null;
