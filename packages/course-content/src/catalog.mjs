@@ -13,6 +13,12 @@
  *     ActiveProcessLinks +0x448 => answer 0xffffc80000001448   (m1.l2.f1)
  *   - irql-dpc world: DeferredRoutine at 0xfffff8055a401400    (m2.l1.f2)
  *   - pool-corrupt world: second KfPb block at 0xfffff90000001200 (m4.l1.f1)
+ * Blog-labs v4 worlds run on LOW-memory bases (unicorn-parity; see
+ * apps/web/src/scenarios.js LOW_BASES):
+ *   - paging-walk: kftarget real DTB 0x0000000003005000 (decoy owns the
+ *     lowest frames), code VA 0x4a1cca43000, PTE alias 0x0000078250e65218
+ *   - edr-sensor: kfalcon.sys @ 0x5100000, callback 0x5101000
+ *   - ssdt-hook: kfvillain.sys @ 0x5200000, detour target 0x5201000
  * Userland worlds (packages/sogen-runtime reference backend):
  *   - sauer-recon: sauerbraten.exe base 0x00400000, entity array at
  *     0x02100040, local player index 3 => VA 0x021000d0, health +0x24
@@ -30,6 +36,9 @@ import m7l1Body from "./lessons/m7-l1.mjs";
 import m8l1Body from "./lessons/m8-l1.mjs";
 import m9l1Body from "./lessons/m9-l1.mjs";
 import m10l1Body from "./lessons/m10-l1.mjs";
+import m11l1Body from "./lessons/m11-l1.mjs";
+import m12l1Body from "./lessons/m12-l1.mjs";
+import m13l1Body from "./lessons/m13-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -64,6 +73,16 @@ const F = {
   m10l1f1: "2747b7c718564ba5f066f0523b03e17f6a496b06851333d2d59ab6d863225848", // recovered function count (kfhook.sys grid)
   m10l1f2: "71489c0a57f4a2c1c4fd1dfdd85685d8f09a9ffe3f960f36a30191678e665e3d", // second boundary VA
   m10l1f3: "41571682d793c451794838c436413b18896cb0479575ca5ff59c160c38733537", // E9 detour target VA
+  // --- blog labs v4 (windows-kernel: paging / edr-sensor / ssdt) ---
+  m11l1f1: "2263d82fc17e3465ea0eb2d2fe69368d8e718bb6b3a62e6aeab2ea243c7ab751", // real DTB (decoy-shuffled world)
+  m11l1f2: "fa23c52d20e9bc7c8cf9b23089ffd0c5636e37292d59b3c013af8208274d3855", // code-page PTE alias VA
+  m11l1f3: "f58f880c2f1b062881e17ef1e7a2b83228911184225760d88310a8c40f4c157e", // NX-repair secret
+  m12l1f1: "daf0604f99e857b8db1f3199cf87664004a3f20a4e4b81e7c75c0617281b42ed", // deny NTSTATUS name
+  m12l1f2: "657d6a128ebdf5973f0f491d09fe93d6a6a6cc8626877a591ea66440d67b124f", // sensor callback VA
+  m12l1f3: "0e90786bcce8173a98e2c7054e3ea3df0a7aa8a6a6e10cb7e16c221c36f5b3d5", // telemetry-gap secret
+  m13l1f1: "fecde715c8483bcf15534e4dadf2417ac1f2d82425712c7c11768a7bb727b1fb", // hooked service name
+  m13l1f2: "a0459593796d340d431d65b318986f7e05bf617252c1137c7370e834c5928590", // detour target VA
+  m13l1f3: "21cd32f101408104d43ab2f7cb42103425bdda667d14008899268432a0b0c46c", // clean-table secret
 };
 
 export const module1 = {
@@ -635,7 +654,180 @@ export const module10 = {
   ],
 };
 
+export const module11 = {
+  id: "m11",
+  title: "x64 Virtual Memory & Page Tables",
+  track: "windows-kernel",
+  summary:
+    "Four-level translation on real PML4/PDPT/PD/PT bytes: CR3 walking, " +
+    "self-map alias math, hardware PTE bits — and an EAC-style CR3 shuffle.",
+  lessons: [
+    {
+      id: "m11.l1",
+      title: "Walk the tables, heal the bit",
+      body: m11l1Body,
+      requires: ["m10.l1"],
+      labs: [
+        {
+          id: "m11.l1.lab1",
+          kind: "windbg",
+          title: "From CR3 to a healed NX",
+          brief:
+            "Boot paging-walk. Identify the real DirectoryTableBase under a " +
+            "shuffled decoy, compute the code page's PTE alias by hand, clear " +
+            "the smashed NX bit and release the integrity secret.",
+          scenario: "paging-walk",
+          flags: [
+            {
+              id: "m11.l1.f1",
+              sha256: F.m11l1f1,
+              prompt:
+                "!cr3 kftarget shows its DTB. The lowest frames are a decoy; " +
+                "submit kftarget's REAL DirectoryTableBase as full 16-digit " +
+                "hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m11.l1.f2",
+              sha256: F.m11l1f2,
+              prompt:
+                "Split the code VA (!pte prints it) into 9-bit fields and " +
+                "compute its PTE self-map alias va(s,pml4,pdpt,pd,pt*8). " +
+                "Submit that VA as full 16-digit hex with 0x prefix.",
+              points: 200,
+            },
+            {
+              id: "m11.l1.f3",
+              sha256: F.m11l1f3,
+              prompt:
+                "Clear NX (bit 63) on the code-page PTE via eb through the " +
+                "alias, then !vtop the code VA. Submit the secret the " +
+                "integrity pass prints.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module12 = {
+  id: "m12",
+  title: "Kernel Callbacks & EDR Sensors",
+  track: "windows-kernel",
+  summary:
+    "Falcon-style process-creation telemetry with real callback machine " +
+    "code: enumerate the sensor, read its CreationStatus kill switch, blind it.",
+  lessons: [
+    {
+      id: "m12.l1",
+      title: "Inside the mini-Falcon",
+      body: m12l1Body,
+      requires: ["m11.l1"],
+      labs: [
+        {
+          id: "m12.l1.lab1",
+          kind: "windbg",
+          title: "Blind the process-create sensor",
+          brief:
+            "kfalcon.sys blocks kfimplant.exe spawns. Enumerate callbacks, " +
+            "trigger the block, locate the name-compare immediates in the " +
+            "callback body, patch one byte so the implant slips through.",
+          scenario: "edr-sensor",
+          flags: [
+            {
+              id: "m12.l1.f1",
+              sha256: F.m12l1f1,
+              prompt:
+                "!notifytest kfimplant.exe gets blocked. Which symbolic " +
+                "NTSTATUS lands in CreationStatus? Submit its name, e.g. " +
+                "STATUS_ACCESS_DENIED style.",
+              points: 100,
+            },
+            {
+              id: "m12.l1.f2",
+              sha256: F.m12l1f2,
+              prompt:
+                "!notifyroutines lists the registered Ex callback. Submit " +
+                "its VA as full 16-digit hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m12.l1.f3",
+              sha256: F.m12l1f3,
+              prompt:
+                "Patch one immediate of the name compare (eb) so the " +
+                "callback can never match, rerun !notifytest, and submit " +
+                "the telemetry-gap secret from !analyze -v.",
+              points: 300,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module13 = {
+  id: "m13",
+  title: "SSDT & Syscall Hooking",
+  track: "windows-kernel",
+  summary:
+    "A modeled KiServiceTable over real thunks: scan for the inline-detoured " +
+    "service, resolve its rel32 target, repair, and re-scan until clean.",
+  lessons: [
+    {
+      id: "m13.l1",
+      title: "Clean the service table",
+      body: m13l1Body,
+      requires: ["m12.l1"],
+      labs: [
+        {
+          id: "m13.l1.lab1",
+          kind: "windbg",
+          title: "Find and repair the detoured service",
+          brief:
+            "kfvillain.sys detoured one KiServiceTable entry to hide pid " +
+            "666. Scan the table, resolve the E9 target, restore the " +
+            "prologue, prove the lookup succeeds.",
+          scenario: "ssdt-hook",
+          flags: [
+            {
+              id: "m13.l1.f1",
+              sha256: F.m13l1f1,
+              prompt:
+                "!ssdt marks exactly one HOOKED service. Submit its export " +
+                "name exactly (e.g. NtOpenProcess style).",
+              points: 100,
+            },
+            {
+              id: "m13.l1.f2",
+              sha256: F.m13l1f2,
+              prompt:
+                "Resolve the detour: target = site + 5 + rel32 (!ssdt " +
+                "prints it). Submit the kfvillain.sys VA as full 16-digit " +
+                "hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m13.l1.f3",
+              sha256: F.m13l1f3,
+              prompt:
+                "Restore the pristine prologue with eb, re-run !ssdt until " +
+                "it reports clean, and submit the secret kfvillain prints " +
+                "(see !analyze -v).",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 3,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10],
+  version: 4,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10,
+    module11, module12, module13],
 };

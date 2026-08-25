@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v3 has ten modules / twelve lessons / twenty-seven flags", () => {
-  assert.equal(catalog.version, 3);
-  assert.equal(catalog.modules.length, 10);
+test("catalog v4 has thirteen modules / fifteen lessons / thirty-six flags", () => {
+  assert.equal(catalog.version, 4);
+  assert.equal(catalog.modules.length, 13);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 12);
+  assert.equal(lessons.length, 15);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 27);
+  assert.equal(flags.length, 36);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -20,7 +20,7 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l1 -> m10.l1", () => {
+test("lesson chain is linear m1.l1 -> m13.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -72,6 +72,16 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m10.l1.f1": "128",
     "m10.l1.f2": "0xfffff8055a601010",
     "m10.l1.f3": "0xfffff8055a601000",
+    // blog labs v4: paging / edr-sensor / ssdt (low-memory worlds)
+    "m11.l1.f1": "0x0000000003005000",
+    "m11.l1.f2": "0x0000078250e65218",
+    "m11.l1.f3": "kf-pt-healed",
+    "m12.l1.f1": "STATUS_ACCESS_DENIED",
+    "m12.l1.f2": "0x0000000005101000",
+    "m12.l1.f3": "kf-edr-blindspot",
+    "m13.l1.f1": "NtOpenProcess",
+    "m13.l1.f2": "0x0000000005201000",
+    "m13.l1.f3": "kf-ssdt-clean",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

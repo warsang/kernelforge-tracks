@@ -1072,8 +1072,8 @@ export function createCommands(kernel) {
       } else {
         w(`${hooks.length} hooked service(s). Repair a prologue with 'eb' ` +
           `(pristine bytes via !hookscan <export>), then re-run !ssdt.`, "dim");
-        kernel.onSsdtScanned?.(hooks);
       }
+      kernel.onSsdtScanned?.(hooks);
     },
   };
   return commands;
