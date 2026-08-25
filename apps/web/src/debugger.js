@@ -279,6 +279,7 @@ export function createCommands(kernel) {
       w("  !notifyroutines           registered process/thread/image/Ob/Cm callbacks");
       w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
       w("  !ssdt [module]            system service table + inline-hook scan");
+      w("  !pseudocode <addr>        fixture-shaped decompilation (m16)");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
@@ -1074,6 +1075,50 @@ export function createCommands(kernel) {
           `(pristine bytes via !hookscan <export>), then re-run !ssdt.`, "dim");
       }
       kernel.onSsdtScanned?.(hooks);
+    },
+
+    "!pseudocode"(args, w) {
+      const addr = args[0] ? parseAddr(args[0]) : null;
+      if (addr === null) return w("usage: !pseudocode <addr>", "err");
+      // Fixture-shaped decompilation (deterministic, browser-contained):
+      // recognize known sensor idioms by their immediate fingerprints.
+      const b = mem.read(addr, 96);
+      const le64 = (o) => BigInt.asUintN(64,
+        b.slice(o, o + 8).reduceRight((a, x) => (a << 8n) | BigInt(x), 0n));
+      const isSensor = b[0] === 0x48 && b[1] === 0x85 && b[2] === 0xd2 // test rdx,rdx
+        && b[3] === 0x74                                              // jz done
+        && b[5] === 0x48 && b[6] === 0x8b && b[7] === 0x4a && b[8] === 0x28 // mov rcx,[rdx+28]
+        && b[9] === 0x66 && b[10] === 0x81;                           // cmp word
+      if (!isSensor) {
+        const t = resolveRel32(mem, addr);
+        w(`// no fixture signature at ${fmtAddr(addr)}`, "dim");
+        w(t !== null
+          ? `// ${fmtAddr(addr)}: rel32 transfer to ${fmtAddr(t)} (see !funcs)`
+          : "// try !funcs for boundary recovery; !decomp once wasm lands", "dim");
+        return;
+      }
+      const q0 = le64(16), q1 = le64(16 + 10 + 2); // imm64 sites in the fixture
+      const dec64 = (v, n) => {
+        let s = "";
+        for (let i = 0; i < n; i++) s += String.fromCharCode(Number((v >> BigInt(8 * i)) & 0xffn));
+        return s;
+      };
+      const lit = (v) => "[" + dec64(v, 4).replace(/\x00+$/, "") + "]";
+      const c = [
+        "NTSTATUS Cs_ProcessNotifyCallback(PEPROCESS Process, PS_CREATE_NOTIFY_INFO *ci) {",
+        "    if (!ci) return STATUS_SUCCESS;                       // termination path",
+        "    UNICODE_STRING *name = ci->ImageFileName;             // +0x28",
+        "    if (name->Length != 0x1A) return STATUS_SUCCESS;      // 13 chars",
+        `    PCWSTR buf = name->Buffer;`,
+        `    if (*(uint64_t*)buf       != 0x${q0.toString(16)}n  /* ${lit(q0)} */) return STATUS_SUCCESS;`,
+        `    if (*(uint64_t*)(buf + 4) != 0x${q1.toString(16)}n  /* ${lit(q1)} */) return STATUS_SUCCESS;`,
+        "    if (*(uint16_t*)(buf + 8) != 't') return STATUS_SUCCESS;",
+        "",
+        "    ci->CreationStatus = 0xC0000022;   // +0x40 (decimal 64): BLOCKED",
+        "    return STATUS_SUCCESS;",
+        "}",
+      ];
+      for (const l of c) w(l, "code");
     },
   };
   return commands;

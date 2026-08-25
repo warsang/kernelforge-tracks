@@ -631,6 +631,25 @@ scenarios["sauer-recon"] = {
   },
 };
 
+scenarios["tbm-ac"] = {
+  title: "tbm-ac — TryBypassMe-style ring-3 gauntlet",
+  description:
+    "Headless game process guarded by five classic user-mode AC vectors: " +
+    "process/window blacklists, PEB debugger artifacts, XOR-encrypted stats " +
+    "with shadow canaries, and a CRC-guarded AC thread. Spoof, clean and " +
+    "!setstat your way to !godmode.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("tbm-ac");
+    return {
+      kind: "tbm-ac",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
 scenarios["sauer-hook"] = {
   title: "sauer-hook — detoured input path",
   description:
@@ -675,6 +694,15 @@ scenarios["syscall-trace"] = {
     "Same guest; /root/trigger fires execve storms. Register a kprobe and read " +
     "your handler's KFFLAG output from the serial stream.",
   boot: () => bootLinuxWorld("syscall-trace"),
+};
+
+scenarios["syscall-hook"] = {
+  title: "syscall-hook — kfhooksy loaded",
+  description:
+    "kfhooksy.ko rewrote one sys_call_table entry to trampoline its own code. " +
+    "Build the kallsyms cross-checker, print your KFFLAG, then call the " +
+    "exported restore path and sweep clean.",
+  boot: () => bootLinuxWorld("syscall-hook"),
 };
 
 scenarios["task-hide"] = {
@@ -774,7 +802,7 @@ scenarios["paging-walk"] = {
  * kfimplant.exe via PS_CREATE_NOTIFY_INFO.CreationStatus.
  */
 export const EDR_CONST = (() => {
-  const KFALCON = LOW_BASES.driver + 0x100000n; // 0x5100000
+  const KFALCON = LOW_BASES.driver + 0x100000n; // 0x50100000
   return {
     KFALCON,
     CALLBACK: KFALCON + 0x1000n,

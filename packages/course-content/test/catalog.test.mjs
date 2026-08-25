@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v4 has thirteen modules / fifteen lessons / thirty-six flags", () => {
+test("catalog v4 has sixteen modules / eighteen lessons / forty-five flags", () => {
   assert.equal(catalog.version, 4);
-  assert.equal(catalog.modules.length, 13);
+  assert.equal(catalog.modules.length, 16);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 15);
+  assert.equal(lessons.length, 18);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 36);
+  assert.equal(flags.length, 45);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -20,7 +20,7 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l1 -> m13.l1", () => {
+test("lesson chain is linear m1.l1 -> m16.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -77,11 +77,23 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m11.l1.f2": "0x0000078250e65218",
     "m11.l1.f3": "kf-pt-healed",
     "m12.l1.f1": "STATUS_ACCESS_DENIED",
-    "m12.l1.f2": "0x0000000005101000",
+    "m12.l1.f2": "0x0000000050101000",
     "m12.l1.f3": "kf-edr-blindspot",
     "m13.l1.f1": "NtOpenProcess",
     "m13.l1.f2": "0x0000000005201000",
     "m13.l1.f3": "kf-ssdt-clean",
+    // m14 tbm-ac gauntlet
+    "m14.l1.f1": "5",
+    "m14.l1.f2": "0x00600100",
+    "m14.l1.f3": "kf-tbm-godmode",
+    // m15 linux syscall-table hook (frozen i386 ABI + guest seeds)
+    "m15.l1.f1": "37",
+    "m15.l1.f2": "kf-hookspotted",
+    "m15.l1.f3": "kf-syscall-clean",
+    // m16 reversing the sensor
+    "m16.l1.f1": "64",
+    "m16.l1.f2": "0x0000000050101000",
+    "m16.l1.f3": "64",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

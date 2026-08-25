@@ -139,3 +139,40 @@ Status: implemented 2026-08. Branch base: main @ 7cf7a81. Worktree:
 - [x] npm test + tsc --build green at every commit.
 - Pending vendors: sogen wasm core, v86 bundle + bzImage artifact, ghidra
   decompiler wasm (each documented in its package's vendor/README.md).
+
+
+## Catalog v4 — blog-labs modules m11-m16 (feat/internals-blog-modules)
+
+Status: implemented 2026-08. Branch base: main @ 60e052a. Worktree:
+`../advanced_Cheat_Dev-wt4`. Sources scraped & cited in lesson bodies:
+revers.engineering, secret.club, windows-internals.com (System Informer),
+security-auditing.com, everdox.blogspot.com, momo5502.com, 0xdbgman
+(CrowdStrike teardown), ssno.cc TAC, kernel-internals.org, ridpath
+gamehacking cheatsheet, UnknownCheats TryBypassMe series.
+
+### Engine additions
+- ntsim/paging.mjs: 4-level walker + PageTableSpace; per-path self-map
+  alias windows (mirrored pages); large pages; CR3-shuffle scan. Debugger:
+  !cr3/!pte/!vtop.
+- ntsim/notify.mjs: callback INVOCATION engine (Ex vs legacy tracking),
+  PS_CREATE_NOTIFY_INFO materialization (+0x40 CreationStatus), thread/
+  image fire helpers. Debugger: !notifyroutines/!notifytest.
+- ntsim/ssdt.mjs: ServiceTable over real thunk bytes; !ssdt scan/repair.
+- debugger !pseudocode: fixture-shaped decompilation (sensor idiom).
+- sogen-runtime ac.mjs: tbm-ac world (5 ring-3 AC vectors).
+- v86-lab: syscall-hook world seeds + kfhooksy.c villain (GPL-2.0).
+
+### Backend parity (hard requirement)
+All new worlds boot via LOW_BASES (< bit 47) so JsInterpreter and
+Unicorn/QEMU execute identical flows; apps/web/test/backend-parity.test.mjs
+gates each world under both engines (loud skip when wasm absent).
+
+### Instructor answers (v4)
+m11: 0x0000000003005000 / 0x0000078250e65218 / kf-pt-healed
+m12: STATUS_ACCESS_DENIED / 0x0000000050101000 / kf-edr-blindspot
+m13: NtOpenProcess / 0x0000000005201000 / kf-ssdt-clean
+m14: 5 / 0x00600100 / kf-tbm-godmode
+m15: 37 / kf-hookspotted / kf-syscall-clean
+m16: 64 / 0x0000000050101000 / 64
+
+Follow-on candidates: HWID spoofing lab, TBM-Kernel vectors, ept-sim.

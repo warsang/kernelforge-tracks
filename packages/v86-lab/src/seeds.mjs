@@ -22,4 +22,9 @@ export const GUEST_SEEDS = {
     hiddenTasks: 3,
     revealSecret: "kf-detector-ok",
   },
+  "syscall-hook": {
+    hookedSyscall: 37, // __NR_kill i386
+    detectorSecret: "kf-hookspotted",
+    restoreSecret: "kf-syscall-clean",
+  },
 };

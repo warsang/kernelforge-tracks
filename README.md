@@ -160,15 +160,46 @@ Function-boundary recovery over a driver image (`!funcs`) and rel32 detour
 resolution; pseudocode via Ghidra's native decompiler engine compiled to
 wasm once vendored (loud degrade until then).
 
+**Track: blog-labs v4 (windows-kernel / sogen / linux / reversing)**
+
+**Module 11 — x64 Virtual Memory & Page Tables** (`paging-walk`)
+Real PML4/PDPT/PD/PT bytes under a shuffled CR3 decoy (EAC-style): walk
+translation by hand (`!cr3`/`!pte`/`!vtop`), compute self-map alias VAs,
+repair an NX-smashed code PTE.
+
+**Module 12 — Kernel Callbacks & EDR Sensors** (`edr-sensor`)
+Falcon-style process-create blocking with REAL callback machine code on
+both CPU backends; `PS_CREATE_NOTIFY_INFO.CreationStatus` kill switch,
+enumerate → trigger → patch the name compare.
+
+**Module 13 — SSDT & Syscall Hooking** (`ssdt-hook`)
+Modeled `KiServiceTable` over API thunks: `!ssdt` inline-hook scan,
+rel32 resolution, pristine-prologue repair, PatchGuard discussion.
+
+**Module 14 — Userland Anti-Cheat Bypass Gauntlet** (`tbm-ac`)
+TryBypassMe-style ring-3 vectors (blacklists, PEB debug artifacts,
+XOR stats + shadow canaries, CRC thread); reach `!godmode` cleanly.
+
+**Module 15 — Linux Syscall-Table Rootkits** (`syscall-hook`)
+kfhooksy.ko hooks `sys_call_table[__NR_kill]`; kallsyms cross-check
+detector + exported restore path, graded over serial KFFLAG lines.
+
+**Module 16 — Reversing the Sensor Statically** (`edr-sensor`)
+`!funcs` boundary recovery plus `!pseudocode` fixture decompilation of
+the CreationStatus store (+0x40 = decimal 64).
+
 ## Roadmap (see docs/plan.md)
 
-- Phase 4: shadow-EPT hypervisor module (ept-sim)
+- Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +
+  momo5502 hypervisor-hook detection are the source material
 - Phase 5: UEFI bootkit simulator
 - Phase 6: BYOVD/misconfiguration labs (RACEAC-style TOCTOU, mhyprot2 pattern)
 - Sogen WASM core vendor step: replace the reference userland backend with
   real PE execution against Wine-derived DLLs (packages/sogen-runtime/vendor)
 - Playable Sauerbraten client in-browser: gated behind the GUI spike
   (docs/spike-sogen-gui.md); headless labs are fully shippable without it
+- TrySpoofHWID-style HWID-spoofing lab + TBM Kernel Edition vectors
+  (VAD scanner, handle stripping)
 - Infra: browsercc WASM fork (X86+BPF LLVM backends) to move compilation
   fully client-side; deeper API harness breadth (speakeasy-class),
   IRP/IOCTL-driven malware labs; real kernel-dump carve (kdmp-parser) to

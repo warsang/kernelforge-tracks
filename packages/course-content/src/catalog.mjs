@@ -17,7 +17,7 @@
  * apps/web/src/scenarios.js LOW_BASES):
  *   - paging-walk: kftarget real DTB 0x0000000003005000 (decoy owns the
  *     lowest frames), code VA 0x4a1cca43000, PTE alias 0x0000078250e65218
- *   - edr-sensor: kfalcon.sys @ 0x5100000, callback 0x5101000
+ *   - edr-sensor: kfalcon.sys @ 0x50100000, callback 0x50101000
  *   - ssdt-hook: kfvillain.sys @ 0x5200000, detour target 0x5201000
  * Userland worlds (packages/sogen-runtime reference backend):
  *   - sauer-recon: sauerbraten.exe base 0x00400000, entity array at
@@ -39,6 +39,9 @@ import m10l1Body from "./lessons/m10-l1.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
 import m13l1Body from "./lessons/m13-l1.mjs";
+import m14l1Body from "./lessons/m14-l1.mjs";
+import m15l1Body from "./lessons/m15-l1.mjs";
+import m16l1Body from "./lessons/m16-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -78,11 +81,22 @@ const F = {
   m11l1f2: "fa23c52d20e9bc7c8cf9b23089ffd0c5636e37292d59b3c013af8208274d3855", // code-page PTE alias VA
   m11l1f3: "f58f880c2f1b062881e17ef1e7a2b83228911184225760d88310a8c40f4c157e", // NX-repair secret
   m12l1f1: "daf0604f99e857b8db1f3199cf87664004a3f20a4e4b81e7c75c0617281b42ed", // deny NTSTATUS name
-  m12l1f2: "657d6a128ebdf5973f0f491d09fe93d6a6a6cc8626877a591ea66440d67b124f", // sensor callback VA
+  m12l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // sensor callback VA
   m12l1f3: "0e90786bcce8173a98e2c7054e3ea3df0a7aa8a6a6e10cb7e16c221c36f5b3d5", // telemetry-gap secret
   m13l1f1: "fecde715c8483bcf15534e4dadf2417ac1f2d82425712c7c11768a7bb727b1fb", // hooked service name
   m13l1f2: "a0459593796d340d431d65b318986f7e05bf617252c1137c7370e834c5928590", // detour target VA
   m13l1f3: "21cd32f101408104d43ab2f7cb42103425bdda667d14008899268432a0b0c46c", // clean-table secret
+  // --- m14 tbm-ac (sogen usermode AC gauntlet) / m15 linux syscall hook ---
+  m14l1f1: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d", // vector count
+  m14l1f2: "01e743f69a7d2bad56da5433c04e57a515e8b4e366c1ac037dde2dda9d184057", // live stats VA
+  m14l1f3: "796437c4999a9e5887294d61387e8ba13077a36eaacdddb06e73336605a789c6", // godmode secret
+  m15l1f1: "7a61b53701befdae0eeeffaecc73f14e20b537bb0f8b91ad7c2936dc63562b25", // __NR_kill i386
+  m15l1f2: "edf12aa731ae4c1c81e79821415e7ff7a222f026c8304dac470f2e75dcf158d2", // detector secret
+  m15l1f3: "5922ec30f7a92494220babe4b74d77228b75de3dbdd28d9a76da04695456e58b", // restore secret
+  // --- m16 reversing the sensor (kfalcon grid + fixture pseudocode) ---
+  m16l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
+  m16l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
+  m16l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
 };
 
 export const module1 = {
@@ -826,8 +840,168 @@ export const module13 = {
   ],
 };
 
+export const module14 = {
+  id: "m14",
+  title: "Userland Anti-Cheat Bypass Gauntlet",
+  track: "windows-userland",
+  summary:
+    "A TryBypassMe-style ring-3 gauntlet: blacklists, PEB debugger artifacts, " +
+    "XOR-encrypted stats with shadow canaries — reach godmode without a tick.",
+  lessons: [
+    {
+      id: "m14.l1",
+      title: "Quiet the five vectors",
+      body: m14l1Body,
+      requires: ["m13.l1"],
+      labs: [
+        {
+          id: "m14.l1.lab1",
+          kind: "sogen",
+          title: "Reach godmode cleanly",
+          brief:
+            "!actrace the vector set, spoof blacklists, clear debug artifacts, " +
+            "raise stats through the game API and pass !godmode.",
+          scenario: "tbm-ac",
+          flags: [
+            {
+              id: "m14.l1.f1",
+              sha256: F.m14l1f1,
+              prompt: "!actrace lists how many detection vectors? Submit the decimal count.",
+              points: 100,
+            },
+            {
+              id: "m14.l1.f2",
+              sha256: F.m14l1f2,
+              prompt:
+                "The live (encrypted) stats block sits at a fixed VA. Submit it as " +
+                "full 8-digit hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m14.l1.f3",
+              sha256: F.m14l1f3,
+              prompt:
+                "With every vector quiet and god-tier stats set via !setstat, " +
+                "!godmode prints a secret. Submit it exactly.",
+              points: 300,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module15 = {
+  id: "m15",
+  title: "Linux Syscall-Table Rootkits",
+  track: "linux-kernel",
+  summary:
+    "kfhooksy.ko rewrote one sys_call_table entry in the v86 guest; write the " +
+    "kallsyms cross-checker that catches it and make the villain restore.",
+  lessons: [
+    {
+      id: "m15.l1",
+      title: "Cross-check the dispatch table",
+      body: m15l1Body,
+      requires: ["m14.l1"],
+      labs: [
+        {
+          id: "m15.l1.lab1",
+          kind: "linux",
+          title: "Catch the hooked syscall",
+          brief:
+            "Resolve __NR_kill for i386, build a detector module comparing " +
+            "sys_call_table entries against kallsyms symbol bounds, then call " +
+            "the exported restore path.",
+          scenario: "syscall-hook",
+          flags: [
+            {
+              id: "m15.l1.f1",
+              sha256: F.m15l1f1,
+              prompt:
+                "Submit __NR_kill's decimal syscall number on i386 (frozen ABI).",
+              points: 100,
+            },
+            {
+              id: "m15.l1.f2",
+              sha256: F.m15l1f2,
+              prompt:
+                "Your detector prints a KFFLAG secret when it finds the entry " +
+                "outside core-kernel text. Submit it exactly.",
+              points: 250,
+            },
+            {
+              id: "m15.l1.f3",
+              sha256: F.m15l1f3,
+              prompt:
+                "After kfhooksy_restore() re-runs your clean sweep, the villain " +
+                "surrenders with a final secret. Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module16 = {
+  id: "m16",
+  title: "Reversing the Sensor Statically",
+  track: "reversing",
+  summary:
+    "Boundary recovery, rel32 resolution and fixture-shaped pseudocode over " +
+    "kfalcon.sys — read the kill switch without executing a single byte.",
+  lessons: [
+    {
+      id: "m16.l1",
+      title: "Pseudocode from bytes",
+      body: m16l1Body,
+      requires: ["m15.l1"],
+      labs: [
+        {
+          id: "m16.l1.lab1",
+          kind: "windbg",
+          title: "Decompile the CreationStatus store",
+          brief:
+            "!funcs recovers kfalcon.sys's grid; !pseudocode renders the " +
+            "process callback as C. Name the count, the callback, the offset.",
+          scenario: "edr-sensor",
+          flags: [
+            {
+              id: "m16.l1.f1",
+              sha256: F.m16l1f1,
+              prompt:
+                "!funcs kfalcon.sys recovers how many functions from the .text " +
+                "grid? Submit the decimal count.",
+              points: 150,
+            },
+            {
+              id: "m16.l1.f2",
+              sha256: F.m16l1f2,
+              prompt:
+                "Submit the registered process-callback VA (!notifyroutines) as " +
+                "full 16-digit hex with 0x prefix.",
+              points: 200,
+            },
+            {
+              id: "m16.l1.f3",
+              sha256: F.m16l1f3,
+              prompt:
+                "!pseudocode shows the CreationStatus store at CreateInfo+0x40. " +
+                "Submit that field offset in DECIMAL.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 4,
   modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10,
-    module11, module12, module13],
+    module11, module12, module13, module14, module15, module16],
 };

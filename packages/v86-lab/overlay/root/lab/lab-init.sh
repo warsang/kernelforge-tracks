@@ -24,3 +24,9 @@ if [ -f /root/lab/kfvillain.c ]; then
 fi
 
 dmesg | tail -5 > /var/log/boot-tail
+
+# m15 villain: syscall-table hook module
+if [ -f /root/lab/kfhooksy.c ]; then
+  ( cd /root/lab && gcc -O2 -c kfhooksy.c -o kfhooksy.o \
+      && insmod kfhooksy.o ) >/dev/null 2>&1 || true
+fi
