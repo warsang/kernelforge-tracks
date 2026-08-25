@@ -16,11 +16,16 @@
  *   the handler mutates regs/RIP and stops emulation, and the outer loop
  *   resumes from the synthetic `ret` target.
  *
- * Known limitation: guest VAs at or above bit 63 (real Windows kernel-space)
- * trip a softmmu physical-address limit in unicorn <= 2.1.x (upstream issue
- * #2010). Scenarios that must execute at true kernel VAs should keep the
- * default JsInterpreter until the guest-paging bootstrap lands; low-memory
- * layouts via NtKernel({bases}) run identically under both backends.
+ * Kernel-space VAs (>= 2^63, real Windows kernel addresses) execute correctly:
+ * the engine's TLB is switched to UC_TLB_VIRTUAL so softmmu does a clean 1:1
+ * VA mapping instead of truncating through the 52-bit physical space (upstream
+ * issue #2010). Hook callbacks observe architectural RIPs even there.
+ *
+ * Fallback for vendored builds whose ctl() path is unavailable: pass
+ * {execAliasTruncate:true} to createUnicornBackend() — pages at or above
+ * bit 52 are then mapped at their low-52-bit alias (the address executed
+ * accesses resolve to when paging is off), mirroring the KUSER_SHARED_DATA
+ * trick proven in speakeasy. Off by default; alias collisions throw.
  */
 
 import { CpuError } from "@kernelforge/ntsim/src/cpu.mjs";
@@ -54,6 +59,8 @@ async function loadModule() {
 }
 
 const M64 = 0xffffffffffffffffn;
+/** x86-64 guest physical address width (vendored QEMU TARGET_PHYS_ADDR_SPACE_BITS). */
+const PHYS_MASK52 = (1n << 52n) - 1n;
 // Low sentinel: hooks over >2^53 ranges don't fire in unicorn<=2.1 wasm
 // (same softmmu limit as upstream issue #2010), so the ABI return marker
 // lives at a mapped low address instead of JsInterpreter's high magic.
@@ -76,8 +83,13 @@ export class UnicornCpuBackend {
   #internal = new Set();
   #arenaEnd = null;
   #pendingRip = null;
+  /** alias base -> original base (execAliasTruncate collision detection) */
+  #aliasOwner = new Map();
+  /** low-52-bit truncation fallback for builds without working ctl() TLB switch */
+  #execAliasTruncate = false;
 
   constructor(mem, uc, opts = {}) {
+    this.#execAliasTruncate = !!opts.execAliasTruncate;
     this.mem = mem;
     this.uc = uc;
     this.engine = new uc.Unicorn(uc.ARCH_X86, uc.MODE_64);
@@ -98,9 +110,13 @@ export class UnicornCpuBackend {
     // VAs when paging is off (upstream issue #2010). The VIRTUAL tlb does a
     // clean 1:1 mapping instead. MUST go through the wrapper's ctl() which
     // builds a proper va_list buffer — raw fixed-arity ccalls silently no-op.
-    const UC_CTL_TLB_TYPE = 12;
-    const ctlWord = (type, nr, rw) => ((type | (nr << 26) | (rw << 30)) >>> 0);
-    this.engine.ctl(ctlWord(UC_CTL_TLB_TYPE, 1, 1), [{ type: "i32", value: 1 /* UC_TLB_VIRTUAL */ }]);
+    // Skipped under execAliasTruncate: that fallback NEEDS the physical TLB
+    // so executed accesses resolve into the low-52-bit alias space.
+    if (!this.#execAliasTruncate) {
+      const UC_CTL_TLB_TYPE = 12;
+      const ctlWord = (type, nr, rw) => ((type | (nr << 26) | (rw << 30)) >>> 0);
+      this.engine.ctl(ctlWord(UC_CTL_TLB_TYPE, 1, 1), [{ type: "i32", value: 1 /* UC_TLB_VIRTUAL */ }]);
+    }
 
     const arenaSize = Number(opts?.arenaSize ?? 0x2000000);
     if (arenaSize > 0) {
@@ -191,14 +207,38 @@ export class UnicornCpuBackend {
 
   PAGE = 4096;
 
+  /**
+   * Address inside unicorn's (physical) space for a guest page base.
+   * Default: identity — the UC_TLB_VIRTUAL switch handles canonical VAs.
+   * execAliasTruncate: fold everything at or above bit 52 down into the
+   * 52-bit physical space executed accesses actually resolve to.
+   */
+  #ucAddrFor(base) {
+    if (this.#execAliasTruncate && base >= (1n << 52n)) {
+      const alias = base & PHYS_MASK52;
+      const key = alias.toString(16);
+      const owner = this.#aliasOwner.get(key);
+      if (owner !== undefined && owner !== base) {
+        throw new CpuError(
+          `exec-alias collision: 0x${base.toString(16)} and 0x${owner.toString(16)} share low-52 bits`,
+          base,
+        );
+      }
+      this.#aliasOwner.set(key, base);
+      return alias;
+    }
+    return base;
+  }
+
   #ensurePageMapped(base) {
     base = toU64(BigInt(base)) & ~0xfffn;
+    const ucBase = this.#ucAddrFor(base);
     const key = base.toString(16);
     if (!this.#mapped.has(key)) {
-      if (this.#arenaEnd !== null && base < this.#arenaEnd) {
+      if (this.#arenaEnd !== null && ucBase < this.#arenaEnd) {
         this.#mapped.add(key); // covered by the flat arena already
       } else {
-        const rc = this.#rawMap(base, BigInt(this.PAGE), this.uc.PROT_ALL);
+        const rc = this.#rawMap(ucBase, BigInt(this.PAGE), this.uc.PROT_ALL);
         if (rc !== 0) throw new CpuError(`uc_mem_map failed (${rc}) @ ${base.toString(16)}`, base);
         this.#mapped.add(key);
       }
@@ -210,24 +250,24 @@ export class UnicornCpuBackend {
   #pullAll() {
     for (const key of this.#mapped) {
       if (this.#internal.has(key)) continue;
-      const base = BigInt(parseInt(key, 16));
-      this.mem.write(base, this.#rawRead(base, this.PAGE));
+      const base = BigInt("0x" + key);
+      this.mem.write(base, this.#rawRead(this.#ucAddrFor(base), this.PAGE));
     }
   }
 
   /** Push every materialized SparseMemory page into unicorn. */
   #syncIn() {
     for (const [key, page] of this.mem.pages) {
-      const base = BigInt(parseInt(key, 16));
+      const base = BigInt("0x" + key);
       this.#ensurePageMapped(base);
-      this.#rawWrite(base, page);
+      this.#rawWrite(this.#ucAddrFor(base), page);
     }
   }
   /** Pull guest-written pages (plus anything sparse tracks) into SparseMemory. */
   #syncOut() {
     for (const key of this.#dirty) {
-      const base = BigInt(parseInt(key, 16));
-      this.mem.write(base, this.#rawRead(base, this.PAGE));
+      const base = BigInt("0x" + key);
+      this.mem.write(base, this.#rawRead(this.#ucAddrFor(base), this.PAGE));
     }
     this.#dirty.clear();
   }
@@ -264,10 +304,11 @@ export class UnicornCpuBackend {
    * Range-limited code hook (CpuBackend contract). Handlers return true when
    * they rewired state themselves; emulation then resumes from the new RIP.
    *
-   * Uses the wrapper-managed hook path (spike-proven: fire → mutate state →
-   * emu_stop → outer loop restarts at the rewritten RIP). Note the wrapper
-   * marshals begin/end through f64: ranges above 2^53 are unreliable, which
-   * is why callFunction keeps its return marker at a LOW sentinel address.
+   * Uses the wrapper-managed hook path (fire → mutate state → emu_stop →
+   * outer loop restarts at the rewritten RIP). Hook callbacks observe
+   * architectural guest addresses even at kernel VAs (spike-verified);
+   * range endpoints still marshal through f64 in the wrapper, which is why
+   * callFunction keeps its return marker at a LOW sentinel address.
    * @param {(addr: bigint) => boolean|null} fn
    * @param {bigint} [begin] inclusive
    * @param {bigint} [end] inclusive
@@ -296,14 +337,6 @@ export class UnicornCpuBackend {
     } catch {
       /* already removed */
     }
-  }
-
-  /** Guest HLT == backend halt (mirrors JsInterpreter.halted). */
-  hookHlt(rip) {
-    this.engine.hook_add(this.uc.HOOK_CODE, () => {
-      this.halted = true;
-      this.engine.emu_stop();
-    }, 0, toI64(rip), toI64(rip));
   }
 
   reset() {
@@ -424,9 +457,10 @@ function bindRegisterIds(uc) {
 /**
  * Async factory — wasm init + register binding.
  * @param {object} mem SparseMemory-like instance
+ * @param {object} [opts] backend options ({execAliasTruncate, arenaSize})
  */
-export async function createUnicornBackend(mem) {
+export async function createUnicornBackend(mem, opts = {}) {
   const uc = await loadModule();
   if (GPR_IDS.size === 0) bindRegisterIds(uc);
-  return new UnicornCpuBackend(mem, uc);
+  return new UnicornCpuBackend(mem, uc, opts);
 }
