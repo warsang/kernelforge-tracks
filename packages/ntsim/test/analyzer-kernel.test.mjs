@@ -47,12 +47,12 @@ test("DPC / work item / APC queues drain through the CPU", async () => {
   const mem = k.mem;
   movEaxRet(mem, 0x501000n, 0x42);
 
-  // DPC record shaped like KeInitializeDpc writes it
+  // DPC via queueDpc (drained-flag model shared with main's KiRetireDpcList)
   const dpc = k.allocPool(0x20);
   mem.w64(dpc + 8n, 0x501000n);   // DeferredRoutine
   mem.w64(dpc + 16n, 0x1234n);    // context
-  k.defineApi("KeInsertQueueDpcTest", () => 0n);
-  k.pendingDpcs.push({ dpc, routine: 0x501000n, context: 0x1234n });
+  assert.equal(k.queueDpc(dpc, mem.u64(dpc + 8n), mem.u64(dpc + 16n)), true);
+  assert.equal(k.queueDpc(dpc, 0n, 0n), false); // no double-queue
   k.pendingWorkItems.push({ device: 0n, worker: 0x501000n, context: 0n });
   k.pendingApcs.push({ normalRoutine: 0x501000n, normalContext: 0n });
 

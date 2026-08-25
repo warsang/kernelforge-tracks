@@ -240,12 +240,8 @@ export function installWinApiExt(kernel, ctx) {
   });
   k.define("KeRemoveQueueApc", () => 1n);
 
-  // DPCs (drained by kernel.drainDeferred post-entry)
-  k.define("KeRemoveQueueDpc", (dpc) => {
-    const before = kernel.pendingDpcs.length;
-    kernel.pendingDpcs = kernel.pendingDpcs.filter((d) => d.dpc !== ptrSizeMask(dpc));
-    return kernel.pendingDpcs.length < before ? 1n : 0n;
-  });
+  // KeRemoveQueueDpc lives in winapi.mjs (drained-flag model on kernel.queueDpc
+  // records) — do not shadow it here.
 
   // ------------------------------------------------------------ registry
 

@@ -98,8 +98,8 @@ test("runDkomDriver hides kftarget.exe and extracts flag address", async () => {
   assert.equal(result.linksAddress, expectedLinks);
 
   // cross-layer: the flag checker MUST accept the sim-derived address, both
-  // as printed by runDkomDriver and in FLAG{} submission form (regression:
-  // stale hash rejected the correct answer).
+  // as printed by runDkomDriver and in sloppy case/spacing form (answers are
+  // normalized trim+lowercase — regression: stale hash rejected the answer).
   const { checkFlag } = await import("@kernelforge/lab-runtime");
   const { catalog } = await import("@kernelforge/course-content");
   const def = catalog.modules[0].lessons
@@ -107,6 +107,9 @@ test("runDkomDriver hides kftarget.exe and extracts flag address", async () => {
     .find((f) => f.id === "m1.l2.f1");
   assert.ok(def, "m1.l2.f1 missing from catalog");
   assert.equal(
-    await checkFlag(`FLAG{0x${expectedLinks.toString(16)}}`, def), true,
-    `checker rejects sim-derived address FLAG{0x${expectedLinks.toString(16)}}`);
+    await checkFlag(`0x${expectedLinks.toString(16)}`, def), true,
+    `checker rejects sim-derived address 0x${expectedLinks.toString(16)}`);
+  assert.equal(
+    await checkFlag(`  0X${expectedLinks.toString(16).toUpperCase()} `, def), true,
+    "checker must normalize case + whitespace");
 });

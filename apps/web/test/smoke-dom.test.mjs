@@ -27,9 +27,9 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
   // Dev flag defaults, mirroring index.html. main.js reads flags via the
   // vite define-replacement of window.process.env; give that object a home.
   window.process = { env: {
-    KF_FLAG_M1L1F1: "FLAG{kfprobe}",
-    KF_FLAG_M1L1F2: "FLAG{312}",
-    KF_FLAG_M1L2F1: "FLAG{0xffffc80000001448}",
+    KF_FLAG_M1L1F1: "kfprobe.sys",
+    KF_FLAG_M1L1F2: "312",
+    KF_FLAG_M1L2F1: "0xffffc80000001448",
   } };
 
   // File-backed fetch shim: serves /tables/** from public/ so the scenario's
@@ -61,7 +61,7 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
 
     const doc = window.document;
     const lessons = [...doc.querySelectorAll("button.lesson")];
-    assert.ok(lessons.length >= 3, `expected >=3 lesson buttons, got ${lessons.length}`);
+    assert.ok(lessons.length >= 6, `expected >=6 lesson buttons (4 modules), got ${lessons.length}`);
     assert.match(doc.querySelector(".points").textContent, /0 flags · 0 pts/);
 
     // open the first (unlocked) lesson -> lab card with boot controls renders
@@ -69,6 +69,19 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
     assert.ok(doc.body.textContent.includes("Boot / Reset"), "lab runner not rendered");
     assert.ok(doc.querySelector("select"), "backend picker missing");
     assert.ok(doc.querySelectorAll(".flag").length >= 2, "flag prompts missing");
+
+    // lesson body renders as HTML from its markdown source (content pipeline)
+    const bodyEl = doc.querySelector(".lesson-body");
+    assert.ok(bodyEl, "lesson body container missing");
+    assert.match(bodyEl.innerHTML, /<h2/, "markdown heading not rendered");
+    assert.ok(bodyEl.textContent.includes("PsActiveProcessHead") ||
+      bodyEl.textContent.includes("kernel landscape"), "lesson prose missing");
+    // legacy placeholder must be gone
+    assert.ok(!doc.body.textContent.includes("MDX bodies land"), "stale MDX placeholder shown");
+    // answers are plain strings now — no FLAG{} wrapper anywhere in prompts
+    for (const p of doc.querySelectorAll(".flag .prompt")) {
+      assert.doesNotMatch(p.textContent, /FLAG\{/, "prompt still uses FLAG{} syntax");
+    }
 
     // Boot on BOTH backends; console must report success, never 'boot failed'
     for (const backend of ["js", "unicorn"]) {

@@ -403,7 +403,7 @@ function setupManualMap(kernel) {
     resolveFlag,
     imports: IMPORTS,
     thunks: IMPORTS.map((_, i) => ntBase + BigInt(0x1000 + i * 0x10)),
-    secret: "FLAG{manual_map_master}",
+    secret: "kf-manual-map-master",
     runs: 0,
   };
 
@@ -424,6 +424,155 @@ scenarios["manual-map"] = {
     const session = await bootDefault(io);
     setupManualMap(session.kernel);
     session.kind = "manual-map";
+    return session;
+  },
+};
+
+/**
+ * IRQL/DPC lab world: same base world plus kfdpc.sys — a misbehaving driver
+ * whose init raised the IRQL and never lowered it, stranding one DPC in the
+ * per-CPU queue. Student inspects (!irql, !dpcs), repairs (!irql 2) and
+ * drains (!dpcdrain) to release the payload secret.
+ */
+function setupIrqlDpc(kernel) {
+  const KFDPC_BASE = 0xfffff8055a400000n;
+  const DPC_ROUTINE = KFDPC_BASE + 0x1400n;   // DeferredRoutine target
+  const DPC_STRUCT = KFDPC_BASE + 0x2000n;
+
+  // the driver left the processor pinned at the top software band
+  kernel.currentIrql = 15;
+
+  // stranded DPC: initialized but never drained because nothing below can run
+  kernel.queueDpc(DPC_STRUCT, DPC_ROUTINE, 0n);
+
+  // searchable evidence page
+  kernel.mem.writeAnsi(KFDPC_BASE + 0x3000n,
+    "kfdpc: deferred routine parked at DISPATCH pending drain");
+
+  // payoff once the queue finally drains
+  kernel.onDpcDrain = () => {
+    kernel.dbgLog.push("kfdpc: deferred routine ran at DISPATCH_LEVEL");
+    kernel.dbgLog.push("kfdpc: secret=kf-dpc-drain-ok");
+  };
+
+  kernel.loadedModules.push({
+    base: KFDPC_BASE, sizeOfImage: 0x8000, name: "kfdpc.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfdpc.sys", lab: true,
+  });
+}
+
+scenarios["irql-dpc"] = {
+  title: "irql-dpc — pinned IRQL with a stranded DPC",
+  description:
+    "Boots the 22H2 world with kfdpc.sys loaded. The CPU sits stuck above " +
+    "DISPATCH_LEVEL and one DPC never drains. Inspect with !irql / !dpcs, " +
+    "lower the level, release with !dpcdrain.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupIrqlDpc(session.kernel);
+    session.kind = "irql-dpc";
+    return session;
+  },
+};
+
+/**
+ * Inline-hook lab world: same base world plus kfhook.sys — a rootkit that
+ * wrote an E9 detour over nt!PsLookupProcessByProcessId so lookups for one
+ * PID come back STATUS_INVALID_PARAMETER. Student scans (!hookscan),
+ * identifies the hidden PID (!hooktest probes), repairs with eb and proves
+ * the lookup succeeds again.
+ */
+const KFHOOK_HIDDEN_PID = 666n;
+
+function setupApiHook(kernel) {
+  const API = "PsLookupProcessByProcessId";
+  const KFHOOK_BASE = 0xfffff8055a600000n;
+  const detourTarget = KFHOOK_BASE + 0x1000n;
+
+  // gate behavior on LIVE prologue bytes: repairing with eb instantly unhooks
+  const orig = kernel.apiImpls.get(API);
+  kernel.defineApi(API, function (pid, outPtr) {
+    if (kernel.isDetoured(API) && BigInt(pid) === KFHOOK_HIDDEN_PID) {
+      kernel.dbgLog.push(`nt!${API}: hook suppressed pid ${KFHOOK_HIDDEN_PID}`);
+      return 0xc000000bn; // STATUS_INVALID_PARAMETER
+    }
+    return orig(pid, outPtr);
+  });
+
+  kernel.installDetour(API, detourTarget);
+  kernel.inlineHooks.push({ api: API, thunk: kernel.apiThunks.get(API), target: detourTarget, module: "kfhook.sys" });
+
+  // searchable evidence on the detour page
+  kernel.mem.writeAnsi(detourTarget + 0x40n,
+    "kfhook: PsLookupProcessByProcessId detoured");
+  kernel.mem.writeAnsi(detourTarget + 0x80n,
+    "kfhook: protected pid=666");
+
+  kernel.loadedModules.push({
+    base: KFHOOK_BASE, sizeOfImage: 0x8000, name: "kfhook.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfhook.sys", lab: true,
+  });
+}
+
+scenarios["api-hook"] = {
+  title: "api-hook — detoured executive export",
+  description:
+    "Boots the 22H2 world with kfhook.sys loaded. One nt! export carries an " +
+    "inline detour that hides one process from lookup. Scan with !hookscan, " +
+    "probe with !hooktest, repair the prologue with eb.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupApiHook(session.kernel);
+    session.kind = "api-hook";
+    return session;
+  },
+};
+
+/**
+ * Pool-corruption lab world: same base world plus kfpooler.sys managing
+ * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
+ * one trailing guard. Student audits (!poolfind), repairs with eb, verifies
+ * (!poolverify) and captures the checksum secret.
+ */
+function setupPoolCorrupt(kernel) {
+  const POOL_BASE = 0xfffff90000001000n;
+  const STRIDE = 0x200n;
+  const SIZE = 0x80;
+  const TAG = "KfPb";
+
+  const blocks = [0n, STRIDE, STRIDE * 2n].map((off) =>
+    kernel.registerPoolBlock(POOL_BASE + off, SIZE, TAG));
+
+  // upstream driver's out-of-bounds write landed here (first guard byte)
+  kernel.mem.w8(blocks[1].addr + BigInt(SIZE), 0xde);
+
+  let healed = false;
+  kernel.onPoolHealed = () => {
+    if (healed) return;
+    healed = true;
+    kernel.dbgLog.push("kfpooler: integrity pass complete — all guards intact");
+    kernel.dbgLog.push("kfpooler: checksum=kf-pool-guard-ok");
+  };
+
+  kernel.mem.writeAnsi(POOL_BASE - 0x800n,
+    "kfpooler: holding integrity pass until every KfPb guard reads A5");
+
+  kernel.loadedModules.push({
+    base: 0xfffff8055a700000n, sizeOfImage: 0x8000, name: "kfpooler.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfpooler.sys", lab: true,
+  });
+}
+
+scenarios["pool-corrupt"] = {
+  title: "pool-corrupt — smashed pool guard forensics",
+  description:
+    "Boots the 22H2 world with kfpooler.sys loaded. One of its KfPb blocks " +
+    "has a corrupted trailing guard from an upstream overflow. Audit with " +
+    "!poolfind, repair with eb, confirm with !poolverify.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupPoolCorrupt(session.kernel);
+    session.kind = "pool-corrupt";
     return session;
   },
 };
