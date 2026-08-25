@@ -199,3 +199,47 @@ Answers: 0xfffff80100000030 / kf-hook-author-ok.
 Teaching headers gained SAL annotation macros (_In_ etc.) and ULONG64/INT64/
 TRUE/FALSE so tutorial sources compile unmodified; headers-manifest.json
 regenerated.
+
+### SMM track: modules m11-m13 (feat/smm-engine)
+
+Guest-paged boot (ntsim/paging.mjs Mmu + TranslatedMemory), Q35-style
+chipset/SMRAM model, SMI latch + RSM save-state relocation; smm-foundations/
+smm-vault/smm-reloc worlds; windbg-web !vtop/!pte/!cr + !smram/!smmc.
+Instructor answers: m11 0x10d000 / 7 / nx; m12 kfsmm-exfil-2026 / 0;
+m13 0xfb04 / mf2k.
+
+## Catalog v5 — blog-labs modules m14-m19 (feat/internals-blog-modules)
+
+Status: implemented 2026-08. Branch base: main @ 60e052a. Worktree:
+`../advanced_Cheat_Dev-wt4`. Sources scraped & cited in lesson bodies:
+revers.engineering, secret.club, windows-internals.com (System Informer),
+security-auditing.com, everdox.blogspot.com, momo5502.com, 0xdbgman
+(CrowdStrike teardown), ssno.cc TAC, kernel-internals.org, ridpath
+gamehacking cheatsheet, UnknownCheats TryBypassMe series.
+
+### Engine additions
+- ntsim/paging.mjs: 4-level walker + PageTableSpace; per-path self-map
+  alias windows (mirrored pages); large pages; CR3-shuffle scan. Debugger:
+  !cr3/!pte/!vtop.
+- ntsim/notify.mjs: callback INVOCATION engine (Ex vs legacy tracking),
+  PS_CREATE_NOTIFY_INFO materialization (+0x40 CreationStatus), thread/
+  image fire helpers. Debugger: !notifyroutines/!notifytest.
+- ntsim/ssdt.mjs: ServiceTable over real thunk bytes; !ssdt scan/repair.
+- debugger !pseudocode: fixture-shaped decompilation (sensor idiom).
+- sogen-runtime ac.mjs: tbm-ac world (5 ring-3 AC vectors).
+- v86-lab: syscall-hook world seeds + kfhooksy.c villain (GPL-2.0).
+
+### Backend parity (hard requirement)
+All new worlds boot via LOW_BASES (< bit 47) so JsInterpreter and
+Unicorn/QEMU execute identical flows; apps/web/test/backend-parity.test.mjs
+gates each world under both engines (loud skip when wasm absent).
+
+### Instructor answers (v4, renumbered m14-m19)
+m14: 0x0000000003005000 / 0x0000078250e65218 / kf-pt-healed
+m15: STATUS_ACCESS_DENIED / 0x0000000050101000 / kf-edr-blindspot
+m16: NtOpenProcess / 0x0000000005201000 / kf-ssdt-clean
+m17: 5 / 0x00600100 / kf-tbm-godmode
+m18: 37 / kf-hookspotted / kf-syscall-clean
+m19: 64 / 0x0000000050101000 / 64
+
+Follow-on candidates: HWID spoofing lab, TBM-Kernel vectors, ept-sim.

@@ -11,6 +11,7 @@ import { SparseMemory } from "./memory.mjs";
 import { StructTables, StructRef } from "./structs.mjs";
 import { JsInterpreter, M64 } from "./cpu.mjs";
 import { installWinApi } from "./winapi.mjs";
+import { installNotifyEngine } from "./notify.mjs";
 import { SymbolEngine } from "./symbols.mjs";
 import { tryDispatchException } from "./seh.mjs";
 import { Mmu, TranslatedMemory } from "./paging.mjs";
@@ -166,6 +167,7 @@ export class NtKernel {
 
     this._wireApiHooks();
     installWinApi(this);
+    installNotifyEngine(this);
 
     // Seed a tiny demo hive (Qiling-style virtual registry)
     this.registrySeed("\\Registry\\Machine\\SOFTWARE\\KernelForge", {

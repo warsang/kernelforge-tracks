@@ -41,6 +41,12 @@ import {
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
 import m13l1Body from "./lessons/m13-l1.mjs";
+import m14l1Body from "./lessons/m14-l1.mjs";
+import m15l1Body from "./lessons/m15-l1.mjs";
+import m16l1Body from "./lessons/m16-l1.mjs";
+import m17l1Body from "./lessons/m17-l1.mjs";
+import m18l1Body from "./lessons/m18-l1.mjs";
+import m19l1Body from "./lessons/m19-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -99,6 +105,27 @@ const F = {
   // m13: SMBASE relocation
   m13l1f1: "59559e557dba68f6c1bf096dcbd52ca7f6e5f2bd7ea2d8a058c5cf63204df292", // save-state SMBASE offset (0xfb04)
   m13l1f2: "513c129dfdc2aee92e26719e958855caca7d77c892d76fc576ba8efb946e2831", // planted-stub magic at landing2 (mf2k)
+// --- blog labs v4 (windows-kernel: paging / edr-sensor / ssdt) ---
+  m14l1f1: "2263d82fc17e3465ea0eb2d2fe69368d8e718bb6b3a62e6aeab2ea243c7ab751", // real DTB (decoy-shuffled world)
+  m14l1f2: "fa23c52d20e9bc7c8cf9b23089ffd0c5636e37292d59b3c013af8208274d3855", // code-page PTE alias VA
+  m14l1f3: "f58f880c2f1b062881e17ef1e7a2b83228911184225760d88310a8c40f4c157e", // NX-repair secret
+  m15l1f1: "daf0604f99e857b8db1f3199cf87664004a3f20a4e4b81e7c75c0617281b42ed", // deny NTSTATUS name
+  m15l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // sensor callback VA
+  m15l1f3: "0e90786bcce8173a98e2c7054e3ea3df0a7aa8a6a6e10cb7e16c221c36f5b3d5", // telemetry-gap secret
+  m16l1f1: "fecde715c8483bcf15534e4dadf2417ac1f2d82425712c7c11768a7bb727b1fb", // hooked service name
+  m16l1f2: "a0459593796d340d431d65b318986f7e05bf617252c1137c7370e834c5928590", // detour target VA
+  m16l1f3: "21cd32f101408104d43ab2f7cb42103425bdda667d14008899268432a0b0c46c", // clean-table secret
+  // --- m17 tbm-ac (sogen usermode AC gauntlet) / m18 linux syscall hook ---
+  m17l1f1: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d", // vector count
+  m17l1f2: "01e743f69a7d2bad56da5433c04e57a515e8b4e366c1ac037dde2dda9d184057", // live stats VA
+  m17l1f3: "796437c4999a9e5887294d61387e8ba13077a36eaacdddb06e73336605a789c6", // godmode secret
+  m18l1f1: "7a61b53701befdae0eeeffaecc73f14e20b537bb0f8b91ad7c2936dc63562b25", // __NR_kill i386
+  m18l1f2: "edf12aa731ae4c1c81e79821415e7ff7a222f026c8304dac470f2e75dcf158d2", // detector secret
+  m18l1f3: "5922ec30f7a92494220babe4b74d77228b75de3dbdd28d9a76da04695456e58b", // restore secret
+  // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
+  m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
+  m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
+  m19l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
 };
 
 // Starter source for m3.l1.lab2. The student must discover the export
@@ -1097,8 +1124,345 @@ export const module13 = {
   ],
 };
 
+
+// ---------------------------------------------------------------------------
+// m14-m19: blog-labs v4 additions (paging-walk / edr-sensor / ssdt-hook /
+// tbm-ac / linux syscall-hook / sensor reversing) — merged from
+// feat/internals-blog-modules, renumbered +3 to follow the smm track.
+// ---------------------------------------------------------------------------
+export const module14 = {
+  id: "m14",
+  title: "x64 Virtual Memory & Page Tables",
+  track: "windows-kernel",
+  summary:
+    "Four-level translation on real PML4/PDPT/PD/PT bytes: CR3 walking, " +
+    "self-map alias math, hardware PTE bits — and an EAC-style CR3 shuffle.",
+  lessons: [
+    {
+      id: "m14.l1",
+      title: "Walk the tables, heal the bit",
+      body: m14l1Body,
+      requires: ["m13.l1"],
+      labs: [
+        {
+          id: "m14.l1.lab1",
+          kind: "windbg",
+          title: "From CR3 to a healed NX",
+          brief:
+            "Boot paging-walk. Identify the real DirectoryTableBase under a " +
+            "shuffled decoy, compute the code page's PTE alias by hand, clear " +
+            "the smashed NX bit and release the integrity secret.",
+          scenario: "paging-walk",
+          flags: [
+            {
+              id: "m14.l1.f1",
+              sha256: F.m14l1f1,
+              prompt:
+                "!cr3 kftarget shows its DTB. The lowest frames are a decoy; " +
+                "submit kftarget's REAL DirectoryTableBase as full 16-digit " +
+                "hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m14.l1.f2",
+              sha256: F.m14l1f2,
+              prompt:
+                "Split the code VA (!pte prints it) into 9-bit fields and " +
+                "compute its PTE self-map alias va(s,pml4,pdpt,pd,pt*8). " +
+                "Submit that VA as full 16-digit hex with 0x prefix.",
+              points: 200,
+            },
+            {
+              id: "m14.l1.f3",
+              sha256: F.m14l1f3,
+              prompt:
+                "Clear NX (bit 63) on the code-page PTE via eb through the " +
+                "alias, then !vtop the code VA. Submit the secret the " +
+                "integrity pass prints.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module15 = {
+  id: "m15",
+  title: "Kernel Callbacks & EDR Sensors",
+  track: "windows-kernel",
+  summary:
+    "Falcon-style process-creation telemetry with real callback machine " +
+    "code: enumerate the sensor, read its CreationStatus kill switch, blind it.",
+  lessons: [
+    {
+      id: "m15.l1",
+      title: "Inside the mini-Falcon",
+      body: m15l1Body,
+      requires: ["m14.l1"],
+      labs: [
+        {
+          id: "m15.l1.lab1",
+          kind: "windbg",
+          title: "Blind the process-create sensor",
+          brief:
+            "kfalcon.sys blocks kfimplant.exe spawns. Enumerate callbacks, " +
+            "trigger the block, locate the name-compare immediates in the " +
+            "callback body, patch one byte so the implant slips through.",
+          scenario: "edr-sensor",
+          flags: [
+            {
+              id: "m15.l1.f1",
+              sha256: F.m15l1f1,
+              prompt:
+                "!notifytest kfimplant.exe gets blocked. Which symbolic " +
+                "NTSTATUS lands in CreationStatus? Submit its name, e.g. " +
+                "STATUS_ACCESS_DENIED style.",
+              points: 100,
+            },
+            {
+              id: "m15.l1.f2",
+              sha256: F.m15l1f2,
+              prompt:
+                "!notifyroutines lists the registered Ex callback. Submit " +
+                "its VA as full 16-digit hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m15.l1.f3",
+              sha256: F.m15l1f3,
+              prompt:
+                "Patch one immediate of the name compare (eb) so the " +
+                "callback can never match, rerun !notifytest, and submit " +
+                "the telemetry-gap secret from !analyze -v.",
+              points: 300,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module16 = {
+  id: "m16",
+  title: "SSDT & Syscall Hooking",
+  track: "windows-kernel",
+  summary:
+    "A modeled KiServiceTable over real thunks: scan for the inline-detoured " +
+    "service, resolve its rel32 target, repair, and re-scan until clean.",
+  lessons: [
+    {
+      id: "m16.l1",
+      title: "Clean the service table",
+      body: m16l1Body,
+      requires: ["m15.l1"],
+      labs: [
+        {
+          id: "m16.l1.lab1",
+          kind: "windbg",
+          title: "Find and repair the detoured service",
+          brief:
+            "kfvillain.sys detoured one KiServiceTable entry to hide pid " +
+            "666. Scan the table, resolve the E9 target, restore the " +
+            "prologue, prove the lookup succeeds.",
+          scenario: "ssdt-hook",
+          flags: [
+            {
+              id: "m16.l1.f1",
+              sha256: F.m16l1f1,
+              prompt:
+                "!ssdt marks exactly one HOOKED service. Submit its export " +
+                "name exactly (e.g. NtOpenProcess style).",
+              points: 100,
+            },
+            {
+              id: "m16.l1.f2",
+              sha256: F.m16l1f2,
+              prompt:
+                "Resolve the detour: target = site + 5 + rel32 (!ssdt " +
+                "prints it). Submit the kfvillain.sys VA as full 16-digit " +
+                "hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m16.l1.f3",
+              sha256: F.m16l1f3,
+              prompt:
+                "Restore the pristine prologue with eb, re-run !ssdt until " +
+                "it reports clean, and submit the secret kfvillain prints " +
+                "(see !analyze -v).",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module17 = {
+  id: "m17",
+  title: "Userland Anti-Cheat Bypass Gauntlet",
+  track: "windows-userland",
+  summary:
+    "A TryBypassMe-style ring-3 gauntlet: blacklists, PEB debugger artifacts, " +
+    "XOR-encrypted stats with shadow canaries — reach godmode without a tick.",
+  lessons: [
+    {
+      id: "m17.l1",
+      title: "Quiet the five vectors",
+      body: m17l1Body,
+      requires: ["m16.l1"],
+      labs: [
+        {
+          id: "m17.l1.lab1",
+          kind: "sogen",
+          title: "Reach godmode cleanly",
+          brief:
+            "!actrace the vector set, spoof blacklists, clear debug artifacts, " +
+            "raise stats through the game API and pass !godmode.",
+          scenario: "tbm-ac",
+          flags: [
+            {
+              id: "m17.l1.f1",
+              sha256: F.m17l1f1,
+              prompt: "!actrace lists how many detection vectors? Submit the decimal count.",
+              points: 100,
+            },
+            {
+              id: "m17.l1.f2",
+              sha256: F.m17l1f2,
+              prompt:
+                "The live (encrypted) stats block sits at a fixed VA. Submit it as " +
+                "full 8-digit hex with 0x prefix.",
+              points: 150,
+            },
+            {
+              id: "m17.l1.f3",
+              sha256: F.m17l1f3,
+              prompt:
+                "With every vector quiet and god-tier stats set via !setstat, " +
+                "!godmode prints a secret. Submit it exactly.",
+              points: 300,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module18 = {
+  id: "m18",
+  title: "Linux Syscall-Table Rootkits",
+  track: "linux-kernel",
+  summary:
+    "kfhooksy.ko rewrote one sys_call_table entry in the v86 guest; write the " +
+    "kallsyms cross-checker that catches it and make the villain restore.",
+  lessons: [
+    {
+      id: "m18.l1",
+      title: "Cross-check the dispatch table",
+      body: m18l1Body,
+      requires: ["m17.l1"],
+      labs: [
+        {
+          id: "m18.l1.lab1",
+          kind: "linux",
+          title: "Catch the hooked syscall",
+          brief:
+            "Resolve __NR_kill for i386, build a detector module comparing " +
+            "sys_call_table entries against kallsyms symbol bounds, then call " +
+            "the exported restore path.",
+          scenario: "syscall-hook",
+          flags: [
+            {
+              id: "m18.l1.f1",
+              sha256: F.m18l1f1,
+              prompt:
+                "Submit __NR_kill's decimal syscall number on i386 (frozen ABI).",
+              points: 100,
+            },
+            {
+              id: "m18.l1.f2",
+              sha256: F.m18l1f2,
+              prompt:
+                "Your detector prints a KFFLAG secret when it finds the entry " +
+                "outside core-kernel text. Submit it exactly.",
+              points: 250,
+            },
+            {
+              id: "m18.l1.f3",
+              sha256: F.m18l1f3,
+              prompt:
+                "After kfhooksy_restore() re-runs your clean sweep, the villain " +
+                "surrenders with a final secret. Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module19 = {
+  id: "m19",
+  title: "Reversing the Sensor Statically",
+  track: "reversing",
+  summary:
+    "Boundary recovery, rel32 resolution and fixture-shaped pseudocode over " +
+    "kfalcon.sys — read the kill switch without executing a single byte.",
+  lessons: [
+    {
+      id: "m19.l1",
+      title: "Pseudocode from bytes",
+      body: m19l1Body,
+      requires: ["m18.l1"],
+      labs: [
+        {
+          id: "m19.l1.lab1",
+          kind: "windbg",
+          title: "Decompile the CreationStatus store",
+          brief:
+            "!funcs recovers kfalcon.sys's grid; !pseudocode renders the " +
+            "process callback as C. Name the count, the callback, the offset.",
+          scenario: "edr-sensor",
+          flags: [
+            {
+              id: "m19.l1.f1",
+              sha256: F.m19l1f1,
+              prompt:
+                "!funcs kfalcon.sys recovers how many functions from the .text " +
+                "grid? Submit the decimal count.",
+              points: 150,
+            },
+            {
+              id: "m19.l1.f2",
+              sha256: F.m19l1f2,
+              prompt:
+                "Submit the registered process-callback VA (!notifyroutines) as " +
+                "full 16-digit hex with 0x prefix.",
+              points: 200,
+            },
+            {
+              id: "m19.l1.f3",
+              sha256: F.m19l1f3,
+              prompt:
+                "!pseudocode shows the CreationStatus store at CreateInfo+0x40. " +
+                "Submit that field offset in DECIMAL.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 4,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10,
-    module11, module12, module13],
+  version: 5,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19],
 };

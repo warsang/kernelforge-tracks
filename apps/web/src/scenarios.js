@@ -9,9 +9,34 @@
 import { SparseMemory } from "@kernelforge/ntsim/src/memory.mjs";
 import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
+import { PageTableSpace, joinVa } from "@kernelforge/ntsim/src/paging.mjs";
+import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
+
+/**
+ * Low-memory bases for the blog-labs worlds (m11-m13): everything stays
+ * under bit 47 so each world boots identically under the JsInterpreter AND
+ * the Unicorn/QEMU backend (softmmu cannot traverse canonical kernel VAs,
+ * see packages/ntsim-unicorn/src/backend.mjs). Page-table physical frames
+ * live at 0x3000000+, fixture drivers at 0x5000000+.
+ */
+export const LOW_BASES = {
+  kva: 0x10000000n, pool: 0x20000000n, thunk: 0x30000000n,
+  eproc: 0x40000000n, driver: 0x50000000n,
+};
+
+/** Shared low-layout boot: same shape as bootDefault, unicorn-safe. */
+async function bootLow({ makeBackend, loadTables }) {
+  const mem = new SparseMemory();
+  const cpu = await makeBackend(mem);
+  const tables = await loadTables();
+  const kernel = new NtKernel({ cpu, tables, bases: LOW_BASES });
+  kernel.bootstrap();
+  kernel.loadedModules ??= []; // bare worlds have no dump-populated module list
+  return { kernel, kind: "", dumpPagesLoaded: false };
+}
 
 /** Dev flag planted by boot-default; index.html overrides via process.env. */
 export const PROBE_FLAG = "FLAG{kfprobe}";
@@ -739,6 +764,25 @@ scenarios["sauer-recon"] = {
   },
 };
 
+scenarios["tbm-ac"] = {
+  title: "tbm-ac — TryBypassMe-style ring-3 gauntlet",
+  description:
+    "Headless game process guarded by five classic user-mode AC vectors: " +
+    "process/window blacklists, PEB debugger artifacts, XOR-encrypted stats " +
+    "with shadow canaries, and a CRC-guarded AC thread. Spoof, clean and " +
+    "!setstat your way to !godmode.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("tbm-ac");
+    return {
+      kind: "tbm-ac",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
 scenarios["sauer-hook"] = {
   title: "sauer-hook — detoured input path",
   description:
@@ -785,12 +829,269 @@ scenarios["syscall-trace"] = {
   boot: () => bootLinuxWorld("syscall-trace"),
 };
 
+scenarios["syscall-hook"] = {
+  title: "syscall-hook — kfhooksy loaded",
+  description:
+    "kfhooksy.ko rewrote one sys_call_table entry to trampoline its own code. " +
+    "Build the kallsyms cross-checker, print your KFFLAG, then call the " +
+    "exported restore path and sweep clean.",
+  boot: () => bootLinuxWorld("syscall-hook"),
+};
+
 scenarios["task-hide"] = {
   title: "task-hide — kfvillain loaded",
   description:
     "The villain rootkit hides decoy tasks during init. Measure nr_threads vs " +
     "/proc visibility, then make it confess through your detector.",
   boot: () => bootLinuxWorld("task-hide"),
+};
+
+/* ---------------------------------------------------------------------- */
+/* Blog-labs worlds (catalog v4, m11-m16)                                   */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * m11 — x64 paging world. A decoy DTB is registered FIRST (EAC-style CR3
+ * shuffle), so the lowest frame is a trap. kftarget.exe carries the real
+ * tables with self-map index 0xF; one code-page PTE was corrupted with NX,
+ * failing the driver's integrity pass until the student repairs it through
+ * the self-map alias.
+ */
+export const PAGING_CONST = (() => {
+  const ptsPhysBase = 0x3000000n;
+  // raw VAs (low half; ptIndex/pdIndex/pdPtIndex/pml4Index all < 0x1ff)
+  const CODE_VA = (0x9n << 39n) | (0x87n << 30n) | (0x65n << 21n) | (0x43n << 12n);
+  return {
+    ptsPhysBase,
+    DECOY_SELFREF: 0x12,
+    REAL_SELFREF: 0xf,
+    CODE_VA,
+    STACK_VA: (0xbn << 39n) | (2n << 30n) | (2n << 21n) | (0x44n << 12n),
+    LARGE_VA: (0xcn << 39n) | (7n << 30n) | (0x33n << 21n),
+    secret: "kf-pt-healed",
+  };
+})();
+
+function setupPagingWalk(kernel) {
+  const C = PAGING_CONST;
+  const pts = new PageTableSpace(kernel, { physBase: C.ptsPhysBase });
+  kernel.paging = pts;
+
+  // decoy first: lowest frames belong to the shuffled decoy
+  const decoy = pts.createProcess({ name: "decoy", pid: 665, selfRefIndex: C.DECOY_SELFREF });
+  decoy.decoy = true;
+  pts.mapPage(decoy, joinVa(8, 8, 8, 8, false), {});
+
+  const target = pts.createProcess({
+    name: "kftarget", pid: 666,
+    eproc: kernel.processesByName.get("kftarget.exe"),
+    selfRefIndex: C.REAL_SELFREF,
+  });
+  pts.mapPage(target, C.CODE_VA, { writable: true });
+  pts.mapPage(target, C.STACK_VA, {});
+  pts.mapPage(target, C.LARGE_VA, { size: 0x200000 });
+
+  // corrupt the code page's PTE with NX through the alias window
+  // (poke keeps physical frame + alias in sync)
+  const pteRow = pts.translate(C.CODE_VA, target).rows.at(-1);
+  const bad = kernel.mem.u64(pteRow.entryVa) | (1n << 63n);
+  pts.poke64(pteRow.entryPa, bad);
+
+  let paid = false;
+  kernel.onVtopProbe = (va, res) => {
+    if (va !== C.CODE_VA || !res.ok) return;
+    const nx = (kernel.mem.u64(pteRow.entryPa) & (1n << 63n)) !== 0n;
+    if (!nx && !paid) {
+      paid = true;
+      kernel.dbgLog.push("kfdriver: integrity pass complete — code page executable again");
+      kernel.dbgLog.push(`kfdriver: secret=${C.secret}`);
+    }
+  };
+
+  kernel.loadedModules.push({
+    base: LOW_BASES.driver + 0x100000n, sizeOfImage: 0x8000,
+    name: "kfmm.sys", full: "\\SystemRoot\\system32\\drivers\\kfmm.sys", lab: true,
+  });
+}
+
+scenarios["paging-walk"] = {
+  title: "paging-walk — four-level translation under a shuffled CR3",
+  description:
+    "Low-memory world with real PML4/PDPT/PD/PT pages. One process sports an " +
+    "EAC-style shuffled self-map entry as a decoy. Walk the tables by hand " +
+    "(!cr3/!pte/!vtop), repair the NX-smashed code PTE through the alias.",
+  boot: async (io) => {
+    const session = await bootLow(io);
+    setupPagingWalk(session.kernel);
+    session.kind = "paging-walk";
+    return session;
+  },
+};
+
+/**
+ * m12 — EDR sensor world: kfalcon.sys registers a REAL Ex-style process-
+ * creation callback (hand-assembled machine code executing on whichever
+ * backend the pane selected — js and QEMU behave identically) that denies
+ * kfimplant.exe via PS_CREATE_NOTIFY_INFO.CreationStatus.
+ */
+export const EDR_CONST = (() => {
+  const KFALCON = LOW_BASES.driver + 0x100000n; // 0x50100000
+  return {
+    KFALCON,
+    CALLBACK: KFALCON + 0x1000n,
+    GRID: KFALCON + 0x1800n,
+    BLOCKED_NAME: "kfimplant.exe",
+    DENY_STATUS: 0xc0000022n, // STATUS_ACCESS_DENIED
+    secret: "kf-edr-blindspot",
+  };
+})();
+
+/** Assemble kfalcon's Ex callback (see packages/ntsim/test/notify.test.mjs). */
+function assembleSensorCallback() {
+  const enc = (s) => [...s].flatMap((c) => [c.charCodeAt(0), 0]);
+  const q = (b) => [...b].reduceRight((a, x) => (a << 8n) | BigInt(x), 0n);
+  const imm64 = (v) => { const o = []; let x = BigInt.asUintN(64, v); for (let i = 0; i < 8; i++) { o.push(Number(x & 0xffn)); x >>= 8n; } return o; };
+  const bytes = []; const at = () => BigInt(bytes.length); const jz = []; const jnz = [];
+  bytes.push(0x48, 0x85, 0xd2); jz.push(at()); bytes.push(0x74, 0x00);
+  bytes.push(0x48, 0x8b, 0x4a, 0x28);                    // mov rcx,[rdx+28] US*
+  bytes.push(0x66, 0x81, 0x39, 0x1a, 0x00); jnz.push(at()); bytes.push(0x75, 0x00); // cmp word[rcx],0x1A
+  bytes.push(0x48, 0x8b, 0x41, 0x08);                    // mov rax,[rcx+8]
+  bytes.push(0x48, 0xb9, ...imm64(q(enc("kfim")))); bytes.push(0x48, 0x39, 0x08); jnz.push(at()); bytes.push(0x75, 0x00);
+  bytes.push(0x48, 0xb9, ...imm64(q(enc("plan")))); bytes.push(0x48, 0x39, 0x48, 0x08); jnz.push(at()); bytes.push(0x75, 0x00);
+  bytes.push(0x44, 0x0f, 0xb7, 0x48, 0x10);              // movzx r9d,word[rax+10]
+  bytes.push(0x66, 0x41, 0x81, 0xf9, 0x74, 0x00); jnz.push(at()); bytes.push(0x75, 0x00); // cmp r9w,'t'
+  bytes.push(0xc7, 0x42, 0x40, 0x22, 0x00, 0x00, 0xc0);  // mov dword[rdx+40],ACCESS_DENIED
+  const done = at(); bytes.push(0x31, 0xc0, 0xc3);
+  for (const f of [...jz, ...jnz]) bytes[Number(f) + 1] = Number(done) - (Number(f) + 2);
+  return Uint8Array.from(bytes);
+}
+// store instruction offset inside the assembled callback (for eb repair hints)
+const SENSOR_STORE_OFFSET = (() => {
+  const b = assembleSensorCallback();
+  for (let i = 0; i < b.length - 6; i++) {
+    if (b[i] === 0xc7 && b[i + 1] === 0x42 && b[i + 2] === 0x40) return i;
+  }
+  throw new Error("store not found");
+})();
+
+function setupEdrSensor(kernel) {
+  const C = EDR_CONST;
+  kernel.mem.write(C.CALLBACK, assembleSensorCallback());
+  writeFunctionGrid(kernel.mem, C.GRID, 0x400);
+
+  // register the sensor callback through the modeled API so kind-tracking
+  // and !notifyroutines see exactly what a real driver registration does
+  kernel.apiImpls.get("PsSetCreateProcessNotifyRoutineEx")(C.CALLBACK, 0);
+  kernel.obCallbacks = [{
+    callback: C.KFALCON + 0x2000n, altitude: "385201",
+    masks: { process: 0xffedcfffn, thread: 0xffedf3ffn },
+  }];
+
+  let paid = false;
+  const fire = kernel.fireProcessNotify.bind(kernel);
+  kernel.fireProcessNotify = function (pid, imageName, opts = {}) {
+    const res = fire(pid, imageName, opts);
+    if (!res.blocked && imageName === C.BLOCKED_NAME && !paid) {
+      paid = true;
+      kernel.dbgLog.push("kfalcon: telemetry gap — implant spawn went unreported");
+      kernel.dbgLog.push(`kfalcon: secret=${C.secret}`);
+    }
+    return res;
+  };
+
+  kernel.loadedModules.push({
+    base: C.KFALCON, sizeOfImage: 0x8000, name: "kfalcon.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfalcon.sys", lab: true,
+  });
+}
+
+scenarios["edr-sensor"] = {
+  title: "edr-sensor — Falcon-style process-create blocking",
+  description:
+    "kfalcon.sys registers a kernel process-creation callback that denies " +
+    "kfimplant.exe via CreationStatus. Enumerate callbacks, read the deny in " +
+    "!notifytest, then blind the sensor by patching its name compare.",
+  boot: async (io) => {
+    const session = await bootLow(io);
+    setupEdrSensor(session.kernel);
+    session.kind = "edr-sensor";
+    return session;
+  },
+};
+
+/**
+ * m13 — SSDT world: a KiServiceTable image over API thunks with one inline
+ * detour on NtOpenProcess suppressing pid 666. Reuses pristine-snapshot
+ * repair semantics; PatchGuard discussion ships in the lesson body.
+ */
+export const SSDT_CONST = (() => {
+  const KFSSDT = LOW_BASES.driver + 0x200000n; // 0x5200000
+  return {
+    TABLE_BASE: LOW_BASES.kva + 0x200000n,
+    KFSSDT,
+    DETOUR_TARGET: KFSSDT + 0x1000n,
+    HIDDEN_PID: 666n,
+    secret: "kf-ssdt-clean",
+  };
+})();
+
+function setupSsdtHook(kernel) {
+  const C = SSDT_CONST;
+  const st = new ServiceTable(kernel, { base: C.TABLE_BASE });
+
+  const gate = (api, hiddenPid) => {
+    const orig = kernel.apiImpls.get(api);
+    kernel.defineApi(api, function (pid, ...rest) {
+      if (kernel.isDetoured(api) && BigInt(pid) === hiddenPid) {
+        kernel.dbgLog.push(`nt!${api}: hook suppressed pid ${hiddenPid}`);
+        return 0xc0000022n; // STATUS_ACCESS_DENIED while hooked
+      }
+      return orig ? orig(pid, ...rest) : 0n;
+    });
+    return api;
+  };
+
+  st.add("NtCreateFile");
+  st.add("NtQuerySystemInformation");
+  const hookedIdx = st.add(gate("NtOpenProcess", C.HIDDEN_PID));
+  st.add("NtAllocateVirtualMemory");
+  st.add("NtWriteVirtualMemory");
+  st.add("NtReadVirtualMemory");
+  st.add("NtTerminateProcess");
+  st.add("NtClose");
+  kernel.serviceTable = st;
+
+  kernel.installDetour("NtOpenProcess", C.DETOUR_TARGET);
+  writeFunctionGrid(kernel.mem, C.KFSSDT + 0x1000n, 0x400);
+
+  let paid = false;
+  kernel.onSsdtScanned = (hooks) => {
+    if (!hooks.length && !paid) {
+      paid = true;
+      kernel.dbgLog.push(`kfvillain: table clean — suppressed lookups released`);
+      kernel.dbgLog.push(`kfvillain: secret=${C.secret}`);
+    }
+  };
+
+  kernel.loadedModules.push({
+    base: C.KFSSDT, sizeOfImage: 0x8000, name: "kfvillain.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfvillain.sys", lab: true,
+  });
+  void hookedIdx;
+}
+
+scenarios["ssdt-hook"] = {
+  title: "ssdt-hook — hooked system service dispatch",
+  description:
+    "A modeled KiServiceTable with one inline-detoured service hiding pid " +
+    "666 from NtOpenProcess. Scan with !ssdt, resolve the detour target, " +
+    "repair the prologue with eb, re-scan until clean.",
+  boot: async (io) => {
+    const session = await bootLow(io);
+    setupSsdtHook(session.kernel);
+    session.kind = "ssdt-hook";
+    return session;
+  },
 };
 
 export function getScenario(id) {

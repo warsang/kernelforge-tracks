@@ -23,3 +23,14 @@ Status: 2026-08 (phases 2–3 + ghidra pane). Update on every vendor bump.
   Wine-derived roots.
 - **Educational/defensive framing** throughout; the responsible-use policy
   ships with the platform.
+
+
+## Blog-labs v4 sources (lesson citations only)
+
+Lessons link to third-party research for further reading; no text is
+reproduced beyond short quotes/summaries. Cited: revers.engineering,
+secret.club, windows-internals.com, security-auditing.com,
+everdox.blogspot.com, momo5502.com, 0xdbgman.github.io, ssno.cc,
+kernel-internals.org (CC BY-SA), github.com/ridpath/gamehacking-cheatsheet
+(MIT), UnknownCheats TryBypassMe thread (community crackme, used as design
+reference only).

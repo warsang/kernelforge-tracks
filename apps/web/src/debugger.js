@@ -14,6 +14,8 @@
 
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
 import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs";
+import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
+import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
 import { disassemble, liftAliasHex } from "./disasm.mjs";
 
@@ -461,6 +463,13 @@ export function createCommands(kernel) {
       w("  !poolverify               sweep all allocation guards");
       w("  !funcs <module>           static function recovery over a module");
       w("  !decomp <addr>            decompile (needs vendored wasm; static info otherwise)");
+      w("  !cr3 [proc]               page-table base + self-map index (paging labs)");
+      w("  !pte <va> [proc]          full 4-level walk: entries, aliases, bits");
+      w("  !vtop <va> [proc]         translate VA -> PA");
+      w("  !notifyroutines           registered process/thread/image/Ob/Cm callbacks");
+      w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
+      w("  !ssdt [module]            system service table + inline-hook scan");
+      w("  !pseudocode <addr>        fixture-shaped decompilation (m19)");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -1355,6 +1364,184 @@ export function createCommands(kernel) {
         });
         kernel.materializeModuleRange(mm.payloadBase, 0x4000);
       }
+    },
+
+    "!cr3"(args, w) {
+      const pts = kernel.paging;
+      if (!pts) return w("!cr3: no paging world booted (this lab has no page tables)", "err");
+      const token = args[0];
+      let proc = null;
+      if (token) {
+        proc = pts.findProcess(token.replace(/\.sys$/, ""));
+        if (!proc) return w(`!cr3: no paging record for '${token}'`, "err");
+      } else {
+        proc = [...pts.processes.values()].find((p) => !p.decoy) ??
+          [...pts.processes.values()][0];
+        if (!proc) return w("!cr3: paging world is empty", "err");
+      }
+      w(`process ${proc.name}${proc.pid ? ` (pid ${proc.pid})` : ""}`, "hdr");
+      w(`  DirectoryTableBase  : 0x${proc.dtb.toString(16).padStart(16, "0")}` +
+        `  (PFN 0x${(proc.dtb >> 12n).toString(16)})`);
+      w(`  self-map PML4 index : 0x${proc.selfRefIndex.toString(16)}` +
+        `   (alias windows live under PML4 slot; dq/eb them directly)`);
+      if (proc.decoy) w("  NOTE: this DTB looks shuffled/decoyed — verify before trusting", "warn");
+    },
+
+    "!pte"(args, w) {
+      const pts = kernel.paging;
+      if (!pts) return w("!pte: no paging world booted (this lab has no page tables)", "err");
+      const va = args[0] ? parseAddr(args[0]) : null;
+      if (va === null) return w("usage: !pte <va> [proc]", "err");
+      const proc = args[1] ? pts.findProcess(args[1]) :
+        [...pts.processes.values()].find((p) => !p.decoy) ?? [...pts.processes.values()][0];
+      if (!proc) return w("!pte: paging world is empty", "err");
+      const res = pts.translate(va, proc);
+      w(`VA ${fmtAddr(va)}  (${proc.name}, DTB 0x${proc.dtb.toString(16)}, ` +
+        `split ${res.rows.map(() => "").join("")}9/9/9/9/12)`, "hdr");
+      for (const row of res.rows) {
+        const d = decodePte(row.value);
+        w(`  ${row.label.padEnd(6)} @ phys 0x${row.entryPa.toString(16).padStart(12, "0")}` +
+          `  alias ${fmtAddr(row.entryVa)}`);
+        w(`         contains ${row.value.toString(16).padStart(16, "0")}` +
+          `   [${pteBitsString(row.value)}]` +
+          (d.large ? "  LARGE" : "") + `  pfn 0x${d.pfn.toString(16)}`);
+      }
+      if (!res.ok) {
+        w(`  walk FAILS at ${res.failedAt} — page not present at this level`, "err");
+        return;
+      }
+      w(`  => PA ${fmtAddr(res.pa)}  (${res.level} page)`, "good");
+    },
+
+    "!vtop"(args, w) {
+      const pts = kernel.paging;
+      if (!pts) return w("!vtop: no paging world booted (this lab has no page tables)", "err");
+      const va = args[0] ? parseAddr(args[0]) : null;
+      if (va === null) return w("usage: !vtop <va> [proc]", "err");
+      const proc = args[1] ? pts.findProcess(args[1]) :
+        [...pts.processes.values()].find((p) => !p.decoy) ?? [...pts.processes.values()][0];
+      if (!proc) return w("!vtop: paging world is empty", "err");
+      const res = pts.translate(va, proc);
+      if (!res.ok) {
+        w(`!vtop: ${fmtAddr(va)} -> not mapped (${res.failedAt} not present for ${proc.name})`, "err");
+        return;
+      }
+      w(`!vtop: ${fmtAddr(va)} -> ${fmtAddr(res.pa)}  (${res.level}, ${proc.name})`, "good");
+      kernel.onVtopProbe?.(va, res);
+    },
+
+    "!notifyroutines"(args, w) {
+      const nr = kernel.notifyRoutines;
+      if (!nr) return w("!notifyroutines: kernel has no notify registry", "err");
+      const groups = [
+        ["process-creation", nr.process],
+        ["thread-creation", nr.thread],
+        ["image-load", nr.image],
+        ["object (ObRegisterCallbacks)", kernel.obCallbacks ?? []],
+        ["registry (CmRegisterCallback)", kernel.cmCallbacks ?? []],
+      ];
+      let any = false;
+      for (const [label, arr] of groups) {
+        if (!arr?.length) continue;
+        any = true;
+        w(`${label}:`, "hdr");
+        for (const cb of arr) {
+          const va = typeof cb === "bigint" ? cb : BigInt(cb?.callback ?? cb?.preOperation ?? 0);
+          const mod = sym(va);
+          const extra = typeof cb === "object" && cb.altitude ? ` altitude=${cb.altitude}` : "";
+          w(`  ${fmtAddr(va)}${mod ? `  (${mod})` : ""}${extra}`);
+        }
+      }
+      if (!any) w("no kernel notification callbacks registered", "dim");
+      else w("hint: callbacks fire on kernel events — try !notifytest", "dim");
+    },
+
+    "!notifytest"(args, w) {
+      const fire = kernel.fireProcessNotify ?? kernel._fireNotifyForTest;
+      if (typeof fire !== "function") {
+        return w("!notifytest: notify invocation engine not booted in this world", "err");
+      }
+      const name = args.find((a) => /[a-z]/i.test(a)) ?? "kftarget.exe";
+      const pid = Number(args.find((a) => /^\d+$/.test(a)) ?? 4242);
+      w(`spawning pid ${pid} (${name}) through PspCreateProcessNotify...`, "dim");
+      const res = fire(BigInt(pid), name, { parentPid: 312n });
+      for (const l of res.log) w("  " + l);
+      if (res.blocked) {
+        w(`RESULT: creation BLOCKED — CreationStatus=0x${res.status.toString(16)}`, "err");
+      } else {
+        w(`RESULT: created (CreationStatus=STATUS_SUCCESS)`, "good");
+      }
+    },
+
+    "!ssdt"(args, w) {
+      const st = kernel.serviceTable;
+      if (!st) return w("!ssdt: no service table booted (this lab has none)", "err");
+      const hooks = st.scanHooks();
+      const want = args[0]?.toLowerCase().replace(/\.sys$/, "");
+      w(`${st.name} @ ${fmtAddr(st.base)} — ${st.entries.length} service(s):`, "hdr");
+      for (let i = 0; i < st.entries.length; i++) {
+        const e = st.entries[i];
+        const hooked = st.isHooked(i);
+        if (want && !e.name.toLowerCase().includes(want)) continue;
+        let note = "";
+        if (hooked) {
+          const t = ServiceTable.rel32Target(st.kernel.mem, e.thunk);
+          note = `  [HOOKED] E9 -> ${fmtAddr(t ?? 0n)}`;
+        }
+        w(`  [${String(i).padStart(3, " ")}] ${fmtAddr(st.readEntry(i))}  nt!${e.name}${note}`,
+          hooked ? "warn" : "");
+      }
+      if (!hooks.length) {
+        w("no inline detours detected across the table", "good");
+      } else {
+        w(`${hooks.length} hooked service(s). Repair a prologue with 'eb' ` +
+          `(pristine bytes via !hookscan <export>), then re-run !ssdt.`, "dim");
+      }
+      kernel.onSsdtScanned?.(hooks);
+    },
+
+    "!pseudocode"(args, w) {
+      const addr = args[0] ? parseAddr(args[0]) : null;
+      if (addr === null) return w("usage: !pseudocode <addr>", "err");
+      // Fixture-shaped decompilation (deterministic, browser-contained):
+      // recognize known sensor idioms by their immediate fingerprints.
+      const b = mem.read(addr, 96);
+      const le64 = (o) => BigInt.asUintN(64,
+        b.slice(o, o + 8).reduceRight((a, x) => (a << 8n) | BigInt(x), 0n));
+      const isSensor = b[0] === 0x48 && b[1] === 0x85 && b[2] === 0xd2 // test rdx,rdx
+        && b[3] === 0x74                                              // jz done
+        && b[5] === 0x48 && b[6] === 0x8b && b[7] === 0x4a && b[8] === 0x28 // mov rcx,[rdx+28]
+        && b[9] === 0x66 && b[10] === 0x81;                           // cmp word
+      if (!isSensor) {
+        const t = resolveRel32(mem, addr);
+        w(`// no fixture signature at ${fmtAddr(addr)}`, "dim");
+        w(t !== null
+          ? `// ${fmtAddr(addr)}: rel32 transfer to ${fmtAddr(t)} (see !funcs)`
+          : "// try !funcs for boundary recovery; !decomp once wasm lands", "dim");
+        return;
+      }
+      const q0 = le64(16), q1 = le64(16 + 10 + 2); // imm64 sites in the fixture
+      const dec64 = (v, n) => {
+        let s = "";
+        for (let i = 0; i < n; i++) s += String.fromCharCode(Number((v >> BigInt(8 * i)) & 0xffn));
+        return s;
+      };
+      const lit = (v) => "[" + dec64(v, 4).replace(/\x00+$/, "") + "]";
+      const c = [
+        "NTSTATUS Cs_ProcessNotifyCallback(PEPROCESS Process, PS_CREATE_NOTIFY_INFO *ci) {",
+        "    if (!ci) return STATUS_SUCCESS;                       // termination path",
+        "    UNICODE_STRING *name = ci->ImageFileName;             // +0x28",
+        "    if (name->Length != 0x1A) return STATUS_SUCCESS;      // 13 chars",
+        `    PCWSTR buf = name->Buffer;`,
+        `    if (*(uint64_t*)buf       != 0x${q0.toString(16)}n  /* ${lit(q0)} */) return STATUS_SUCCESS;`,
+        `    if (*(uint64_t*)(buf + 4) != 0x${q1.toString(16)}n  /* ${lit(q1)} */) return STATUS_SUCCESS;`,
+        "    if (*(uint16_t*)(buf + 8) != 't') return STATUS_SUCCESS;",
+        "",
+        "    ci->CreationStatus = 0xC0000022;   // +0x40 (decimal 64): BLOCKED",
+        "    return STATUS_SUCCESS;",
+        "}",
+      ];
+      for (const l of c) w(l, "code");
     },
   };
   return commands;

@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v4 has thirteen modules / nineteen lessons / forty-five flags", () => {
-  assert.equal(catalog.version, 4);
-  assert.equal(catalog.modules.length, 13);
+test("catalog v5 has nineteen modules / twenty-five lessons / sixty-three flags", () => {
+  assert.equal(catalog.version, 5);
+  assert.equal(catalog.modules.length, 19);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 19);
+  assert.equal(lessons.length, 25);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 45);
+  assert.equal(flags.length, 63);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -20,7 +20,7 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l1 -> m13.l1", () => {
+test("lesson chain is linear m1.l1 -> m19.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l1") { assert.deepEqual(l.requires, []); continue; }
@@ -83,6 +83,28 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m12.l1.f2": "0",
     "m13.l1.f1": "0xfb04",
     "m13.l1.f2": "mf2k",
+    // blog labs v4 (renumbered m14-m19): paging / edr-sensor / ssdt
+    "m14.l1.f1": "0x0000000003005000",
+    "m14.l1.f2": "0x0000078250e65218",
+    "m14.l1.f3": "kf-pt-healed",
+    "m15.l1.f1": "STATUS_ACCESS_DENIED",
+    "m15.l1.f2": "0x0000000050101000",
+    "m15.l1.f3": "kf-edr-blindspot",
+    "m16.l1.f1": "NtOpenProcess",
+    "m16.l1.f2": "0x0000000005201000",
+    "m16.l1.f3": "kf-ssdt-clean",
+    // m17 tbm-ac gauntlet
+    "m17.l1.f1": "5",
+    "m17.l1.f2": "0x00600100",
+    "m17.l1.f3": "kf-tbm-godmode",
+    // m18 linux syscall-table hook (frozen i386 ABI + guest seeds)
+    "m18.l1.f1": "37",
+    "m18.l1.f2": "kf-hookspotted",
+    "m18.l1.f3": "kf-syscall-clean",
+    // m19 reversing the sensor
+    "m19.l1.f1": "64",
+    "m19.l1.f2": "0x0000000050101000",
+    "m19.l1.f3": "64",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

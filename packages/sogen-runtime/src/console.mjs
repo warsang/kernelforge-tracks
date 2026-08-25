@@ -35,6 +35,36 @@ export class SogenConsole {
       case "hookscan": return this.cmdHookscan();
       case "!damage": return this.cmdDamage(rest);
       case "!inputtest": return this.cmdInputTest();
+      case "!actrace": return this.cmdAcTrace();
+      case "!spoof-process": {
+        if (!this.w.ac) return "unknown command";
+        const n = rest.join(" ");
+        this.w.mem.processes = this.w.mem.processes.map((p) => (/cheat/i.test(p) ? n || "renamed.bin" : p));
+        return `process list now: ${this.w.mem.processes.join(", ")}`;
+      }
+      case "!spoof-window": {
+        if (!this.w.ac) return "unknown command";
+        const t = rest.join(" ");
+        this.w.mem.windows = this.w.mem.windows.map((x) => (/cheat/i.test(x) ? t || "Untitled" : x));
+        return `windows now: ${this.w.mem.windows.join(", ")}`;
+      }
+      case "!setstat": {
+        if (!this.w.ac) return "unknown command";
+        const [what, num] = rest;
+        const v = Number(num);
+        if (!["ammo", "health"].includes(what ?? "") || !Number.isFinite(v)) {
+          return "usage: !setstat ammo|health <n>  (game API: keeps shadow + encryption in sync)";
+        }
+        this.w.mem.statsPlain[what] = Math.trunc(v);
+        this.w.mem.statsEnc[what] = (Math.trunc(v) ^ this.w.xorKey) >>> 0;
+        this.w.mem.statsShadowEnc[what] = this.w.mem.statsEnc[what];
+        return `${what} -> ${Math.trunc(v)} (encrypted live + shadow updated)`;
+      }
+      case "!godmode": {
+        if (!this.w.ac) return "unknown command";
+        const res = this.w.engine.godmode();
+        return [...res.log, res.ok ? "GODMODE GRANTED" : "GODMODE DENIED"].join("\n");
+      }
       case "help": case "?": return this.cmdHelp();
       default:
         return `Couldn't resolve error at '${cmd}'`;
@@ -157,6 +187,21 @@ export class SogenConsole {
   }
 
   // -------------------------------------------------------- modeled actions
+
+  cmdAcTrace() {
+    if (!this.w.ac) return "tbm-ac world not booted";
+    const m = this.w.mem;
+    const lines = [
+      `detection vectors (${2 + 3}):`,
+      "  process-blacklist     processes: " + m.processes.join(", "),
+      "  window-title-scan     windows:   " + m.windows.join(", "),
+      `  debugger-detection    BeingDebugged=${m.beingDebugged} NtGlobalFlag=0x${m.ntGlobalFlag.toString(16)} DebugPort=${m.debugPort}`,
+      `  stat-canary-shadow    live=${m.statsEnc.ammo}/${m.statsEnc.health} shadow=${m.statsShadowEnc.ammo}/${m.statsShadowEnc.health} (XOR key hidden)`,
+      `  code-crc-thread       acThread @ 0x600300 CRC ${m.crcBad ? "MISMATCH" : "ok"}`,
+      "hint: !spoof-process/!spoof-window, clear PEB artifacts, !setstat for god-tier values",
+    ];
+    return lines.join("\n");
+  }
 
   cmdDamage(rest) {
     const n = Number.parseInt(rest[0] ?? "", 10);
