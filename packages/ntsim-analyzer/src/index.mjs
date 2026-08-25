@@ -52,6 +52,8 @@ function hexToBytes(hex) {
  *   registry       {path: {valueName: data}} seeds
  *   maxSteps       per-call instruction budget (default 20M)
  *   ioctls         [{code:number|string, input?:Uint8Array|hex, outputLen?, major?}]
+ *   autoIrp        true | {maxCodes?, inputPatterns?, outputLen?} — lifecycle
+ *                  majors + harvested CTL_CODEs driven automatically post-entry
  *   runUnload      invoke DriverUnload after IOCTLs when present
  *   makeBackend    async (mem)=>CpuBackend factory override (browser unicorn path)
  * @returns {Promise<object>} report
@@ -96,6 +98,8 @@ export async function analyzeDriver(imageBytes, opts = {}) {
     load: null,
     entry: null,
     ioctls: [],
+    autoIrps: null,
+    harvestedIoctls: null,
     deferred: null,
     unload: null,
     dbgLog: [],
@@ -155,7 +159,34 @@ export async function analyzeDriver(imageBytes, opts = {}) {
   // scripted IOCTLs can reach MajorFunction — speakeasy-style harnessing.
   const device = drvRec.deviceList[0] ?? createDeviceObject(kernel, drvRec, {});
   if (device && entryResult.status === "ok" && !report.bugcheck) {
+    // automatic driving first (lifecycle majors + harvested CTL_CODEs)
+    if (opts.autoIrp) {
+      const { harvestCtlCodes, autoDriveIrps } = await import("./autoirp.mjs");
+      const cfg = typeof opts.autoIrp === "object" ? opts.autoIrp : {};
+      const harvested = harvestCtlCodes(imageBytes, pe, {
+        maxCodes: cfg.maxCodes ?? 32,
+        maxScanBytes: cfg.maxScanBytes,
+      });
+      report.harvestedIoctls = harvested.map((h) => ({
+        value: h.value,
+        hex: `0x${h.value.toString(16).padStart(8, "0")}`,
+        rva: `0x${h.rva.toString(16)}`,
+      }));
+      report.autoIrps = await autoDriveIrps(kernel, device, {
+        sendIrp,
+        harvested,
+        maxCodes: cfg.maxCodes ?? 32,
+        inputPatterns: cfg.inputPatterns,
+        outputLen: cfg.outputLen ?? 64,
+      });
+      report.dbgLog.push(...kernel.dbgLog.splice(0));
+      report.exceptions.push(...kernel.exceptionTrace.splice(0));
+      report.irqlViolations.push(...kernel.irqlViolations.splice(0));
+      if (kernel.bugcheck || kernel.crash) report.bugcheck = kernel.bugcheck ?? kernel.crash;
+    }
+
     for (const spec of opts.ioctls ?? []) {
+      if (report.bugcheck) break;
       const r = await sendIrp(kernel, device, {
         major: spec.major ?? IRP_MJ.DEVICE_CONTROL,
         ioctl: typeof spec.code === "string"

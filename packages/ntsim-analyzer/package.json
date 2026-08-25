@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.mjs",
     "./src/index.mjs": "./src/index.mjs",
+    "./src/autoirp.mjs": "./src/autoirp.mjs",
     "./src/compiled.mjs": "./src/compiled.mjs"
   },
   "dependencies": {

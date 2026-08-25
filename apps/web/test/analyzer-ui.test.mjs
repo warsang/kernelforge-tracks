@@ -53,6 +53,8 @@ test("analyzer tab renders with upload + ioctl controls", async () => {
       b.textContent.includes("DriverEntry")), "run button missing");
     assert.ok([...doc.querySelectorAll("button")].some((b) =>
       b.textContent.includes("Send IOCTL")), "ioctl button missing");
+    assert.ok([...doc.querySelectorAll("button")].some((b) =>
+      b.textContent.includes("Auto-drive IRPs")), "auto-drive button missing");
     // engine picker offers hybrid
     const opts = [...doc.querySelectorAll("select option")].map((o) => o.value);
     assert.ok(opts.includes("hybrid"), "hybrid engine option missing");
