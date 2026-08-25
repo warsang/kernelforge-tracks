@@ -27,6 +27,9 @@
  *   Windows x64 ABI invoke: rcx/rdx/r8/r9 args, shadow space, runs until ret.
  * @property {(maxSteps?: number) => ("returned"|"breakpoint"|"error"|"timeout"|"halted")} run
  * @property {(rip?: bigint) => void} reset
+ * @property {(mem: object) => void} [attachMemory]
+ *   late memory binding — the analyzer builds backends with mem=null and
+ *   attaches the kernel's SparseMemory after construction.
  * @property {number} steps executed-instruction counter.
  * @property {Error|null} fault last fault captured by run().
  * @property {() => bigint} popVal stack pop (used by NtKernel thunk ret emulation).
@@ -95,6 +98,9 @@ export class JsInterpreter {
     this.steps = 0;
     this.fault = null;
   }
+
+  /** Late memory binding (CpuBackend contract, see typedef). */
+  attachMemory(mem) { this.mem = mem; }
 
   getReg(i) { return i < 8 ? this.regs[R64[i]] : this.regs[R64[i]]; }
 

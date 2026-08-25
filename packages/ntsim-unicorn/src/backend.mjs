@@ -400,6 +400,16 @@ export class UnicornCpuBackend {
     this.halted = false;
   }
 
+  /**
+   * Late memory binding (CpuBackend contract). Only valid before execution —
+   * uc-side page mappings stay put; the next sync pushes the fresh object's
+   * pages over them.
+   */
+  attachMemory(mem) {
+    this.mem = mem;
+    this.#dirty.clear();
+  }
+
   // -------------------------------------------------------------- exec loop
 
   /**

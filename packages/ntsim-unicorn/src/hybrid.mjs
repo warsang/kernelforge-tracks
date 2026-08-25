@@ -31,11 +31,24 @@ export class HybridCpuBackend {
   active = "js";
 
   constructor(mem, js, uc) {
-    this.mem = mem;
     this.js = js;
     this.uc = uc;
+    // Late-binding: the analyzer builds backends with mem=null and attaches
+    // the kernel's SparseMemory afterwards (NtKernel also rebinds cpu.mem).
+    if (mem) this.attachMemory(mem);
     /** @type {Array<{rip:string, opcode:string}>} */
     this.handoffs = [];
+  }
+
+  /**
+   * Memory lives in the child engines; the shell must forward every
+   * (re)binding or JsInterpreter keeps its construction-time `null` forever.
+   */
+  get mem() { return this.js?.mem ?? null; }
+  set mem(v) { this.attachMemory(v); }
+  attachMemory(mem) {
+    if (this.js) this.js.mem = mem;
+    if (this.uc) this.uc.mem = mem;
   }
 
   static async create(mem, opts = {}) {
