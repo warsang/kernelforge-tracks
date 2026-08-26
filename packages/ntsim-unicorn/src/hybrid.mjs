@@ -222,8 +222,14 @@ export class HybridCpuBackend {
   }
 
   hook_del(handle) {
-    void handle;
-    throw new Error("HybridCpuBackend: selective hook_del unsupported");
+    // Best-effort: forward to Unicorn backend; JsInterpreter hooks are flag-gated
+    // so leaving them registered is harmless. Silently ignore missing handle.
+    try { this.uc?.hook_del?.(handle); } catch { /* ignore */ }
+    // For JsInterpreter, hooks are stored in codeHooks array — remove if handle is a function reference
+    if (handle && typeof handle === "object" && handle.fn) {
+      const idx = this.js.codeHooks.indexOf(handle);
+      if (idx >= 0) this.js.codeHooks.splice(idx, 1);
+    }
   }
 
   /** HLT parity for the unicorn side (JsInterpreter halts natively). */

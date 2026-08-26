@@ -185,7 +185,15 @@ export class JsInterpreter {
    * @param {bigint} [end] inclusive
    */
   addCodeHook(fn, begin = 0n, end = M64) {
-    this.codeHooks.push({ fn, begin: BigInt(begin), end: BigInt(end) });
+    const entry = { fn, begin: BigInt(begin), end: BigInt(end) };
+    this.codeHooks.push(entry);
+    return entry;
+  }
+
+  hook_del(handle) {
+    if (!handle) return;
+    const idx = this.codeHooks.indexOf(handle);
+    if (idx >= 0) this.codeHooks.splice(idx, 1);
   }
 
   // -- register file access by 64-bit index (ModRM reg/rm order) -------------
