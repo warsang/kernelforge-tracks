@@ -16,3 +16,7 @@ packages/v86-lab/build/
 packages/v86-lab/artifacts/
 packages/v86-lab/vendor/artifacts/
 apps/web/public/vendor/artifacts/
+
+# ghidra decompiler wasm (pyre pipeline output — rebuild via `npm run vendor:ghidra`,
+# see packages/ghidra-decompiler/vendor/README.md; the shim itself IS committed)
+apps/web/public/vendor/ghidra/

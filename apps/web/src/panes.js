@@ -144,6 +144,14 @@ registerPane("linux", {
       // keep panels fresh after every stop
       gdbSession.onStateChange(() => shell?.refresh());
     });
-    return null;
+    // Facade so a re-boot disposes the placeholder + any attached gdb shell
+    // instead of stacking another dock above the console.
+    return {
+      dispose() {
+        try { shell?.dispose?.(); } catch { /* best effort */ }
+        shell = null;
+        placeholder.remove();
+      },
+    };
   },
 });

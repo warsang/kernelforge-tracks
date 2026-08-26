@@ -26,6 +26,11 @@ let currentDebugger = null;
 let currentKernel = null;
 let currentSession = null;
 
+/** lab card -> {facade?, host} of the currently mounted graphical shell.
+ *  Boot / Reset must REPLACE the shell (dispose timers/hotkeys, drop host),
+ *  never stack a second one above the console. */
+const mountedShells = new WeakMap();
+
 function kernel_processByName(kernel, name) {
   return kernel.processesByName.get(name) ?? null;
 }
@@ -580,12 +585,20 @@ function renderLesson(lesson) {
               `Windows kernel dump (${dumpWorld.meta.source}).`);
           }
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
-          // pane-registered graphical debugger shell (docks above the console)
+          // pane-registered graphical debugger shell (docks above the console).
+          // Replace any previous mount for this card: dispose its facade
+          // (interval/hotkey/listener teardown) and drop the host element.
           if (pane.mountShell) {
+            const prev = mountedShells.get(card);
+            if (prev) {
+              try { prev.facade?.dispose?.(); } catch { /* best effort */ }
+              prev.host?.remove();
+            }
             const shellHost = h("div", { class: "shell-host" });
             consoleHost.before(shellHost);
+            let facade = null;
             try {
-              pane.mountShell(session, {
+              facade = pane.mountShell(session, {
                 card, consoleHost, shellHost, h,
                 consoleDebugger: currentDebugger,
               });
@@ -593,6 +606,7 @@ function renderLesson(lesson) {
               console.warn("debugger shell mount failed:", err);
               currentDebugger.write(`debugger shell unavailable: ${err.message}`, "warn");
             }
+            mountedShells.set(card, { facade, host: shellHost });
           }
           dbg.focusTarget?.focus?.();
         } catch (e) {
