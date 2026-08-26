@@ -39,15 +39,28 @@ export function createLinuxDebugger(session, out) {
       linux.sendLine(sub === "start"
         ? `gdbserver /dev/ttyS1 ${path} ${args.slice(2).join(" ")}`.trim()
         : `gdbserver --attach /dev/ttyS1 ${path}`);
-      await new Promise((r) => setTimeout(r, 1500)); // let gdbserver bind
-      try {
-        gdb = await linux.attachGdb();
-        for (const cb of listeners.onGdbAttach) cb(gdb);
-        write("[gdb] attached — graphical debugger live; type `(gdb) help` there", "good");
-        write("[gdb] quick start: break *0x8048000 · c · si · x/8xw $esp · info registers", "dim");
-      } catch (e) {
-        write(`[gdb] attach failed: ${e.message} — is gdb-server built into this image?`, "err");
+      
+      // Retry attach with exponential backoff (gdbserver may take time to bind)
+      const maxAttempts = 5;
+      let lastError = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((r) => setTimeout(r, 1000 * attempt)); // 1s, 2s, 3s, 4s, 5s
+        try {
+          gdb = await linux.attachGdb();
+          for (const cb of listeners.onGdbAttach) cb(gdb);
+          write("[gdb] attached — graphical debugger live; type `(gdb) help` there", "good");
+          write("[gdb] quick start: break *0x8048000 · c · si · x/8xw $esp · info registers", "dim");
+          return;
+        } catch (e) {
+          lastError = e;
+          if (attempt < maxAttempts) {
+            write(`[gdb] attempt ${attempt}/${maxAttempts} failed: ${e.message} — retrying...`, "warn");
+          }
+        }
       }
+      write(`[gdb] attach failed after ${maxAttempts} attempts: ${lastError?.message}`, "err");
+      write("[gdb] troubleshooting: is gdbserver built into this image? (BR2_PACKAGE_GDB_SERVER)", "dim");
+      write("[gdb] check: run 'which gdbserver' in the guest console", "dim");
       return;
     }
     if (sub === "detach" && gdb) {
