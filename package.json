@@ -26,6 +26,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "flatbuffers": "^25.9.23"
+    "flatbuffers": "^25.9.23",
+    "z3-solver": "^5.2.0"
   }
 }

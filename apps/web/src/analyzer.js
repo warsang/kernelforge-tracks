@@ -54,7 +54,7 @@ const NTSTATUS_NAME = (s) => {
 export function renderAnalyzer(main) {
   main.innerHTML = "";
 
-  let session = null; // {kernel, drvRec, image, report}
+  let session = null; // {kernel, drvRec, image, report, imageSize}
 
   // ------------------------------------------------------------- layout
   const fileInput = el("input", { type: "file", accept: ".sys,.dll" });
@@ -80,11 +80,56 @@ export function renderAnalyzer(main) {
   const autoIrpBtn = el("button", { title: "Send CREATE/CLOSE + every harvested CTL_CODE with synthetic buffers" }, "Auto-drive IRPs");
   autoIrpBtn.disabled = true;
 
+  // --- fuzz tickbox + sliders ---
+  const LS = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v !== null ? v : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, String(v)); } catch {} },
+  };
+  const fuzzTick = el("input", { type: "checkbox", title: "Coverage-guided mutation fuzzing" });
+  fuzzTick.checked = LS.get("analyzer.fuzz.enabled", "false") === "true";
+  fuzzTick.addEventListener("change", () => LS.set("analyzer.fuzz.enabled", fuzzTick.checked));
+
+  const fuzzIter = el("input", { type: "range", min: "64", max: "1024", step: "64", value: LS.get("analyzer.fuzz.iter", "256") });
+  const fuzzIterVal = el("span", { class: "dim" }, fuzzIter.value);
+  fuzzIter.addEventListener("input", () => { fuzzIterVal.textContent = fuzzIter.value; LS.set("analyzer.fuzz.iter", fuzzIter.value); });
+
+  const fuzzCorpus = el("input", { type: "range", min: "8", max: "64", step: "8", value: LS.get("analyzer.fuzz.corpus", "32") });
+  const fuzzCorpusVal = el("span", { class: "dim" }, fuzzCorpus.value);
+  fuzzCorpus.addEventListener("input", () => { fuzzCorpusVal.textContent = fuzzCorpus.value; LS.set("analyzer.fuzz.corpus", fuzzCorpus.value); });
+
+  const concTick = el("input", { type: "checkbox", title: "Concolic execution for magic-value / structured inputs (Z3, JS backend)" });
+  concTick.checked = LS.get("analyzer.conc.enabled", "false") === "true";
+  concTick.addEventListener("change", () => LS.set("analyzer.conc.enabled", concTick.checked));
+
+  const concSym = el("input", { type: "range", min: "16", max: "128", step: "8", value: LS.get("analyzer.conc.sym", "64") });
+  const concSymVal = el("span", { class: "dim" }, concSym.value);
+  concSym.addEventListener("input", () => { concSymVal.textContent = concSym.value; LS.set("analyzer.conc.sym", concSym.value); });
+
+  const concTo = el("input", { type: "range", min: "100", max: "1000", step: "100", value: LS.get("analyzer.conc.to", "300") });
+  const concToVal = el("span", { class: "dim" }, concTo.value);
+  concTo.addEventListener("input", () => { concToVal.textContent = concTo.value; LS.set("analyzer.conc.to", concTo.value); });
+
+  const concQ = el("input", { type: "range", min: "1", max: "16", step: "1", value: LS.get("analyzer.conc.queries", "8") });
+  const concQVal = el("span", { class: "dim" }, concQ.value);
+  concQ.addEventListener("input", () => { concQVal.textContent = concQ.value; LS.set("analyzer.conc.queries", concQ.value); });
+
   const unloadBtn = el("button", {}, "Call DriverUnload");
   unloadBtn.disabled = true;
 
   const out = el("div", { class: "analyzer-out" });
   const log = (msg, cls) => out.append(el("div", { class: `line ${cls ?? ""}` }, msg));
+
+  const fuzzRow = el("div", { class: "analyzer-controls", style: "gap:6px;flex-wrap:wrap" },
+    el("label", { class: "dim", style: "display:flex;gap:4px;align-items:center" }, fuzzTick, " Fuzz"),
+    el("span", { class: "dim" }, "iters:"), fuzzIter, fuzzIterVal,
+    el("span", { class: "dim" }, "corpus:"), fuzzCorpus, fuzzCorpusVal,
+    el("span", { class: "dim", style:"font-size:10px;color:#b58900", title:"Higher iterations / corpus can take 5–30s. Reduce for quick triage." }, "⚠ may take time"),
+    el("label", { class: "dim", style: "display:flex;gap:4px;align-items:center;margin-left:8px" }, concTick, " Concolic"),
+    el("span", { class: "dim" }, "sym:"), concSym, concSymVal,
+    el("span", { class: "dim" }, "to ms:"), concTo, concToVal,
+    el("span", { class: "dim" }, "queries:"), concQ, concQVal,
+    el("span", { class: "dim", style:"font-size:10px;color:#b58900", title:"Concolic solves with Z3 and can take a few seconds per IOCTL, especially with many queries." }, "⚠ may take time"),
+  );
 
   const card = el("div", { class: "card" },
     el("h1", null, "Driver Analyzer"),
@@ -98,6 +143,7 @@ export function renderAnalyzer(main) {
       el("span", { class: "dim" }, "IOCTL:"),
       ioctlCode, ioctlIn, el("span", { class: "dim" }, "out bytes:"), ioctlOut,
       ioctlBtn, autoIrpBtn, unloadBtn),
+    fuzzRow,
     out,
   );
   main.append(card);
@@ -219,14 +265,28 @@ export function renderAnalyzer(main) {
     const statusHex = io.ntstatus !== undefined
       ? `0x${BigInt.asUintN(32, io.ntstatus).toString(16).padStart(8, "0")}`
       : "—";
+    const title = io.majorName === "__fuzz_summary"
+      ? `Fuzz summary for 0x${io.ioctl?.toString(16) ?? ""}`
+      : `IOCTL ${io.majorName ?? "DEVICE_CONTROL"}${io.source ? ` [${io.source}]` : ""}`;
     sec.append(
-      el("h3", null, `IOCTL ${io.majorName ?? "DEVICE_CONTROL"}`),
+      el("h3", null, title),
       kv("ntstatus", `${statusHex} ${NTSTATUS_NAME(statusHex)}`,
         io.ntstatus === 0n ? "ok" : "warn"),
       kv("information", io.information?.toString() ?? "—"),
       kv("steps", io.steps ?? "—"),
     );
-    if (io.outputHex) sec.append(el("div", { class: "mono" }, io.outputHex.slice(0, 256)));
+    if (io.inputHex) sec.append(kv("input", io.inputHex.slice(0,96), "mono"));
+    if (io.coverage) {
+      const covStr = io.coverage.blocks !== undefined ? `blocks ${io.coverage.blocks} edges ${io.coverage.edges ?? 0}`
+        : io.coverage.corpus !== undefined ? `corpus ${io.coverage.corpus} blocks ${io.coverage.globalBlocks} iters ${io.coverage.iterations}`
+        : JSON.stringify(io.coverage);
+      sec.append(kv("coverage", covStr, "dim"));
+    }
+    if (io.outputHex && io.majorName !== "__fuzz_summary") sec.append(el("div", { class: "mono" }, io.outputHex.slice(0, 256)));
+    if (io.smt2) {
+      const pre = el("pre", { class: "mono dim", style: "max-height:120px;overflow:auto;font-size:11px" }, io.smt2.slice(0, 800));
+      sec.append(el("div", { class: "kv" }, el("span", { class: "k" }, "SMT2"), pre));
+    }
     if (io.error) sec.append(kv("error", io.error, "err"));
     out.append(sec);
   }
@@ -297,6 +357,12 @@ export function renderAnalyzer(main) {
 
       // analyzeDriver returns the live kernel session for interactive IOCTLs
       session = report.__session;
+      // store imageSize for coverage hook (mapped size, not file length)
+      if (session && report.load) {
+        session.imageSize = report.load.imageSize;
+        // ensure base is BigInt
+        if (typeof session.image.base === "string") session.image.base = BigInt(session.image.base);
+      }
     } catch (e) {
       log(`load failed: ${e.message}`, "err");
     } finally {
@@ -332,34 +398,161 @@ export function renderAnalyzer(main) {
     }
   });
 
+  function renderAutoDriveSummary(results, harvested, detailedLog) {
+    const wrap = el("div", { class: "section" },
+      el("h3", null, `Auto-drive summary (${harvested.length} IOCTL${harvested.length===1?"":"s"} probed)`));
+
+    // stats
+    const devCtrls = results.filter(r => r.majorName === "DEVICE_CONTROL");
+    const valid = devCtrls.filter(r => r.ntstatus === 0n);
+    const lifecycle = results.filter(r => r.majorName === "CREATE" || r.majorName === "CLOSE");
+    wrap.append(
+      kv("trials", `${devCtrls.length} DEVICE_CONTROL + ${lifecycle.length} lifecycle`),
+      kv("valid (likely good inputs)", `${valid.length}`, valid.length ? "ok" : ""),
+      kv("unique IOCTL codes", `${harvested.length}`),
+    );
+    if (lifecycle.length) {
+      const lc = lifecycle.map(r => `${r.majorName}: ${r.ntstatus===0n?"ok":"fail"} 0x${(r.ntstatus??0n).toString(16)}`).join(", ");
+      wrap.append(el("div", { class: "mono dim" }, lc));
+    }
+
+    // per-code summary, top inputs by coverage
+    for (const code of harvested) {
+      const entries = results.filter(r => r.majorName === "DEVICE_CONTROL" && r.ioctl === BigInt(code.value));
+      if (!entries.length) continue;
+      // sort by coverage blocks desc, then valid first
+      const sorted = [...entries].sort((a,b) => {
+        const ca = a.coverage?.blocks ?? 0, cb = b.coverage?.blocks ?? 0;
+        if (cb !== ca) return cb - ca;
+        const va = a.ntstatus===0n ? -1 : 0, vb = b.ntstatus===0n ? -1 : 0;
+        return va - vb;
+      });
+      const top = sorted.slice(0, 3);
+      const bestValid = sorted.find(r => r.ntstatus===0n);
+      const covBlocks = Math.max(...entries.map(e=>e.coverage?.blocks??0), 0);
+      const codeHex = `0x${code.value.toString(16).padStart(8,"0")}`;
+      const sec = el("div", { class: "section", style: "margin:8px 0;padding:8px;border:1px solid var(--border, #333);border-radius:6px" },
+        el("h4", { style:"margin:0 0 6px 0" }, `IOCTL ${codeHex} — ${entries.length} trial${entries.length===1?"":"s"}, best ${covBlocks} blocks${bestValid ? ", 1+ valid ✓" : ""}`),
+        kv("rva", `0x${code.rva.toString(16)}`, "dim"),
+      );
+      if (bestValid) {
+        sec.append(kv("best valid input", `${(bestValid.inputHex??"").slice(0,32)}${(bestValid.inputHex?.length??0)>32?"…":""} — ${bestValid.coverage?`blocks ${bestValid.coverage.blocks}`:""} — STATUS_SUCCESS`, "ok"));
+        if (bestValid.outputHex) sec.append(el("div", { class: "mono dim", style:"font-size:11px;word-break:break-all" }, `out: ${bestValid.outputHex.slice(0,64)}${bestValid.outputHex.length>64?"…":""}`));
+      } else {
+        sec.append(el("div", { class: "mono dim" }, "no STATUS_SUCCESS — likely need different structure / try larger corpus or enable concolic"));
+      }
+      sec.append(el("div", { class: "dim", style:"margin-top:6px;font-weight:600" }, "Top coverage inputs:"));
+      for (let i=0;i<top.length;i++) {
+        const e = top[i];
+        const stHex = e.ntstatus!==undefined ? `0x${BigInt.asUintN(32,e.ntstatus).toString(16).padStart(8,"0")}` : "—";
+        const likely = e.ntstatus===0n ? "✓ likely valid" : "—";
+        const row = el("div", { class: "mono", style:"font-size:11px;display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+          el("span", null, `#${i+1}`),
+          el("span", { style:"font-weight:600" }, (e.inputHex??"").slice(0,32) + ((e.inputHex?.length??0)>32?"…":"")),
+          el("span", { class:"dim" }, `blocks ${e.coverage?.blocks??0}${e.coverage?.edges!==undefined?` edges ${e.coverage.edges}`:""} ${e.source?`[${e.source}]`:""}`),
+          el("span", { class: e.ntstatus===0n?"ok":"dim" }, `${stHex} ${likely}`),
+        );
+        // copy button
+        if (e.inputHex) {
+          const cp = el("button", { class:"btn btn-sm", type:"button", style:"padding:0 4px;font-size:10px" }, "copy");
+          cp.addEventListener("click", async ()=> { try{ await navigator.clipboard.writeText(e.inputHex);}catch{} });
+          row.append(cp);
+        }
+        sec.append(row);
+        if (e.outputHex) sec.append(el("div", { class:"mono dim", style:"font-size:10px;word-break:break-all" }, `  out ${e.outputHex.slice(0,48)}`));
+      }
+      wrap.append(sec);
+    }
+
+    // full-log download
+    const logText = detailedLog.join("\n") + "\n\n# --- per-result JSON ---\n" + results.map(r => {
+      const o = {...r};
+      if (typeof o.ntstatus==="bigint") o.ntstatus = `0x${o.ntstatus.toString(16)}`;
+      if (typeof o.ioctl==="bigint") o.ioctl = `0x${o.ioctl.toString(16)}`;
+      if (typeof o.information==="bigint") o.information = o.information.toString();
+      return JSON.stringify(o);
+    }).join("\n");
+    const dl = el("button", { class:"btn btn-sm", type:"button" }, `Download full log (${detailedLog.length} lines)`);
+    dl.addEventListener("click", ()=>{
+      const blob=new Blob([logText],{type:"text/plain"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=`autodrive-${new Date().toISOString().slice(0,19)}.log`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+    const cpAll = el("button", { class:"btn btn-sm", type:"button" }, "Copy summary");
+    cpAll.addEventListener("click", async ()=>{
+      try{ await navigator.clipboard.writeText(wrap.innerText);}catch{}
+    });
+    wrap.append(el("div", { class:"row gap", style:"margin-top:8px" }, dl, cpAll));
+
+    // also stash concise live line
+    liveLine(`auto-drive done: ${devCtrls.length} trials, ${valid.length} valid, ${harvested.length} codes — full log ${detailedLog.length} lines (download below)`, valid.length?"ok":"dim");
+
+    out.append(wrap);
+  }
+
   autoIrpBtn.addEventListener("click", async () => {
     if (!session) return;
     autoIrpBtn.disabled = true;
+    const detailedLog = [];
+    const pushLog = (msg) => detailedLog.push(`[${new Date().toISOString().slice(11,19)}] ${msg}`);
     try {
       const { harvestCtlCodes, autoDriveIrps } =
         await import("@kernelforge/ntsim-analyzer/src/autoirp.mjs");
       const harvested = harvestCtlCodes(session.image.bytes, parsePe(session.image.bytes), {});
-      liveLine(`auto-drive: MJ_CREATE + ${harvested.length} harvested code(s) + MJ_CLOSE`, "dim");
+      pushLog(`auto-drive: MJ_CREATE + ${harvested.length} harvested code(s) + MJ_CLOSE`);
+      const fuzz = fuzzTick.checked ? {
+        iterations: Number(fuzzIter.value) || 256,
+        corpusCap: Number(fuzzCorpus.value) || 32,
+        inputLen: 16,
+      } : null;
+      const concolic = concTick.checked ? {
+        maxSymBytes: Number(concSym.value) || 64,
+        solverTimeoutMs: Number(concTo.value) || 300,
+        maxQueries: Number(concQ.value) || 8,
+        inputLen: 16,
+      } : null;
+      if (fuzz) pushLog(`[fuzz] iters=${fuzz.iterations} corpus=${fuzz.corpusCap}`);
+      if (concolic) pushLog(`[concolic] sym=${concolic.maxSymBytes} timeout=${concolic.solverTimeoutMs}ms queries=${concolic.maxQueries}`);
+      if (concolic && engineSel.value === "unicorn") {
+        pushLog(`note: concolic runs on JS shadow and replays witness on Unicorn`);
+      }
+      liveLine(`auto-driving ${harvested.length} IOCTLs${fuzz?" + fuzz":""}${concolic?" + concolic":""}…`, "dim");
+      const base = session.image.base ?? DRIVER_BASE;
+      const size = session.imageSize ?? session.image.bytes.length;
       const results = await autoDriveIrps(session.kernel, session.device, {
         sendIrp,
         harvested,
         maxCodes: 32,
+        imageBase: base,
+        imageSize: size,
+        fuzz,
+        concolic,
+        outputLen: 64,
+        onPhase: (label) => { pushLog(`[phase] ${label}`); },
       });
-      for (const r of results) {
-        renderIoctl({ ...r, majorName: r.majorName === "DEVICE_CONTROL" ? `DEVICE_CONTROL ${(r.ioctl ?? 0n)?.toString(16) ?? ""}` : r.majorName });
-        for (const line of session.kernel.dbgLog.splice(0)) liveLine(line, "mono");
-        for (const ex of session.kernel.exceptionTrace.splice(0)) {
-          liveLine(`[seh] ${ex.faultRip}: ${ex.handled ? "handled" : "UNHANDLED"} — ${ex.detail}`,
-            ex.handled ? "warn" : "err");
-        }
-        for (const v of session.kernel.irqlViolations.splice(0)) {
-          liveLine(`[irql] ${v.name} at IRQL ${v.irql}`, "err");
+      // capture kernel logs into detailedLog, not verbose UI
+      for (const line of session.kernel.dbgLog.splice(0)) pushLog(`[dbg] ${line}`);
+      for (const ex of session.kernel.exceptionTrace.splice(0)) pushLog(`[seh] ${ex.faultRip}: ${ex.handled ? "handled" : "UNHANDLED"} — ${ex.detail}`);
+      for (const v of session.kernel.irqlViolations.splice(0)) pushLog(`[irql] ${v.name} at IRQL ${v.irql}`);
+      if (fuzz || concolic) {
+        // per-result debug into detailed log
+        for (const r of results) {
+          if (r.majorName==="DEVICE_CONTROL") {
+            pushLog(`[result] ioctl 0x${(r.ioctl??0n).toString(16)} src=${r.source??"canned"} blocks=${r.coverage?.blocks??0} nt=0x${(r.ntstatus??0n).toString(16)} in=${(r.inputHex??"").slice(0,32)}`);
+          }
         }
       }
+      // render only summary, not every trial
+      renderAutoDriveSummary(results, harvested, detailedLog);
       if (session.kernel.bugcheck || session.kernel.crash) {
+        pushLog(`bugcheck during auto-drive: ${JSON.stringify(session.kernel.bugcheck ?? session.kernel.crash)}`);
         liveLine(`bugcheck during auto-drive: ${JSON.stringify(session.kernel.bugcheck ?? session.kernel.crash)}`, "err");
         unloadBtn.disabled = true;
       }
+      // also keep detailedLog available as downloadable file via summary button
     } finally {
       autoIrpBtn.disabled = false;
     }

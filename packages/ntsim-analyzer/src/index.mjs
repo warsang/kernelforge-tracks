@@ -256,6 +256,10 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
         maxCodes: cfg.maxCodes ?? 32,
         inputPatterns: cfg.inputPatterns,
         outputLen: cfg.outputLen ?? 64,
+        imageBase: mapped.base,
+        imageSize: mapped.imageSize,
+        fuzz: cfg.fuzz ?? null,
+        concolic: cfg.concolic ?? null,
         onPhase: (label) => { kernel.tracePhase = label; },
       });
       report.dbgLog.push(...kernel.dbgLog.splice(0));

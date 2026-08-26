@@ -8,10 +8,18 @@
     ".": "./src/index.mjs",
     "./src/index.mjs": "./src/index.mjs",
     "./src/autoirp.mjs": "./src/autoirp.mjs",
-    "./src/compiled.mjs": "./src/compiled.mjs"
+    "./src/compiled.mjs": "./src/compiled.mjs",
+    "./src/coverage.mjs": "./src/coverage.mjs",
+    "./src/fuzz.mjs": "./src/fuzz.mjs",
+    "./src/snapshot.mjs": "./src/snapshot.mjs",
+    "./src/symbolic/concolic.mjs": "./src/symbolic/concolic.mjs",
+    "./src/symbolic/expr.mjs": "./src/symbolic/expr.mjs",
+    "./src/symbolic/shadow.mjs": "./src/symbolic/shadow.mjs",
+    "./src/symbolic/solver.mjs": "./src/symbolic/solver.mjs"
   },
   "dependencies": {
     "@kernelforge/compiler-worker": "*",
-    "@kernelforge/ntsim": "*"
+    "@kernelforge/ntsim": "*",
+    "z3-solver": "^5.2.0"
   }
 }
