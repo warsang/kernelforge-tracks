@@ -872,6 +872,15 @@ export function installWinApiExt(kernel, ctx) {
     const pid = mem.u64(clientIds); // CLIENT_ID.UniqueProcess at +0
     const eproc = kernel.findEprocessByPid(pid);
     if (!eproc) return 0xc000000bn;
+    // PPL model: a nonzero _EPROCESS.Protection byte blocks opens that lack
+    // the signer story. Clearing that byte via DKOM is exactly what the
+    // m23 lab teaches — and the only way in.
+    const protOff = off("_EPROCESS", "Protection");
+    if (protOff !== null && pid !== 4n && mem.u8(eproc + protOff) !== 0) {
+      kernel.dbgLog.push(
+        `[inj] ZwOpenProcess: pid ${pid} is protected (Protection=0x${mem.u8(eproc + protOff).toString(16)}) -> ACCESS_DENIED`);
+      return 0xc0000022n; // STATUS_ACCESS_DENIED
+    }
     kernel.nextProcHandle = (kernel.nextProcHandle ?? 0x2000n) + 4n;
     kernel.openHandles = kernel.openHandles ?? [];
     kernel.openHandles.push({

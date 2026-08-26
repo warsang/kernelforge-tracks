@@ -64,6 +64,7 @@ import m20l2Body from "./lessons/m20-l2.mjs";
 import m21l1Body from "./lessons/m21-l1.mjs";
 import m22l1Body from "./lessons/m22-l1.mjs";
 import m22l2Body from "./lessons/m22-l2.mjs";
+import m23l1Body from "./lessons/m23-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -177,6 +178,13 @@ const F = {
   m22l2f1: "f94f18e5f578ef61e81e2661642524466b535b2ff2542871239fca36f27a2fbb", // guest prologue byte (0xe9)
   m22l2f2: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // shadowed range count (2)
   m22l2f3: "745c77fd16f591e32a57fade15e9ac1b08beb08baf11c83d97ceeac4017e022c", // detection secret
+
+  // --- m23 DKOM field labs ---
+  m23l1f1: "88bc51edec8b66e243e4f1742810e0623192b86526f1545a93c001ddb12ed596", // lsass Protection byte (0x62)
+  m23l1f2: "daf0604f99e857b8db1f3199cf87664004a3f20a4e4b81e7c75c0617281b42ed", // denied open status
+  m23l1f3: "86edefad6b6e2d7df966ecd7a6b3e3770f155745ac13d99bca4dc99c794d524c", // PPL-off secret
+  m23l1f4: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // Cid-0004 count after spoof
+  m23l1f5: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // identity cross-ref
 
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -2050,7 +2058,91 @@ export const module22 = {
   ],
 };
 
+export const module23 = {
+  id: "m23",
+  title: "DKOM Field Labs",
+  track: "windows-kernel",
+  summary:
+    "Six DKOM edits that matter — hands-on labs for PPL removal and Cid " +
+    "spoofing, plus the field guide to handle-pointer swaps, SMEP toggles, " +
+    "CR0.WP page work and the Van1338 notify race.",
+  lessons: [
+    {
+      id: "m23.l1",
+      title: "DKOM field labs — from PPL strips to callback races",
+      body: m23l1Body,
+      requires: ["m22.l2"],
+      labs: [
+        {
+          id: "m23.l1.lab1",
+          kind: "windbg",
+          title: "Strip lsass's PPL and open it for real",
+          brief:
+            "!openprocess 108 is ACCESS_DENIED while lsass wears Light|WinTcb. " +
+            "Find its Protection byte, DKOM it to zero with eb, and collect " +
+            "your handle.",
+          scenario: "dkom-ppl",
+          flags: [
+            {
+              id: "m23.l1.f1",
+              sha256: F.m23l1f1,
+              prompt:
+                "Before your edit, what Protection byte does !eproc lsass show? " +
+                "Submit as 0x-prefixed two-digit hex.",
+              points: 100,
+            },
+            {
+              id: "m23.l1.f2",
+              sha256: F.m23l1f2,
+              prompt:
+                "!openprocess 108 while PPL is intact returns a familiar " +
+                "failure. Submit the NTSTATUS name.",
+              points: 100,
+            },
+            {
+              id: "m23.l1.f3",
+              sha256: F.m23l1f3,
+              prompt:
+                "Clear the byte with eb and re-run !openprocess 108 0x143a. " +
+                "The first successful open prints a secret — submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+        {
+          id: "m23.l1.lab2",
+          kind: "windbg",
+          title: "Wear System's Cid: spoof kftarget's PID to 4",
+          brief:
+            "Overwrite kftarget.exe's UniqueProcessId with eb and watch the " +
+            "process list lie — then check which records still tell the truth.",
+          scenario: "dkom-pid",
+          flags: [
+            {
+              id: "m23.l1.f4",
+              sha256: F.m23l1f4,
+              prompt:
+                "Spoof kftarget's UniqueProcessId to 4, then run !process 0 0. " +
+                "How many processes now list Cid 0004? Submit the decimal count.",
+              points: 100,
+            },
+            {
+              id: "m23.l1.f5",
+              sha256: F.m23l1f5,
+              prompt:
+                "After the spoof, which per-thread structure still records " +
+                "kftarget's true identity? Submit the field name (one word, " +
+                "lowercase).",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23],
 };
