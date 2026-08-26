@@ -995,6 +995,7 @@ export function createCommands(kernel) {
       w("  !pte <va> [proc]          full 4-level walk: entries, aliases, bits");
       w("  !vtop <va> [proc]         translate VA -> PA");
       w("  !cr                       control registers (cr0/cr3/cr4/efer)");
+      w("  !smep [0|1]               query or toggle SMEP (CR4 bit 20)");
       w("  !dbgprint                 dump the buffered DbgPrint log");
       w("  !smram / !smmc            SMRAM state / SMRAMC decode (SMM labs)");
       w("  !notifyroutines           registered process/thread/image/Ob/Cm callbacks");
@@ -2283,9 +2284,27 @@ export function createCommands(kernel) {
         `  wp=${(cr0 & 0x10000n) !== 0n ? 1 : 0}`);
       if (cr3 !== null) w(`cr3=${fmtAddr(cr3)}   (DirectoryTableBase)`);
       if (cr4 !== null) w(`cr4=${fmtAddr(cr4)}  pae=${(cr4 & 0x20n) !== 0n ? 1 : 0}` +
-        `  smep=${(cr4 & (1n << 21n)) !== 0n ? 1 : 0}`);
+        `  smep=${(cr4 & (1n << 20n)) !== 0n ? 1 : 0}`);
       if (efer !== null) w(`efer=${fmtAddr(efer)}  lma=${(efer & 0x400n) !== 0n ? 1 : 0}`);
       if (!mmu) w("  (non-paged world: only cr0 is modeled)", "dim");
+    },
+
+    "!smep"(args, w) {
+      // Toggle or query SMEP (Supervisor Mode Execution Prevention)
+      // Usage: !smep [0|1]
+      const mmu = kernel.mmu;
+      if (!mmu) return w("!smep: no paging world (SMEP requires CR4)", "err");
+      const SMEP_BIT = 1n << 20n;
+      if (args.length === 0) {
+        const on = (mmu.cr4 & SMEP_BIT) !== 0n;
+        w(`SMEP: ${on ? "enabled" : "disabled"} (CR4 bit 20 = ${on ? 1 : 0})`);
+        return;
+      }
+      const val = parseInt(args[0], 10);
+      if (val !== 0 && val !== 1) return w("!smep: usage: !smep [0|1]", "err");
+      if (val === 1) mmu.cr4 |= SMEP_BIT;
+      else mmu.cr4 &= ~SMEP_BIT;
+      w(`SMEP: ${val ? "enabled" : "disabled"} (CR4 = ${fmtAddr(mmu.cr4)})`);
     },
 
     "!dbgprint"(args, w) {

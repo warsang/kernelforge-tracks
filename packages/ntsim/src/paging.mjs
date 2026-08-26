@@ -199,6 +199,13 @@ export class Mmu {
       this.lastFault = new PageFault(v, "NX execute", access);
       throw this.lastFault;
     }
+    // SMEP: Supervisor Mode Execution Prevention (CR4 bit 20)
+    // When SMEP=1 and CPL=0 (kernel mode), fetching from a user page faults
+    const smep = (this.cr4 & 0x100000n) !== 0n;
+    if (smep && access === "fetch" && u) {
+      this.lastFault = new PageFault(v, "SMEP violation: kernel fetch from user page", access);
+      throw this.lastFault;
+    }
 
     if (this.tlb.size < this.tlbLimit) this.tlb.set(key, result);
     // set A/D bits best-effort on the leaf
