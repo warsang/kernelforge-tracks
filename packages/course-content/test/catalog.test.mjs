@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v6 has twenty-eight modules / forty-four lessons / one-hundred-thirty-seven flags", () => {
+test("catalog v6 has twenty-eight modules / forty-four lessons / one-hundred-thirty-nine flags", () => {
   assert.equal(catalog.version, 6);
   assert.equal(catalog.modules.length, 28);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   assert.equal(lessons.length, 44);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 137);
+  assert.equal(flags.length, 139);
 });
 
 test("tracks span kernel, userland and linux", () => {
