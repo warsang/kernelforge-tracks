@@ -282,3 +282,56 @@ m18: 37 / kf-hookspotted / kf-syscall-clean
 m19: 64 / 0x0000000050101000 / 64
 
 Follow-on candidates: HWID spoofing lab, TBM-Kernel vectors, ept-sim.
+
+## Catalog v6 — hooking-techniques gap coverage (feat/module-hook-taxonomy)
+
+Status: in progress 2026-08. Worktree: `../advanced_Cheat_Dev-hook-modules`.
+Covers the hook taxonomy rows the course lacked, each module carrying a
+"who catches this in the real world" callout (PatchGuard / HVCI / EDR
+self-protection / anticheat).
+
+### M24 — Dispatch-Layer Hooks (shipped)
+
+Worlds: `dispatch-hook` (bootDefault + KFDSP_* anchors in scenarios.js).
+Engine: ntsim `objtypes.mjs` (OBJECT_TYPE_INITIALIZER registry +
+scan/restore), devices.mjs `snapshotMajorBaseline` /
+`installDispatchScan` (containment scan vs own image). Debugger:
+`!dispatchscan`, `!ioctltest`, `!objtype`, `!obopen`.
+Instructor answers: m24.l1 = IRP_MJ_DEVICE_CONTROL / 0xfffff8055a720800 /
+kf-dispatch-clean / kf-obtype-clean / 0xdead0003 / kf-irp-hijack-ok;
+m24.l2 = kfsnoop.sys / 0x70 / kf-sentinel-v5-ok.
+Fixtures: kfirp.obj, kfsentinel_v5.obj via scripts/gen-m24-fixtures.mjs.
+
+### M26 — ETW Blindfolding (planned)
+### M27 — Userland VTable / Hot-Patch / DRx (planned)
+### M25 — Architectural Hooks MSR/IDT/GDT (planned)
+### M28 — VM-Exit MSR Interception (planned)
+
+### M26 — ETW Blindfolding (shipped)
+
+Split-track module (catalog order: after m24 until m25 lands). Worlds:
+sogen `etw-blind` (ntdll!EtwEventWrite stub page + RegHandle table,
+!providers/!etwpump/!etwtrace) and ntsim `etw-kernel` (CKCL
+_WMI_LOGGER_CONTEXT teaching struct at KFETW_CKCL, !etwloggers/!etwpump).
+Engine: sogen-runtime etw.mjs; ntsim etwkernel.mjs.
+Instructor answers: m26.l1 = 0x7749e2a0 / 8 / kf-etw-restored;
+m26.l2 = 0x10 / blinded / kf-etw-blinded;
+m26.l3 = 0xff / ckcl / kf-sentinel-v7-ok.
+Fixtures: kfetwtamper.obj, kfsentinel_v7.obj.
+
+### M27 — Userland Deep Cuts: VTable / Hot-Patch / DRx (shipped)
+
+Worlds (sogen-runtime uchooks.mjs, one model three modes):
+`vtable-hook` / `hotpatch-hook` / `drx-hook`; console gains
+!callview / !spreadtest / !drset / !drclear / !frametest / !drxaudit.
+Instructor answers: m27.l1 = 0x02100800 / 0x0046f020 /
+kf-vtable-restored / 0x00452060 / 5 / kf-hotpatch-restored / 16 /
+flagged / kf-drx-clean; m27.l2 quiz = vmt / mov edi,edi.
+
+### M28 — Hypervisor Escape Hatch: VM-Exit MSR Interception (shipped)
+
+World: `msr-exit` extends arch-hooks with hypervisor MSR interception.
+Engine: ntsim kernel.mjs adds msrIntercepts Map + vmExitLog array;
+msr.mjs wrmsr/rdmsr check for intercepts and log to vmExitLog.
+Debugger: !vmexit command shows trap log with tick counts.
+Instructor answers: m28.l1 = 0xc0000082 / kf-vmexit-detected.

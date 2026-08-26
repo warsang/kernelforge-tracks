@@ -36,6 +36,28 @@ export class SogenConsole {
       case "!damage": return this.cmdDamage(rest);
       case "!inputtest": return this.cmdInputTest();
       case "!actrace": return this.cmdAcTrace();
+      case "!etwtrace": return this.cmdEtwTrace();
+      case "!providers": return this.cmdEtwProviders();
+      case "!etwpump": return this.cmdEtwPump(rest);
+      case "!callview": return this.w.uchooks && this.w.mode === "vtable"
+        ? this.w.callView() : "unknown command";
+      case "!spreadtest": return this.w.uchooks && this.w.mode === "hotpatch"
+        ? this.w.spreadTest() : "unknown command";
+      case "!drset": {
+        if (!this.w.uchooks || this.w.mode !== "drx") return "unknown command";
+        const a = parseNum(rest[0] ?? "");
+        if (a === null) return "usage: !drset <addr>   e.g. !drset 0x004532a0";
+        return this.w.drSet(a);
+      }
+      case "!drclear": return this.w.uchooks && this.w.mode === "drx"
+        ? this.w.drClear() : "unknown command";
+      case "!frametest": {
+        if (!this.w.uchooks || this.w.mode !== "drx") return "unknown command";
+        const n = Number.parseInt(rest[0] ?? "", 10) || 1;
+        return this.w.frameTest(Math.min(n, 64));
+      }
+      case "!drxaudit": return this.w.uchooks && this.w.mode === "drx"
+        ? this.w.drxAudit() : "unknown command";
       case "!spoof-process": {
         if (!this.w.ac) return "unknown command";
         const n = rest.join(" ");
@@ -215,6 +237,35 @@ export class SogenConsole {
     return r.lines.join("\n");
   }
 
+  // ------------------------------------------------------------ etw (m26)
+
+  cmdEtwTrace() {
+    if (!this.w.etw) return "etw-blind world not booted";
+    return this.w.trace();
+  }
+
+  cmdEtwProviders() {
+    if (!this.w.etw) return "etw-blind world not booted";
+    const C = this.w.constants;
+    const lines = ["registered providers:"];
+    C.providers.forEach((p, i) => {
+      const h = this.w.mem.u32(C.providerTable + BigInt(i * 8));
+      lines.push(`  ${p.name.padEnd(16)} RegHandle=0x${h.toString(16).padStart(8, "0")} @ ${HEX(C.providerTable + BigInt(i * 8))}`);
+    });
+    lines.push(`wrapper: ntdll!EtwEventWrite @ ${HEX(C.etwEventWrite)}`);
+    return lines.join("\n");
+  }
+
+  cmdEtwPump(rest) {
+    if (!this.w.etw) return "etw-blind world not booted";
+    const n = Number.parseInt(rest[0] ?? "", 10);
+    if (!Number.isFinite(n) || n <= 0 || n > 64) {
+      return "usage: !etwpump <n>   (emit 1-64 modeled telemetry events)";
+    }
+    this.w.emitEvents(n);
+    return `emitted ${n} event(s) through ntdll!EtwEventWrite — see !etwtrace`;
+  }
+
   cmdHelp() {
     return [
       "Userland console (sogen reference backend)",
@@ -226,6 +277,14 @@ export class SogenConsole {
       "  hookscan                 diff .text against pristine snapshot",
       "  !damage <n>              world action: player takes damage",
       "  !inputtest               replay scripted input batch",
+      "  !providers               ETW providers + RegHandles (etw-blind world)",
+      "  !etwpump <n>             emit n telemetry events through EtwEventWrite",
+      "  !etwtrace                delivered vs suppressed telemetry trace",
+      "  !callview                call the object's live vtable slot (vtable-hook)",
+      "  !spreadtest              replay calcspread live bytes (hotpatch-hook)",
+      "  !drset/!drclear <addr>   arm/clear modeled DR0 execute bp (drx-hook)",
+      "  !frametest <n>           replay n frames against armed DRs",
+      "  !drxaudit                anticheat thread-context DR audit",
     ].join("\n");
   }
 }

@@ -13,7 +13,9 @@
  */
 
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
-import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs";
+import { DRIVER_OBJECT, IRP_MJ, IRP_MJ_NAMES, sendIrp } from "@kernelforge/ntsim/src/devices.mjs";
+import { OBJ_PROCEDURES, objProcVa } from "@kernelforge/ntsim/src/objtypes.mjs";
+import { MSR_NAMES, IDT_VECTOR_COUNT, GDT_ENTRY_COUNT } from "@kernelforge/ntsim/src/msr.mjs";
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile, loadDecompiler } from "@kernelforge/ghidra-decompiler";
@@ -984,6 +986,7 @@ export function createCommands(kernel) {
       w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
       w("  !pgstatus                 mini-PatchGuard state: sweeps, regions, verdict");
       w("  !eptlist / !eptview <va> / !eptverify   EPT shadow views (m22)");
+      w("  !vmexit                                  VM-exit MSR intercept log (m28)");
       w("  !openprocess <pid> [access]  modeled userland open (PPL enforced)");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
@@ -1002,6 +1005,15 @@ export function createCommands(kernel) {
       w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
       w("  !ssdt [module]            system service table + inline-hook scan");
       w("  !pseudocode <addr>        Ghidra pseudocode (fixture fallback without the wasm)");
+      w("  !dispatchscan             attest every DRIVER_OBJECT MajorFunction table (m24)");
+      w("  !ioctltest <drv> [ioctl]  send one IRP_MJ_DEVICE_CONTROL through the live slot");
+      w("  !objtype [name]           OBJECT_TYPE_INITIALIZER procedure attestation (m24)");
+      w("  !obopen <name> [access]   modeled ObOpenObjectByPointer via live OpenProcedure");
+      w("  !etwloggers               kernel logger contexts + EnableFlags attestation (m26)");
+      w("  !etwpump <n>              emit n modeled CKCL events (delivered vs suppressed)");
+      w("  !msr [name|addr] [value]  MSR register file read/write (m25)");
+      w("  !idt / !gdt               interrupt/global descriptor table attestation");
+      w("  !syscalltest              issue a syscall through the live LSTAR");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -1699,6 +1711,340 @@ export function createCommands(kernel) {
     },
     "!drivobj"(args, w) { commands["!drvobj"](args, w); }, // alias (both spellings seen in the wild)
 
+    // ------------------------------------------------- m24 dispatch-layer labs
+
+    "!dispatchscan"(args, w) {
+      const foreign = kernel.scanForeignDispatch?.() ?? [];
+      const recs = [...(kernel.driverObjects ?? new Map()).values()];
+      if (!recs.length) return w("!dispatchscan: no DRIVER_OBJECTs exist yet", "err");
+      w("MajorFunction attestation (baseline vs live, containment vs own image):", "hdr");
+      let convicted = 0;
+      for (const rec of recs) {
+        const rd = (off) => mem.u64(rec.va + off);
+        const start = rd(BigInt(DRIVER_OBJECT.DRIVER_START));
+        const size = rd(BigInt(DRIVER_OBJECT.DRIVER_SIZE));
+        w(`  ${rec.name}  ${fmtAddr(rec.va)}  image ${fmtAddr(start)}+0x${size.toString(16)}`,
+          "hdr");
+        for (const [code, name] of Object.entries(IRP_MJ_NAMES)) {
+          const slotVa = rec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) +
+            BigInt(Number(code) * 8);
+          const fn = rd(BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) + BigInt(Number(code) * 8));
+          const isDefault = fn === rec.defaultMajorThunk;
+          if (isDefault) continue; // lazy default: nothing to attest
+          const bad = foreign.find((f) => f.drvRec === rec && f.code === Number(code));
+          const baseQword = rec.majorBaseline
+            ? (() => { const o = Number(code) * 8;
+                let v = 0n;
+                for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(rec.majorBaseline[o + i]);
+                return v; })()
+            : null;
+          if (bad) {
+            convicted++;
+            w(`    [+0x${slotVa.toString(16).slice(-3)}] IRP_MJ_${name.padEnd(22)} ${fmtAddr(fn)}  FOREIGN -> ${bad.owner ?? "unbacked memory"}`, "err");
+            if (baseQword !== null && baseQword !== 0n) {
+              const le = [...new Uint8Array(new BigUint64Array([baseQword]).buffer)]
+                .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+              w(`        repair: eb ${fmtAddr(slotVa)} ${le}`, "dim");
+            }
+          } else {
+            w(`    [+0x${slotVa.toString(16).slice(-3)}] IRP_MJ_${name.padEnd(22)} ${fmtAddr(fn)}${baseQword !== null && baseQword !== fn ? "  (rewritten since baseline)" : ""}`);
+          }
+        }
+      }
+      if (!convicted) {
+        w("all wired MajorFunction slots resolve inside their owning image", "good");
+        if (kernel.onDispatchHealed && !kernel.dispatchHealedSeen) {
+          kernel.dispatchHealedSeen = true;
+          kernel.onDispatchHealed();
+        }
+        return;
+      }
+      w(`${convicted} foreign dispatch handler(s) — classic IRP-hook signature`, "warn");
+    },
+
+    async "!ioctltest"(args, w) {
+      if (!args[0]) {
+        return w("usage: !ioctltest <driver> [ioctl-hex]   e.g. !ioctltest kfser 0x222000", "err");
+      }
+      const target = unquote(args[0]);
+      let rec = null;
+      const va = parseAddr(target);
+      if (va !== null) rec = (kernel.driverObjects ?? new Map()).get(va);
+      if (!rec) {
+        rec = [...(kernel.driverObjects ?? new Map()).values()]
+          .find((r) => r.name.toLowerCase() === target.toLowerCase().replace(/\.sys$/, "")
+            || `${r.name}`.toLowerCase() === target.toLowerCase());
+      }
+      if (!rec) return w(`!ioctltest: no DRIVER_OBJECT for '${target}'`, "err");
+      const dev = rec.deviceList?.[0];
+      if (!dev) return w(`!ioctltest: ${rec.name} has no DEVICE_OBJECT to target`, "err");
+
+      let ioctl = 0x222000n;
+      if (args[1]) {
+        const p = parseAddr(args[1]);
+        if (p === null) return w(`!ioctltest: bad ioctl '${args[1]}'`, "err");
+        ioctl = p;
+      }
+      let r;
+      try {
+        r = await sendIrp(kernel, dev, {
+          major: IRP_MJ.DEVICE_CONTROL,
+          ioctl,
+          outputLen: 8,
+        });
+      } catch (e) {
+        return w(`!ioctltest: ${e.message}`, "err");
+      }
+      if (r.status !== "ok") {
+        return w(`!ioctltest: dispatch faulted (${r.status}${r.error ? `: ${r.error.message}` : ""})`, "err");
+      }
+      const handler = mem.u64(rec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) +
+        BigInt(IRP_MJ.DEVICE_CONTROL * 8));
+      w(`IOCTL 0x${ioctl.toString(16)} -> ${rec.name}!MajorFunction[DEVICE_CONTROL] @ ${fmtAddr(handler)}`,
+        "hdr");
+      w(`  IoStatus.Status      : 0x${r.ntstatus.toString(16).padStart(8, "0")} (${statusName(r.ntstatus)})`);
+      w(`  IoStatus.Information : 0x${r.information.toString(16)}`);
+      if (r.ntstatus === 0xdead0001n || r.ntstatus === 0xdead0003n) {
+        w("  completion does NOT match this driver's honest contract", "warn");
+        if (kernel.onIrpHijacked && !kernel.irpHijackSeen) {
+          kernel.irpHijackSeen = true;
+          kernel.onIrpHijacked(r.ntstatus);
+        }
+      }
+      if (rec.majorBaseline) {
+        const o = IRP_MJ.DEVICE_CONTROL * 8;
+        let baseQword = 0n;
+        for (let i = 7; i >= 0; i--) baseQword = (baseQword << 8n) | BigInt(rec.majorBaseline[o + i]);
+        if (handler === baseQword && r.ntstatus !== 0xdead0001n && r.ntstatus !== 0xdead0003n) {
+          w("  slot matches load-time baseline — honest completion", "good");
+          if (kernel.onIoctlHealed && !kernel.ioctlHealedSeen) {
+            kernel.ioctlHealedSeen = true;
+            kernel.onIoctlHealed();
+          }
+        }
+      }
+    },
+    "!objtype"(args, w) {
+      if (!kernel.objectTypes?.length) {
+        return w("!objtype: no OBJECT_TYPEs registered in this world", "err");
+      }
+      const want = args[0] ? args[0].toLowerCase() : null;
+      const hooks = kernel.scanObjectTypeHooks?.() ?? [];
+      w("OBJECT_TYPE_INITIALIZER attestation:", "hdr");
+      let convicted = 0;
+      for (const t of kernel.objectTypes) {
+        if (want && t.name.toLowerCase() !== want) continue;
+        w(`  ${t.name}  ${fmtAddr(t.va)}`, "hdr");
+        for (const p of OBJ_PROCEDURES) {
+          const procVa = objProcVa(t.va, p);
+          const cur = mem.u64(procVa);
+          const base = t.baseline.get(p) ?? 0n;
+          if (cur === 0n && base === 0n) continue; // unset and never set
+          const bad = hooks.find((h) => h.typeRec === t && h.procName === p);
+          if (bad) {
+            convicted++;
+            const ownerTxt = cur === base ? "" :
+              `  HOOKED -> ${fmtAddr(cur)}${bad.owner ? ` (${bad.owner})` : " (unbacked)"}`;
+            w(`    OpenProcedure-style ${p.padEnd(20)} ${cur === 0n ? "(none)" : fmtAddr(cur)}${ownerTxt}`, "err");
+            const le = [...new Uint8Array(new BigUint64Array([base]).buffer)]
+              .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+            w(`        repair: eb ${fmtAddr(procVa)} ${le}`, "dim");
+          } else {
+            w(`    ${p.padEnd(24)} ${cur === 0n ? "(none)" : fmtAddr(cur)}`);
+          }
+        }
+      }
+      if (!convicted && hooks.filter((h) => !want || h.typeRec.name.toLowerCase() === want).length === 0) {
+        w("all initializer procedures match their baselines", "good");
+        if (kernel.onObTypeHealed && !kernel.obTypeHealedSeen) {
+          kernel.obTypeHealedSeen = true;
+          kernel.onObTypeHealed();
+        }
+      }
+    },
+
+    "!obopen"(args, w) {
+      if (!args[0]) {
+        return w("usage: !obopen <object-name> [access-hex]   e.g. !obopen kftarget.exe 0x143a", "err");
+      }
+      const name = args[0];
+      const access = parseAddr(args[1] ?? "0x143a") ?? 0x143an;
+      const typeRec = (kernel.objectTypes ?? []).find((t) => t.name === "Process")
+        ?? (kernel.objectTypes ?? [])[0];
+      if (!typeRec) return w("!obopen: no Process object type modeled", "err");
+      const usName = kernel.allocPool(16);
+      const bufName = kernel.allocPool((name.length + 1) * 2);
+      mem.w16(usName, name.length * 2);
+      mem.w16(usName + 2n, (name.length + 1) * 2);
+      mem.w64(usName + 8n, bufName);
+      mem.writeUtf16(bufName, name);
+      const openProc = mem.u64(objProcVa(typeRec.va, "OpenProcedure"));
+      if (!openProc) {
+        w(`ObOpen by name "${name}" (access 0x${access.toString(16)}):`, "hdr");
+        w(`  ${typeRec.name}.OpenProcedure not registered — default grant path`, "dim");
+        w(`  -> handle granted (modeled)`);
+        return;
+      }
+      w(`ObOpen by name "${name}" (access 0x${access.toString(16)}):`, "hdr");
+      w(`  dispatching ${typeRec.name}.OpenProcedure @ ${fmtAddr(openProc)}`);
+      let r;
+      try {
+        r = kernel.cpu.callFunction(openProc, [usName, access]);
+      } catch (e) {
+        return w(`  OpenProcedure faulted: ${e.message}`, "err");
+      }
+      const status = BigInt.asUintN(32, BigInt(r.retval ?? 0n));
+      w(`  -> 0x${status.toString(16).padStart(8, "0")} (${statusName(status)})`,
+        status === 0n ? "good" : "warn");
+    },
+
+    // ------------------------------------------------------- m26 ETW labs
+
+    "!etwloggers"(args, w) {
+      if (!kernel.etwLoggers?.length) {
+        return w("!etwloggers: no kernel logger contexts modeled in this world", "err");
+      }
+      const tampered = kernel.scanEtwTamper?.() ?? [];
+      w("kernel logger contexts (_WMI_LOGGER_CONTEXT):", "hdr");
+      for (const l of kernel.etwLoggers) {
+        const flags = kernel.loggerFlags(l);
+        const id = mem.u32(l.va);
+        const clock = mem.u32(l.va + 0x14n);
+        const bad = flags === 0 ? "BLINDED" : (flags !== l.baseline.flags ? "TAMPERED" : null);
+        w(`  ${l.name}  ${fmtAddr(l.va)}  id=${id} EnableFlags=0x${flags.toString(16).padStart(8, "0")} GetCpuClock=${clock}` +
+          (bad ? `  [${bad}]` : ""), bad ? "err" : "");
+        if (!bad) continue;
+        const le = [...new Uint8Array(new Uint32Array([l.baseline.flags]).buffer)]
+          .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+        w(`      repair: eb ${fmtAddr(l.va + 0x10n)} ${le}`, "dim");
+      }
+      if (!tampered.length) {
+        w("all logger contexts match their boot baselines", "good");
+        if (kernel.onEtwHealed && !kernel.etwHealedSeen) {
+          kernel.etwHealedSeen = true;
+          kernel.onEtwHealed();
+        }
+      }
+    },
+
+    async "!etwpump"(args, w) {
+      const n = Number.parseInt(args[0] ?? "", 10);
+      if (!Number.isFinite(n) || n <= 0 || n > 64) {
+        return w("usage: !etwpump <n>   (emit 1-64 modeled kernel events)", "err");
+      }
+      if (!kernel.pumpKernelEvents) {
+        return w("!etwpump: no ETW model in this world", "err");
+      }
+      const r = kernel.pumpKernelEvents(n);
+      w(`CKCL emission of ${n} event(s):`, "hdr");
+      w(`  delivered : ${r.delivered}`);
+      w(`  suppressed: ${r.suppressed}`, r.suppressed > 0 ? "warn" : "");
+      if (r.suppressed > 0) {
+        w("  events died silently — providers still report success", "warn");
+        if (kernel.onEtwBlind && !kernel.etwBlindSeen) {
+          kernel.etwBlindSeen = true;
+          kernel.onEtwBlind(r.suppressed);
+        }
+      } else if (kernel.etwBlindSeen && kernel.onEtwHealed && !kernel.etwPumpHealedSeen) {
+        kernel.etwPumpHealedSeen = true;
+        kernel.onEtwHealed();
+      }
+    },
+
+    // ------------------------------------------------- m25 architectural labs
+
+    "!msr"(args, w) {
+      if (!kernel.msrFile) return w("!msr: no MSR model in this world", "err");
+      if (!args[0]) {
+        w("MSR register file:", "hdr");
+        for (const [addr, base] of kernel.msrBaseline) {
+          const nm = MSR_NAMES["0x" + addr.toString(16)] ?? `MSR_0x${addr.toString(16)}`;
+          const cur = kernel.rdmsr(addr);
+          const drifted = cur !== base;
+          w(`  ${nm.padEnd(20)} 0x${addr.toString(16)}  live=0x${cur.toString(16).padStart(16, "0")}` +
+            (drifted ? `  DRIFTED (baseline 0x${base.toString(16)})` : ""), drifted ? "err" : "");
+        }
+        w("write: !msr lstar <addr>   read: !msr lstar", "dim");
+        return;
+      }
+      const key = args[0].toLowerCase()
+        .replace(/^ia32_/, "")
+        .replace(/^msr_/, "");
+      const ADDR = key === "lstar" ? 0xC0000082n
+        : key === "sysentereip" ? 0x176n
+        : key === "efer" ? 0xC0000081n
+        : parseAddr(key.replace(/^0x/, ""));
+      if (ADDR === null || ADDR === undefined) return w(`!msr: unknown msr '${args[0]}'`, "err");
+      if (!args[1]) {
+        const v = kernel.rdmsr(ADDR);
+        const base = kernel.msrBaseline.get(BigInt.asUintN(64, ADDR));
+        w(`msr 0x${ADDR.toString(16)} = 0x${v.toString(16).padStart(16, "0")}` +
+          (base !== undefined && base !== v ? `  [DRIFTED from 0x${base.toString(16)}]` : ""),
+          base !== undefined && base !== v ? "err" : "");
+        return;
+      }
+      const val = parseAddr(args[1]);
+      if (val === null) return w(`!msr: bad value '${args[1]}'`, "err");
+      try {
+        kernel.wrmsr(ADDR, val);
+        w(`wrmsr 0x${ADDR.toString(16)} <- 0x${val.toString(16)}`, "warn");
+        if (!kernel.hvciMode && kernel.wrmsrSeenHook === undefined) kernel.wrmsrSeenHook = true;
+      } catch (e) {
+        w(`!msr: ${e.message}`, "err");
+      }
+    },
+
+    "!idt"(args, w) {
+      if (!kernel.archBases) return w("!idt: no IDT model in this world", "err");
+      const { idtBase, idtBaseline } = kernel.archBases;
+      const want = args[0] ? Number.parseInt(args[0], 10) : null;
+      w(`IDT @ ${fmtAddr(idtBase)} (${IDT_VECTOR_COUNT} modeled vectors):`, "hdr");
+      for (let i = 0; i < IDT_VECTOR_COUNT; i++) {
+        if (want !== null && !Number.isNaN(want) && i !== want) continue;
+        const cur = mem.u64(idtBase + BigInt(i * 8));
+        const drift = cur !== idtBaseline[i];
+        if (want === null && !drift && i % 8 !== 0) continue; // compact view
+        w(`  [${i.toString().padStart(2, "0")}] ${fmtAddr(cur)}` +
+          (drift ? "  REWRITTEN" : ""), drift ? "err" : "dim");
+      }
+      const hits = (kernel.scanArchTamper?.() ?? []).filter((h) => h.kind === "idt");
+      w(hits.length ? `${hits.length} rewritten vector(s)` : "all vectors match baseline",
+        hits.length ? "warn" : "good");
+    },
+
+    "!gdt"(args, w) {
+      if (!kernel.archBases) return w("!gdt: no GDT model in this world", "err");
+      const { gdtBase, gdtBaseline } = kernel.archBases;
+      w(`GDT @ ${fmtAddr(gdtBase)}:`, "hdr");
+      for (let i = 0; i < GDT_ENTRY_COUNT; i++) {
+        const cur = mem.u64(gdtBase + BigInt(i * 8));
+        const drift = cur !== gdtBaseline[i];
+        w(`  [${i}] 0x${cur.toString(16).padStart(16, "0")}` +
+          (drift ? "  REWRITTEN" : ""), drift ? "err" : "dim");
+      }
+    },
+
+    "!syscalltest"(args, w) {
+      const num = parseAddr(args[0] ?? "0x29") ?? 0x29n;
+      if (!kernel.probeSyscall) return w("!syscalltest: no syscall model in this world", "err");
+      const r = kernel.probeSyscall(num);
+      const target = kernel.rdmsr(0xC0000082n);
+      w(`syscall 0x${num.toString(16)} via IA32_LSTAR -> 0x${target.toString(16)}:`, "hdr");
+      if (r.honest) {
+        w("  KiSystemCallHandler dispatch — honest completion", "good");
+        if (kernel.onArchHealed && !kernel.archHealedSeen) {
+          kernel.archHealedSeen = true;
+          kernel.onArchHealed();
+        }
+        return;
+      }
+      w(`  status 0x${r.status.toString(16).padStart(8, "0")} — FOREIGN handler executed`, "err");
+      if (kernel.onArchHijack && !kernel.archHijackSeen) {
+        kernel.archHijackSeen = true;
+        kernel.onArchHijack(r.status);
+      }
+    },
+
     db(args, w) {
       const { exprText, lenTok } = splitAddrLen(args, "128");
       if (!exprText) return w("usage: db <addr> [n|Ln]", "err");
@@ -1899,6 +2245,16 @@ export function createCommands(kernel) {
         const wpClears = traces.filter((t) => ((t.old >> 16n) & 1n) === 1n && ((t.new >> 16n) & 1n) === 0n);
         if (wpClears.length) w(`  CR0.WP was cleared ${wpClears.length} time(s) this boot — write-protect tampering`, "warn");
       }
+      if (kernel.msrFile) {
+        const arch = kernel.scanArchTamper();
+        for (const h of arch.slice(0, 4)) {
+          const label = h.kind === "msr"
+            ? `${h.name} DRIFT baseline=0x${h.baseline.toString(16)} live=0x${h.current.toString(16)}`
+            : `${h.name} rewritten -> 0x${h.current.toString(16)}${h.foreign ? " (FOREIGN)" : ""}`;
+          w(`  [arch] ${label}`, "err");
+        }
+        if (!arch.length) w("  MSR/IDT/GDT: all values match boot baselines", "good");
+      }
       const diffs = kernel.scanProtectedRanges?.() ?? [];
       if (!diffs.length) w("  protected ranges: clean");
       for (const d of diffs) {
@@ -1985,6 +2341,22 @@ export function createCommands(kernel) {
         w("A hypervisor is splitting fetches from reads below the kernel.");
         w("secret=kf-ept-detected");
       }
+    },
+
+    "!vmexit"(args, w) {
+      const log = kernel.vmExitLog ?? [];
+      if (!log.length) return w("!vmexit: no VM-exit traps recorded", "err");
+      w(`VM-exit log (${log.length} traps):`, "hdr");
+      for (const [i, e] of log.entries()) {
+        const msrName = MSR_NAMES["0x" + e.msr.toString(16)] ?? `MSR_0x${e.msr.toString(16)}`;
+        if (e.kind === "wrmsr") {
+          w(`  [${i}] WRMSR ${msrName} @ tick ${e.tick}: guest 0x${e.guestValue.toString(16)} -> host 0x${e.hostValue.toString(16)}`);
+        } else {
+          w(`  [${i}] RDMSR ${msrName} @ tick ${e.tick}: host 0x${e.hostValue.toString(16)} -> guest 0x${e.guestValue.toString(16)}`);
+        }
+      }
+      w("The hypervisor owns these MSRs below the kernel.");
+      w("secret=kf-vmexit-detected");
     },
 
     "!openprocess"(args, w) {

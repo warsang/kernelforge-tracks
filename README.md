@@ -340,6 +340,43 @@ floor), EPT-shadow hooks that split instruction fetches from data reads,
 and the detection stack — dual-view hashing (`!eptview`/`!eptverify`),
 A/D-bit timing counters, CPUID quirks and RDTSC drift.
 
+**Module 23 — DKOM Field Labs** (`dkom-ppl`, `dkom-pid`)
+Six DKOM edits that matter: strip lsass's PPL byte (`!openprocess`
+proves the handle grant), spoof kftarget's Cid to 4 and watch which
+records still tell the truth; field guide covers handle-pointer swaps,
+SMEP toggles, CR0.WP page work and the Van1338 notify race.
+
+**Module 24 — Dispatch-Layer Hooks: IRP & Object Types** (`dispatch-hook`)
+The hooks PatchGuard *doesn't* protect: kfsnoop.sys rewrote kfser.sys's
+`MajorFunction[IRP_MJ_DEVICE_CONTROL]` and the Process type's
+`OpenProcedure`. Attest with `!dispatchscan`/`!objtype`, prove behavior
+with `!ioctltest`/`!obopen`, repair with `eb`, then compile both an
+attack driver (your own IRP redirect) and KF-Sentinel v5 — the
+containment/baseline sensor EDRs run for exactly these tables.
+
+**Module 25 — Architectural Hooks: MSR / IDT / GDT** (`arch-hooks`, `arch-hardened`)
+Hooks below every table: redirect IA32_LSTAR and own the syscall
+boundary — then meet the two regimes that kill it on modern x64
+(mini-PatchGuard sweeps and HVCI write refusal), and build the
+rdmsr attestation sensor (KF-Sentinel v6).
+
+**Module 26 — ETW Blindfolding & Telemetry Tampering** (`etw-blind`, `etw-kernel`)
+Kill telemetry at both layers: patch ntdll!EtwEventWrite in the
+emulated game process, zero a CKCL logger context's EnableFlags from
+ring 0 — then build the sensors that catch both. PatchGuard watches
+none of it.
+
+**Module 27 — Userland Hooking Deep Cuts: VTable / Hot-Patch / DRx** (`vtable-hook`, `hotpatch-hook`, `drx-hook`)
+Three techniques live anticheats hunt hardest: vtable pointer swaps,
+MS hot-patch sled installs, and debug-register hooks — each with its
+behavioral proof, each with the audit that convicts it.
+
+**Module 28 — Hypervisor Escape Hatch: VM-Exit MSR Interception** (`msr-exit`)
+The only way to hook syscall flow without PatchGuard: own layer two,
+intercept RDMSR/WRMSR via VM-exit, fake success. The guest never knows
+the hypervisor owns the MSR. Detection via timing divergence and
+consistency checks.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +

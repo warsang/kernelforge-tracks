@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-three modules / thirty-four lessons / one hundred flags", () => {
-  assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 23);
+test("catalog v6 has twenty-eight modules / forty-four lessons / one-hundred-thirty-seven flags", () => {
+  assert.equal(catalog.version, 6);
+  assert.equal(catalog.modules.length, 28);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 34);
+  assert.equal(lessons.length, 44);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 100);
+  assert.equal(flags.length, 137);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -148,8 +148,50 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m23.l1.f3": "kf-ppl-off",
     "m23.l1.f4": "2",
     "m23.l1.f5": "apcstate",
-    "m23.l1.f6": "1",
-    "m23.l1.f7": "SMEP: ret2usr payload executed",
+    // m24 dispatch-layer hooks (IRP MajorFunction + object types)
+    "m24.l1.f1": "IRP_MJ_DEVICE_CONTROL",
+    "m24.l1.f2": "0xfffff8055a720800",
+    "m24.l1.f3": "kf-dispatch-clean",
+    "m24.l1.f4": "kf-obtype-clean",
+    "m24.l1.f5": "0xdead0003",
+    "m24.l1.f6": "kf-irp-hijack-ok",
+    "m24.l2.f1": "kfsnoop.sys",
+    "m24.l2.f2": "0x70",
+    "m24.l2.f3": "kf-sentinel-v5-ok",
+    // m25 architectural hooks: MSR / IDT / GDT
+    "m25.l1.f1": "0xc0000082",
+    "m25.l1.f2": "0xdead0004",
+    "m25.l1.f3": "kf-lstar-hijack-ok",
+    "m25.l1.f4": "109",
+    "m25.l1.f5": "hvci",
+    "m25.l2.f1": "0xfffff8055a760800",
+    "m25.l2.f2": "kfarch.sys",
+    "m25.l2.f3": "kf-sentinel-v6-ok",
+    // m26 ETW blindfolding (userland + kernel split)
+    "m26.l1.f1": "0x7749e2a0",
+    "m26.l1.f2": "8",
+    "m26.l1.f3": "kf-etw-restored",
+    "m26.l2.f1": "0x10",
+    "m26.l2.f2": "blinded",
+    "m26.l2.f3": "kf-etw-blinded",
+    "m26.l3.f1": "0xff",
+    "m26.l3.f2": "ckcl",
+    "m26.l3.f3": "kf-sentinel-v7-ok",
+    // m27 userland deep cuts: vtable / hot-patch / DRx
+    "m27.l1.f1": "0x02100800",
+    "m27.l1.f2": "0x0046f020",
+    "m27.l1.f3": "kf-vtable-restored",
+    "m27.l1.f4": "0x00452060",
+    "m27.l1.f5": "5",
+    "m27.l1.f6": "kf-hotpatch-restored",
+    "m27.l1.f7": "16",
+    "m27.l1.f8": "flagged",
+    "m27.l1.f9": "kf-drx-clean",
+    "m27.l2.f1": "vmt",
+    "m27.l2.f2": "mov edi,edi",
+    // m28 VM-exit MSR interception
+    "m28.l1.f1": "0xc0000082",
+    "m28.l1.f2": "kf-vmexit-detected",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

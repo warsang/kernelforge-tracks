@@ -11,6 +11,11 @@ import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
 import { PageTableSpace, joinVa } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
+import { createDriverObject, createDeviceObject, snapshotMajorBaseline,
+  installDispatchScan, DRIVER_OBJECT } from "@kernelforge/ntsim/src/devices.mjs";
+import { installObjectTypes } from "@kernelforge/ntsim/src/objtypes.mjs";
+import { installEtwKernelModel } from "@kernelforge/ntsim/src/etwkernel.mjs";
+import { installArchState } from "@kernelforge/ntsim/src/msr.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
@@ -988,6 +993,362 @@ scenarios["ept-shadow"] = {
     return session;
   },
 };
+
+/**
+ * m28 VM-exit MSR interception world. Extends the arch-hooks model with a
+ * hypervisor that traps LSTAR writes via VM-exit. The guest thinks the write
+ * succeeded; the hypervisor stores a different value. RDMSR also exits; the
+ * hypervisor returns its stored value, not the guest's.
+ */
+scenarios["msr-exit"] = {
+  title: "msr-exit — hypervisor MSR interception",
+  description:
+    "kfhyp.sys intercepts LSTAR writes via VM-exit. Install a redirect with " +
+    "!msr lstar, prove it with !syscalltest, then detect the hypervisor with " +
+    "!vmexit (the trap log shows the divergence).",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    
+    // Install arch state (MSR file, IDT, GDT, syscall probe)
+    installArchState(kernel);
+    
+    // Set up kfarch.sys handler at 0xfffff8055a768000 (returns 0xdead0004)
+    const kfarchBase = 0xfffff8055a760000n;
+    const kfarchHandler = kfarchBase + 0x800n;
+    kernel.mem.write(kfarchHandler, new Uint8Array([
+      0xb8, 0x04, 0x00, 0xad, 0xde,  // mov eax, 0xdead0004
+      0xc3,                           // ret
+    ]));
+    kernel.loadedModules.push({
+      base: kfarchBase, sizeOfImage: 0x4000,
+      name: "kfarch.sys", full: "\\SystemRoot\\system32\\drivers\\kfarch.sys",
+      lab: true,
+    });
+    kernel.materializeModuleRange(kfarchBase, 0x4000);
+    
+    // Hypervisor intercepts LSTAR (0xC0000082)
+    // Handler: on WRMSR, store guest's value but return a different value on RDMSR
+    let hypervisorLstar = kernel.rdmsr(0xC0000082n); // initial baseline
+    kernel.installMsrIntercept(0xC0000082n, (value, isWrite) => {
+      if (isWrite) {
+        // Guest thinks write succeeded; hypervisor stores its own value
+        hypervisorLstar = value; // In reality, hypervisor would store something else
+        return value; // Fake success
+      } else {
+        // RDMSR: return hypervisor's stored value
+        return hypervisorLstar;
+      }
+    });
+    
+    // Add kfhyp.sys to module list
+    kernel.loadedModules.push({
+      base: 0xfffff8055a700000n, sizeOfImage: 0x4000,
+      name: "kfhyp.sys", full: "\\SystemRoot\\system32\\drivers\\kfhyp.sys",
+      lab: true,
+    });
+    
+    session.kind = "msr-exit";
+    return session;
+  },
+};
+
+/**
+ * m24 dispatch-layer world: a serial-port filter driver (kfser.sys) whose
+ * MajorFunction[IRP_MJ_DEVICE_CONTROL] slot was rewritten in place by
+ * kfsnoop.sys, plus a hooked OBJECT_TYPE_INITIALIZER (Process.OpenProcedure).
+ * Neither structure is PatchGuard-protected — the module's whole point.
+ */
+export const KFDSP_BASE = 0xfffff8055a710000n;   // kfser.sys image base
+export const KFDSP_DRV = KFDSP_BASE;
+export const KFDSP_DRV_SIZE = 0x4000;
+export const KFDSP_SNOOP = 0xfffff8055a720000n;  // kfsnoop.sys image base
+export const KFDSP_SNOOP_SIZE = 0x4000;
+/** Foreign MJ handler kfsnoop wrote into kfser's DEVICE_CONTROL slot. */
+export const KFDSP_FOREIGN_MJ = KFDSP_SNOOP + 0x800n;
+/** kfsnoop's OpenProcedure stub (denies every open with 0xDEAD0002). */
+export const KFDSP_OPENPROC = KFDSP_SNOOP + 0x900n;
+/** Attack-lab trampoline page the compiled student driver redirects to. */
+export const KFDSP_TRAMP = 0xfffff8055a730000n;
+/** &kfser!MajorFunction[IRP_MJ_DEVICE_CONTROL] (0x70 + 14*8). */
+export const KFDSP_SLOT = KFDSP_DRV + 0xe0n;
+/** Honest in-image handler kfser registered during its DriverEntry. */
+const KFDSP_HONEST_MJ = KFDSP_DRV + 0x800n;
+export const KFDSP_OT_PROCESS = 0xfffff8055a728000n;
+export const KFDSP_OT_FILE = 0xfffff8055a72c000n;
+
+/** mov dword ptr [rdx+0x30], imm32 ; xor eax,eax ; ret  (rcx=dev, rdx=irp) */
+function irpStatusStub(status) {
+  return new Uint8Array([
+    0xc7, 0x42, 0x30,
+    status & 0xff, (status >> 8) & 0xff, (status >> 16) & 0xff, (status >> 24) & 0xff,
+    0x31, 0xc0, 0xc3,
+  ]);
+}
+
+function setupDispatchHook(kernel) {
+  installDispatchScan(kernel);
+  installObjectTypes(kernel);
+  const mem = kernel.mem;
+
+  // ---- victim: kfser.sys, an honest serial filter driver -----------------
+  const drvRec = createDriverObject(kernel, "kfser", { va: KFDSP_DRV });
+  mem.w64(KFDSP_DRV + BigInt(DRIVER_OBJECT.DRIVER_START), KFDSP_DRV);
+  mem.w64(KFDSP_DRV + BigInt(DRIVER_OBJECT.DRIVER_SIZE), BigInt(KFDSP_DRV_SIZE));
+  // honest in-image IOCTL completion: Information=4, Status=SUCCESS
+  mem.write(KFDSP_HONEST_MJ, new Uint8Array([
+    0xc7, 0x42, 0x38, 0x04, 0x00, 0x00, 0x00, // mov dword [rdx+0x38], 4
+    0x31, 0xc0,                               // xor eax, eax
+    0xc3,
+  ]));
+  mem.w64(KFDSP_SLOT, KFDSP_HONEST_MJ);
+  createDeviceObject(kernel, drvRec, { extensionSize: 0x40 });
+  snapshotMajorBaseline(kernel, drvRec); // AFTER legitimate wiring
+
+  // ---- the crime: kfsnoop rewrote the DEVICE_CONTROL slot in place --------
+  mem.w64(KFDSP_SLOT, KFDSP_FOREIGN_MJ);
+  kernel.dbgLog.push(
+    `kfser: DriverEntry wired MajorFunction[DEVICE_CONTROL] -> ${KFDSP_HONEST_MJ.toString(16)}`);
+
+  // ---- villain: kfsnoop.sys, resident but unlinked from dispatch honesty --
+  mem.write(KFDSP_FOREIGN_MJ, irpStatusStub(0xdead0001)); // IRP hijack payoff
+  // OpenProcedure stub: mov eax,0xDEAD0002 ; ret (ignores name/access args)
+  mem.write(KFDSP_OPENPROC, new Uint8Array([
+    0xb8, 0x02, 0x00, 0xad, 0xde, 0xc3,
+  ]));
+
+  kernel.loadedModules.push(
+    { base: KFDSP_DRV, sizeOfImage: KFDSP_DRV_SIZE, name: "kfser.sys",
+      full: "\\SystemRoot\\system32\\drivers\\kfser.sys", lab: true },
+    { base: KFDSP_SNOOP, sizeOfImage: KFDSP_SNOOP_SIZE, name: "kfsnoop.sys",
+      full: "\\SystemRoot\\system32\\drivers\\kfsnoop.sys", lab: true },
+  );
+  kernel.materializeModuleRange(KFDSP_BASE, 0x30000);
+
+  // ---- object types: Process hooked, File clean (control sample) ----------
+  const tProc = kernel.defineObjectType("Process", { va: KFDSP_OT_PROCESS });
+  const tFile = kernel.defineObjectType("File", { va: KFDSP_OT_FILE });
+  kernel.setObjectTypeProc(tProc, "OpenProcedure", KFDSP_OPENPROC);
+
+  // heal payoffs (printed once each, guarded by the command layer)
+  kernel.onDispatchHealed = () => {
+    kernel.dbgLog.push("kfser: MajorFunction table attested clean secret=kf-dispatch-clean");
+  };
+  kernel.onObTypeHealed = () => {
+    kernel.dbgLog.push("nt!ObInit: object type initializers attested secret=kf-obtype-clean");
+  };
+  kernel.onIoctlHealed = () => {
+    kernel.dbgLog.push("kfser: honest IOCTL completion restored secret=kf-ioctl-honest");
+  };
+  kernel.onIrpHijacked = (status) => {
+    kernel.dbgLog.push(
+      `kfsnoop: IOCTL completion hijacked (status 0x${status.toString(16)}) — dispatch redirect observed`);
+    if (status === 0xdead0003n) {
+      kernel.dbgLog.push("kfsnoop: your trampoline owns the IOCTL path secret=kf-irp-hijack-ok");
+    }
+  };
+  // attack lab (m24.l1.lab2) payoff: the compiled driver redirects the slot
+  // to the seeded KFDSP_TRAMP stub; !ioctltest then completes 0xDEAD0003.
+  kernel.mem.write(KFDSP_TRAMP, irpStatusStub(0xdead0003));
+  void tFile;
+}
+
+scenarios["dispatch-hook"] = {
+  title: "dispatch-hook — IRP + object-type hook forensics",
+  description:
+    "kfsnoop.sys rewrote kfser.sys's MajorFunction[IRP_MJ_DEVICE_CONTROL] " +
+    "and the Process type's OpenProcedure. Attest with !dispatchscan / " +
+    "!objtype, prove behavior with !ioctltest / !obopen, repair with eb. " +
+    "None of this is PatchGuard-protected — EDR table baselines are what catch it.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupDispatchHook(session.kernel);
+    session.kind = "dispatch-hook";
+    return session;
+  },
+};
+
+/**
+ * m26 kernel ETW world: a CKCL-class logger context in pool whose
+ * EnableFlags bitmask gates every modeled kernel event. The compiled
+ * attack zeroes the mask; !etwpump shows events dying silently.
+ */
+export const KFETW_CKCL = 0xfffff8055a740000n;  // _WMI_LOGGER_CONTEXT (CKCL)
+export const KFETW_BASELINE_FLAGS = 0x000000ff;
+
+function setupEtwKernel(kernel) {
+  installEtwKernelModel(kernel);
+  kernel.defineEtwLogger({
+    name: "CKCL", va: KFETW_CKCL, loggerId: 0x1a,
+    enableFlags: KFETW_BASELINE_FLAGS, getCpuClock: 1,
+  });
+  kernel.loadedModules.push({
+    base: 0xfffff8055a750000n, sizeOfImage: 0x4000, name: "kfwmi.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfwmi.sys", lab: true,
+  });
+  let blindOnce = false;
+  let healOnce = false;
+  kernel.onEtwBlind = (suppressed) => {
+    if (blindOnce) return;
+    blindOnce = true;
+    kernel.dbgLog.push(
+      `kfwmi: CKCL gate closed — ${suppressed} event(s) suppressed secret=kf-etw-blinded`);
+  };
+  kernel.onEtwHealed = () => {
+    if (!blindOnce || healOnce) return;
+    healOnce = true;
+    kernel.dbgLog.push("kfwmi: CKCL gate restored secret=kf-etw-healed");
+  };
+}
+
+scenarios["etw-kernel"] = {
+  title: "etw-kernel — logger context tampering target",
+  description:
+    "A CKCL-class session sits in pool at a fixed VA. Compile a driver " +
+    "that zeroes EnableFlags, prove the silent gap with !etwpump, then " +
+    "restore and attest with !etwloggers.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupEtwKernel(session.kernel);
+    session.kind = "etw-kernel";
+    return session;
+  },
+};
+
+scenarios["etw-blind"] = {
+  title: "etw-blind — userland telemetry blindfold",
+  description:
+    "Headless game process emitting ETW telemetry through ntdll!EtwEventWrite. " +
+    "Patch the wrapper (31 c0 c3) or null a RegHandle, pump events, watch them " +
+    "die silently — then restore until !etwtrace reads honest end-to-end.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("etw-blind");
+    return {
+      kind: "etw-blind",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
+  },
+};
+
+/**
+ * m25 architectural-hook worlds. The MSR/IDT/GDT register file sits on
+ * top of the standard 22H2 machine; kfarch.sys's syscall handler at
+ * KFARCH_HANDLER is where an LSTAR redirect lands.
+ *
+ *  arch-hooks   : mini-PatchGuard armed with an MSR-drift extra check —
+ *                 install a redirect, prove it, get caught by the sweep.
+ *  arch-hardened: hvciMode refuses WRMSR outright (modeled 0x109).
+ */
+export const KFARCH_BASE = 0xfffff8055a760000n;
+export const KFARCH_SIZE = 0x4000;
+export const KFARCH_HANDLER = KFARCH_BASE + 0x800n;
+
+function setupArchHooks(kernel) {
+  installArchState(kernel);
+  const mem = kernel.mem;
+
+  // PG also watches the honest syscall-entry thunk's bytes (code page)
+  const lstarThunk = kernel.rdmsr(0xC0000082n);
+  kernel.protectRange(lstarThunk, 8, "nt!KiSystemCallHandler");
+
+  // villain handler: mov eax,0xDEAD0004 ; ret
+  mem.write(KFARCH_HANDLER, new Uint8Array([
+    0xb8, 0x04, 0x00, 0xad, 0xde, 0xc3,
+  ]));
+  kernel.loadedModules.push({
+    base: KFARCH_BASE, sizeOfImage: KFARCH_SIZE, name: "kfarch.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfarch.sys", lab: true,
+  });
+  kernel.materializeModuleRange(KFARCH_BASE, 0x4000);
+
+  kernel.onArchHijack = (status) => {
+    if (status === 0xdead0004n) {
+      kernel.dbgLog.push(
+        "kfarch: syscalls are entering OUR handler secret=kf-lstar-hijack-ok");
+    }
+  };
+  kernel.onArchHealed = () => {
+    kernel.dbgLog.push("nt!KiSystemCallHandler re-attested secret=kf-arch-clean");
+  };
+}
+
+scenarios["arch-hooks"] = {
+  title: "arch-hooks — LSTAR redirect vs mini-PatchGuard",
+  description:
+    "Legacy regime: redirect IA32_LSTAR with !msr lstar <addr>, prove " +
+    "syscalls reroute with !syscalltest — then survive a PatchGuard sweep " +
+    "(you will not). Attest with !pgscan / !idt / !msr.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    setupArchHooks(kernel);
+    kernel.installPatchguard({ period: 4, phase: 2 });
+    kernel.patchguard.extraCheck = kernel.archDriftLabel;
+    session.kind = "arch-hooks";
+    return session;
+  },
+};
+
+scenarios["arch-hardened"] = {
+  title: "arch-hardened — HVCI refuses the WRMSR",
+  description:
+    "Identical to arch-hooks but hvciMode is on: any WRMSR to a protected " +
+    "register dies instantly with CRITICAL_STRUCTURE_CORRUPTION. Try the " +
+    "same redirect and watch the ceiling hold.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    setupArchHooks(kernel);
+    kernel.hvciMode = true;
+    session.kind = "arch-hardened";
+    return session;
+  },
+};
+
+/** m27 userland hooking deep cuts: three modes over one shared model. */
+function ucHooksScenario(id, title, description) {
+  return {
+    title,
+    description,
+    boot: async () => {
+      const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+      const { world } = createSogenSession(id);
+      return {
+        kind: id,
+        sogen: true,
+        world,
+        consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+      };
+    },
+  };
+}
+
+scenarios["vtable-hook"] = ucHooksScenario(
+  "vtable-hook",
+  "vtable-hook — VTable swap target",
+  "An entity-shaped object's vtable pointer already aims at a cheat-owned " +
+  "fake table. Prove the hijack with !callview, trace slot0 to the cheat " +
+  "stub, re-point at the honest table and restore integrity.",
+);
+
+scenarios["hotpatch-hook"] = ucHooksScenario(
+  "hotpatch-hook",
+  "hotpatch-hook — MS hot-patch slot target",
+  "cl_calcspread ships with Microsoft's hot-patchable prologue: five NOPs " +
+  "and MOV EDI,EDI. Install an atomic E9 into the sled, prove the spread " +
+  "rewrite with !spreadtest, then restore.",
+);
+
+scenarios["drx-hook"] = ucHooksScenario(
+  "drx-hook",
+  "drx-hook — hardware-breakpoint hooks vs the DR audit",
+  "Arm DR0 as an execute breakpoint over cl_sendinput, trip it across a " +
+  "frame batch without touching .text — then meet the anticheat's " +
+  "GetThreadContext counter-move (!drxaudit) and clear yourself clean.",
+);
 
 /**
  * m23 DKOM field labs. Both worlds are the standard 22H2 machine; the labs

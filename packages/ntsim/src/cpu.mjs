@@ -678,7 +678,8 @@ export class JsInterpreter {
 
     // c0/c1/d0/d1/d2/d3 shift group
     if ((p >= 0xc0 && p <= 0xc1) || (p >= 0xd0 && p <= 0xd3)) {
-      const names = ["rol", "ror", "shl", "shr", "sal", "sar", "shl", "sar"];
+      // x86 GROUP2 /digits: 0=ROL 1=ROR 2=RCL 3=RCR 4=SHL 5=SHR 6=SAL 7=SAR
+      const names = ["rol", "ror", "rcl", "rcr", "shl", "shr", "sal", "sar"];
       const size = (p & 1) === 0 ? 1 : opsize;
       const { reg, rm } = this.decodeModrm(size);
       // count source: imm8 (c0/c1), literal 1 (d0/d1), or %cl masked to 5 bits
@@ -686,7 +687,7 @@ export class JsInterpreter {
       if (p === 0xc0 || p === 0xc1) count = Number(this.fetch8()) & 0x1f;
       else if (p >= 0xd2) count = Number(this.readReg(1, 1)) & 0x1f;
       else count = 1;
-      const a = this.loadOp(rm, size);
+      const a = BigInt.asUintN(Number(size * 8), this.loadOp(rm, size));
       const bits = BigInt(size * 8);
       const mask = (1n << bits) - 1n;
       const signBit = 1n << (bits - 1n);
@@ -698,6 +699,27 @@ export class JsInterpreter {
           const sv = BigInt.asIntN(Number(bits), a) >> BigInt(count);
           r = BigInt.asUintN(Number(bits), sv);
           this.cf = count>0 && ((a >> BigInt(count-1)) & 1n)===1n;
+          break;
+        }
+        case "rcl": {
+          // rotate through carry left, one bit at a time (count <= 31)
+          let v = a; let cf = this.cf ? 1n : 0n;
+          for (let i = 0; i < count; i++) {
+            const msb = (v >> (bits - 1n)) & 1n;
+            v = ((v << 1n) & mask) | cf;
+            cf = msb;
+          }
+          r = v; this.cf = cf === 1n;
+          break;
+        }
+        case "rcr": {
+          let v = a; let cf = this.cf ? 1n : 0n;
+          for (let i = 0; i < count; i++) {
+            const lsb = v & 1n;
+            v = (v >> 1n) | (cf << (bits - 1n));
+            cf = lsb;
+          }
+          r = v; this.cf = cf === 1n;
           break;
         }
         default: r = a;

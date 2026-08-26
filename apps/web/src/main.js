@@ -373,6 +373,53 @@ COMPILE_TASKS["attack-hijack"] = {
     ["patch in place", /patched in place - retire the queue/],
   ]),
 };
+
+// --- m24 dispatch-layer tasks ----------------------------------------------
+COMPILE_TASKS["attack-irp"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["victim slot observed", /ATTACK-IRP: victim slot held fffff8055a[0-9a-f]{6}/],
+    ["slot rewritten to trampoline", /MajorFunction\[IRP_MJ_DEVICE_CONTROL\] now -> fffff8055a730000/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v5"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["table walk", /SENTINEL-V5: attesting DRIVER_OBJECT kfser @ fffff8055a710000/],
+    ["foreign dispatch convicted", /FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL -> fffff8055a720800/],
+    ["OpenProcedure convicted", /Process\.OpenProcedure HOOKED -> fffff8055a720900/],
+    ["completion secret", /secret=kf-sentinel-v5-ok/],
+  ]),
+};
+
+// --- m26 ETW tasks -----------------------------------------------------------
+COMPILE_TASKS["attack-etwtamper"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["baseline observed", /ATTACK-ETW: CKCL EnableFlags was 0x000000ff/],
+    ["gate closed", /CKCL EnableFlags now 0x00000000 - gate closed/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v7"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["attestation ran", /SENTINEL-V7: attesting logger CKCL @ fffff8055a740000/],
+    ["drift convicted", /EnableFlags DRIFT 0x000000ff -> 0x00000000 \(BLINDED\)/],
+    ["baseline re-asserted", /SENTINEL-V7: baseline re-asserted -> 0x000000ff/],
+    ["completion secret", /secret=kf-sentinel-v7-ok/],
+  ]),
+};
+
+// --- m25 architectural tasks -------------------------------------------------
+COMPILE_TASKS["sentinel-v6"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["LSTAR read", /SENTINEL-V6: IA32_LSTAR = fffff8055a760800/],
+    ["redirect convicted", /LSTAR REDIRECTED -> foreign handler fffff8055a760800/],
+    ["attribution", /attributed to kfarch\.sys\+0x800/],
+    ["completion secret", /secret=kf-sentinel-v6-ok/],
+  ]),
+};
 COMPILE_TASKS["sentinel-telemetry"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([

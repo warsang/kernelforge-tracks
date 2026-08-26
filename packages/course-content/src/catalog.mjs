@@ -45,10 +45,12 @@ import m9l1Body from "./lessons/m9-l1.mjs";
 import m10l1Body from "./lessons/m10-l1.mjs";
 import {
   SENTINEL_V1_STARTER, SENTINEL_V2_STARTER, SENTINEL_V3_STARTER,
-  SENTINEL_V4_STARTER,
+  SENTINEL_V4_STARTER, SENTINEL_V5_STARTER,
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
-  ATTACK_HIJACK_STARTER, SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
-  INJECT_STARTER, SMM_VAULT_STARTER, SMM_RELOC_STARTER,
+  ATTACK_HIJACK_STARTER, ATTACK_IRP_STARTER, ATTACK_ETWTAMPER_STARTER,
+  SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
+  SENTINEL_V6_STARTER, SENTINEL_V7_STARTER, INJECT_STARTER,
+  SMM_VAULT_STARTER, SMM_RELOC_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -65,6 +67,16 @@ import m21l1Body from "./lessons/m21-l1.mjs";
 import m22l1Body from "./lessons/m22-l1.mjs";
 import m22l2Body from "./lessons/m22-l2.mjs";
 import m23l1Body from "./lessons/m23-l1.mjs";
+import m24l1Body from "./lessons/m24-l1.mjs";
+import m24l2Body from "./lessons/m24-l2.mjs";
+import m25l1Body from "./lessons/m25-l1.mjs";
+import m25l2Body from "./lessons/m25-l2.mjs";
+import m26l1Body from "./lessons/m26-l1.mjs";
+import m26l2Body from "./lessons/m26-l2.mjs";
+import m26l3Body from "./lessons/m26-l3.mjs";
+import m27l1Body from "./lessons/m27-l1.mjs";
+import m27l2Body from "./lessons/m27-l2.mjs";
+import m28l1Body from "./lessons/m28-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -189,6 +201,55 @@ const F = {
   m23l1f7: "b6a86a7d5f35d176d075dee22593c8df167cd6dfdb0a16dee1b4c65811495bf6", // ret2usr payload output (lowercase)
 
   // --- m19 reversing the sensor (kfwatch grid + fixture pseudocode) ---
+  // --- m24 dispatch-layer hooks (IRP MajorFunction + object types) ---
+  m24l1f1: "9c063ac12a9ab043c2d0bb0bbc326aba40c339d1b772597fc6ce98960ad71f90", // convicted major code
+  m24l1f2: "9e108b27d758167032495b18021f478556a1ec8056a11433008edee2a7b273e6", // foreign handler VA
+  m24l1f3: "0bb58a8c61d1fa91d5b29d17e1a962f07f153bbb565f7497915c2829a567c596", // dispatch heal secret
+  m24l1f4: "b58b65585cf50ae2be2815b488702fa838379143196c1e4e80f49fb84ff49005", // objtype heal secret
+  m24l1f5: "8d7b6f511bf19096751ff856df44686c5aa49f1daf3b2a88d467b17f5e962cbc", // attack magic status
+  m24l1f6: "4caeec510c4a535a295bcab9e2038c16c38f55e9954fc9e95d6cd0f432ea9d31", // attack payoff secret
+  m24l2f1: "0dc578f12279fd05ac3f591638c7e06c8d953cb083271754656c80c2f1b267cd", // convicted owner module
+  m24l2f2: "b0f6136292266f5a55b41125b55ec719c33ab9547b5a6ef3f1fa2d51661e4ea3", // MajorFunction table offset
+  m24l2f3: "ee5a5019da01e4e784c917c469a277e7004414bdaa0b6fb5ce239bae1f1448c6", // sentinel v5 secret
+
+  // --- m25 architectural hooks: MSR / IDT / GDT ---
+  m25l1f1: "97073e70a7441b95565309d06545086696ba0b5c0189798e396ba0008db680d9", // IA32_LSTAR address
+  m25l1f2: "9040ff84b09771c5a1447f1e2d075bca26211b5304b6f198db6af971c39c814b", // foreign status
+  m25l1f3: "bd8f945a45101b5c56f739155c929da6ec5dae6f4489ea6e574c29884bcbc2bd", // hijack payoff
+  m25l1f4: "0fd42b3f73c448b34940b339f87d07adf116b05c0227aad72e8f0ee90533e699", // hardened bugcheck
+  m25l1f5: "12d77c098e13db035e343b90793417302a26064178cf84329e4314834afa7222", // refusing mechanism
+  m25l2f1: "684877c5f0af2efa3ab7b79364ed0eddbda10a22276f47bc9aa85d2ccbe97d57", // redirected VA
+  m25l2f2: "e22c9a1c1e5f05b67ea23507a5e44f2de8e48c92e6b24853f2e909d9f5993575", // attributed module
+  m25l2f3: "b360a9d6ea90de0011c1d5237b2df7a2fa99ac9e8a573da91ac9a3c9fccf3aa2", // sentinel v6 secret
+
+  // --- m28 VM-exit MSR interception ---
+  m28l1f1: "97073e70a7441b95565309d06545086696ba0b5c0189798e396ba0008db680d9", // 0xc0000082
+  m28l1f2: "be982125d67de52ef67480b71e8953f67b493eb5de024276a9bd2e8e4ec68c1f", // kf-vmexit-detected
+
+  // --- m26 ETW blindfolding (userland + kernel split) ---
+  m26l1f1: "f38dbeba4c18003d1e329b6f585fb2e213b7104803e8334bbeea0d91500122e9", // wrapper VA
+  m26l1f2: "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3", // suppressed count
+  m26l1f3: "1dfd58e7bb274289083aa7bdccd3c8e7cacfefa52ec7fcdd7b7f9296d2674595", // restore secret
+  m26l2f1: "bf9c4d8ecd7280186783365c73316cd064c58d6abdfe7ffbb79b6b99a21f56d0", // EnableFlags offset
+  m26l2f2: "3d4bf4b6882f4be6c9d1c41633aa9a19cf8b662e89de93ed9702966e8a061084", // blinded verdict
+  m26l2f3: "a1e35e70439c60ce05bbe8f64c590b6a1eaf17bfcc8f7df61edec999b7c1db22", // blind payoff
+  m26l3f1: "0273f35d56e5badf5f3a6ef5b8bfe4018c58e5018adb077dc5d896a20445246e", // baseline flags
+  m26l3f2: "3e9bbfba04f7510ca77c826c15aeb56dd50bc1e8ed748ed02c0a47caa0cb9bab", // session name
+  m26l3f3: "7d6b122b7e2c1fe83462204f5e65fd32edb47f2bf535a64ee0a2dee4d5057f50", // sentinel v7 secret
+
+  // --- m27 userland deep cuts: vtable / hot-patch / DRx ---
+  m27l1f1: "0924448f9c7fd0caa41c65cdf5a99d1ed81ef1e2f75b2c36481f8323f98b32ba", // fake vtable VA
+  m27l1f2: "5a289f194839859920ecf9dba63aff9a856dea5bc19e56c795f24fa3a55ffb18", // cheat stub VA
+  m27l1f3: "a743eb26cafb3428a4db6cc528c2ec9257500eceec5045907e8af2bc2c9028c4", // vtable restore secret
+  m27l1f4: "209a4e6d2b386fd55c778af5e884e58573f85f4495bd5de7f8df26ace88807ef", // calcspread VA
+  m27l1f5: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d", // sled NOP count
+  m27l1f6: "2461e3ec000f0a65348e760931c08837f6a6640ca1a10e7e839294789b9db553", // hotpatch restore secret
+  m27l1f7: "b17ef6d19c7a5b1ee83b907c595526dcb1eb06db8227d650d5dda0a9f4ce8cd9", // DR trip count
+  m27l1f8: "5588be887fb18a7d83238d812cbbebb8d2ee193b60ca60c18c97b87dec656389", // audit verdict
+  m27l1f9: "60c1359ae353ac5d64020a410702181a97bef6ba2c1f57bfc1c49bec5af13d25", // drx clean secret
+  m27l2f1: "d4bf696eb64f854fa21cceb64d9b328ee350a9321308bf54ded8e541499a7c80", // technique abbreviation
+  m27l2f2: "cd8644238bd404bc65952f8d21f564e45717d963a254543765ff1b48bbd7aa8c", // hot-patch marker instruction
+
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
   m19l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
@@ -2172,7 +2233,652 @@ export const module23 = {
   ],
 };
 
+export const module24 = {
+  id: "m24",
+  title: "Dispatch-Layer Hooks: IRP & Object Types",
+  track: "windows-kernel",
+  summary:
+    "The hooks PatchGuard ignores: MajorFunction table rewrites and " +
+    "OBJECT_TYPE_INITIALIZER procedures — attack, behavioral proof, and " +
+    "the baseline-containment sensor that convicts them.",
+  lessons: [
+    {
+      id: "m24.l1",
+      title: "IRP + object-type hooks: attack & forensics",
+      body: m24l1Body,
+      requires: ["m23.l1"],
+      labs: [
+        {
+          id: "m24.l1.lab1",
+          kind: "windbg",
+          title: "Attest the tables, repair the dispatch",
+          brief:
+            "kfsnoop.sys rewrote kfser.sys's DEVICE_CONTROL slot and the " +
+            "Process type's OpenProcedure. Prove both with !dispatchscan / " +
+            "!ioctltest / !obopen / !objtype, then eb-repair until clean.",
+          scenario: "dispatch-hook",
+          flags: [
+            {
+              id: "m24.l1.f1",
+              sha256: F.m24l1f1,
+              prompt:
+                "!dispatchscan convicts exactly one wired slot. Submit that " +
+                "IRP major code name exactly (e.g. IRP_MJ_CREATE style).",
+              points: 100,
+            },
+            {
+              id: "m24.l1.f2",
+              sha256: F.m24l1f2,
+              prompt:
+                "Submit the foreign handler's VA as full 16-digit hex with " +
+                "0x prefix (as printed by !dispatchscan / !ioctltest).",
+              points: 150,
+            },
+            {
+              id: "m24.l1.f3",
+              sha256: F.m24l1f3,
+              prompt:
+                "Repair the convicted slot with the printed eb line, prove " +
+                "the honest completion with !ioctltest, and submit the " +
+                "secret the clean attestation prints (!analyze -v).",
+              points: 250,
+            },
+            {
+              id: "m24.l1.f4",
+              sha256: F.m24l1f4,
+              prompt:
+                "!objtype shows one HOOKED initializer procedure. Repair it " +
+                "(eb), confirm !obopen grants again, and submit the secret " +
+                "from the clean sweep.",
+              points: 200,
+            },
+          ],
+        },
+        {
+          id: "m24.l1.lab2",
+          kind: "compiler",
+          title: "Author your own IRP hook",
+          brief:
+            "Flip sides: compile a driver that rewrites kfser's " +
+            "DEVICE_CONTROL slot onto the seeded trampoline, then watch " +
+            "!ioctltest complete with your magic status.",
+          scenario: "dispatch-hook",
+          compileTask: "attack-irp",
+          starterFiles: [
+            { path: "driver/kfirp.c", content: ATTACK_IRP_STARTER },
+          ],
+          flags: [
+            {
+              id: "m24.l1.f5",
+              sha256: F.m24l1f5,
+              prompt:
+                "After your driver loads, !ioctltest kfser completes with " +
+                "a magic status. Submit it as 0x-prefixed 8-digit hex.",
+              points: 150,
+            },
+            {
+              id: "m24.l1.f6",
+              sha256: F.m24l1f6,
+              prompt:
+                "The hijack payoff prints a secret to the DbgPrint buffer " +
+                "(!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m24.l2",
+      title: "Defense: KF-Sentinel v5 — table attestation engine",
+      body: m24l2Body,
+      requires: ["m24.l1"],
+      labs: [
+        {
+          id: "m24.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v5: convict foreign dispatch from ring 0",
+          brief:
+            "Compile the containment sensor: walk all 28 MajorFunction " +
+            "slots plus the Process type's OpenProcedure and convict " +
+            "anything pointing into kfsnoop.sys.",
+          scenario: "dispatch-hook",
+          compileTask: "sentinel-v5",
+          starterFiles: [
+            { path: "driver/kfsentinel_v5.c", content: SENTINEL_V5_STARTER },
+          ],
+          flags: [
+            {
+              id: "m24.l2.f1",
+              sha256: F.m24l2f1,
+              prompt:
+                "Both convictions attribute to one loaded module. Submit " +
+                "its exact image name (with .sys).",
+              points: 100,
+            },
+            {
+              id: "m24.l2.f2",
+              sha256: F.m24l2f2,
+              prompt:
+                "The sensor indexes MajorFunction at _DRIVER_OBJECT+0x??. " +
+                "Submit that offset as short 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m24.l2.f3",
+              sha256: F.m24l2f3,
+              prompt:
+                "On conviction the sensor prints its completion secret. " +
+                "Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module26 = {
+  id: "m26",
+  title: "ETW Blindfolding & Telemetry Tampering",
+  track: "windows-kernel",
+  summary:
+    "Kill telemetry at both layers: patch ntdll!EtwEventWrite in the " +
+    "emulated game process, zero a CKCL logger context's EnableFlags from " +
+    "ring 0 — then build the sensors that catch both. PatchGuard watches " +
+    "none of it.",
+  lessons: [
+    {
+      id: "m26.l1",
+      title: "ETW architecture & the user-mode blindfold",
+      body: m26l1Body,
+      requires: ["m25.l2"],
+      labs: [
+        {
+          id: "m26.l1.lab1",
+          kind: "sogen",
+          title: "Blindfold, prove the gap, restore",
+          brief:
+            "Patch ntdll!EtwEventWrite in the emulated game process, pump " +
+            "events and watch them die silently, then restore until " +
+            "!etwtrace reads honest end-to-end.",
+          scenario: "etw-blind",
+          flags: [
+            {
+              id: "m26.l1.f1",
+              sha256: F.m26l1f1,
+              prompt:
+                "!providers prints the wrapper address. Submit " +
+                "ntdll!EtwEventWrite's VA as full 8-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m26.l1.f2",
+              sha256: F.m26l1f2,
+              prompt:
+                "Patch the wrapper (eb 31 c0 c3) and run !etwpump 8. How " +
+                "many events does !etwtrace report as suppressed? Decimal.",
+              points: 150,
+            },
+            {
+              id: "m26.l1.f3",
+              sha256: F.m26l1f3,
+              prompt:
+                "Restore the pristine prologue (hookscan prints it), pump " +
+                "again until nothing is suppressed, and submit the honest " +
+                "end-to-end secret.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m26.l2",
+      title: "Kernel logger-context tampering",
+      body: m26l2Body,
+      requires: ["m26.l1"],
+      labs: [
+        {
+          id: "m26.l2.lab1",
+          kind: "compiler",
+          title: "Zero the CKCL gate",
+          brief:
+            "Compile a driver that zeroes EnableFlags on the modeled CKCL " +
+            "context; !etwpump proves events die silently while providers " +
+            "keep succeeding.",
+          scenario: "etw-kernel",
+          compileTask: "attack-etwtamper",
+          starterFiles: [
+            { path: "driver/kfetwtamper.c", content: ATTACK_ETWTAMPER_STARTER },
+          ],
+          flags: [
+            {
+              id: "m26.l2.f1",
+              sha256: F.m26l2f1,
+              prompt:
+                "EnableFlags sits at _WMI_LOGGER_CONTEXT+0x??. Submit that " +
+                "offset as short 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m26.l2.f2",
+              sha256: F.m26l2f2,
+              prompt:
+                "After your attack loads, !etwloggers stamps the zeroed " +
+                "context with a one-word verdict. Submit it (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m26.l2.f3",
+              sha256: F.m26l2f3,
+              prompt:
+                "The first blinded pump releases a payoff secret into the " +
+                "DbgPrint buffer (!analyze -v). Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m26.l3",
+      title: "Defense: KF-Sentinel v7 — logger attestation",
+      body: m26l3Body,
+      requires: ["m26.l2"],
+      labs: [
+        {
+          id: "m26.l3.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v7: attest the telemetry gate from ring 0",
+          brief:
+            "Compile the poll-and-assert sensor: diff CKCL's EnableFlags " +
+            "against the boot baseline, re-assert, release your verdict.",
+          scenario: "etw-kernel",
+          compileTask: "sentinel-v7",
+          starterFiles: [
+            { path: "driver/kfsentinel_v7.c", content: SENTINEL_V7_STARTER },
+          ],
+          flags: [
+            {
+              id: "m26.l3.f1",
+              sha256: F.m26l3f1,
+              prompt:
+                "Submit the CKCL baseline EnableFlags as 0x-prefixed hex " +
+                "(as printed healthy in !etwloggers).",
+              points: 100,
+            },
+            {
+              id: "m26.l3.f2",
+              sha256: F.m26l3f2,
+              prompt:
+                "Which named session does the sensor attest? Submit its " +
+                "short name (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m26.l3.f3",
+              sha256: F.m26l3f3,
+              prompt:
+                "On conviction + repair the sensor prints its completion " +
+                "secret. Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module27 = {
+  id: "m27",
+  title: "Userland Hooking Deep Cuts: VTable / Hot-Patch / DRx",
+  track: "windows-userland",
+  summary:
+    "Three techniques live anticheats hunt hardest: vtable pointer swaps, " +
+    "MS hot-patch sled installs, and debug-register hooks — each with its " +
+    "behavioral proof, each with the audit that convicts it.",
+  lessons: [
+    {
+      id: "m27.l1",
+      title: "Pointer swaps, atomic sleds, hardware breakpoints",
+      body: m27l1Body,
+      requires: ["m26.l3"],
+      labs: [
+        {
+          id: "m27.l1.lab1",
+          kind: "sogen",
+          title: "VTable swap: prove, trace, restore",
+          brief:
+            "The object already points at a cheat-owned fake table. Prove " +
+            "the hijack with !callview, resolve slot0's foreign target, " +
+            "re-point at the honest table.",
+          scenario: "vtable-hook",
+          flags: [
+            {
+              id: "m27.l1.f1",
+              sha256: F.m27l1f1,
+              prompt:
+                "!callview prints the live vtable VA. Submit it as full " +
+                "8-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f2",
+              sha256: F.m27l1f2,
+              prompt:
+                "Slot0 of that table points into cheat memory. Submit the " +
+                "stub VA as full 8-digit hex with 0x prefix (hookscan " +
+                "resolves E9 targets; x helps).",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f3",
+              sha256: F.m27l1f3,
+              prompt:
+                "Re-point the object at the honest table (eb), confirm " +
+                "!callview passes through, and submit the integrity " +
+                "secret.",
+              points: 250,
+            },
+          ],
+        },
+        {
+          id: "m27.l1.lab2",
+          kind: "sogen",
+          title: "Hot-patch slot: install and heal an atomic detour",
+          brief:
+            "cl_calcspread ships hot-patchable. Install the classic E9 " +
+            "into the sled, prove the spread rewrite, restore the NOPs.",
+          scenario: "hotpatch-hook",
+          flags: [
+            {
+              id: "m27.l1.f4",
+              sha256: F.m27l1f4,
+              prompt:
+                "Find cl_calcspread's entry in the lab brief constants " +
+                "(x game.exe!calcspread or scan). Submit as 0x-prefixed " +
+                "8-digit hex.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f5",
+              sha256: F.m27l1f5,
+              prompt:
+                "How many NOP bytes make up Microsoft's hot-patch sled? " +
+                "Decimal.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f6",
+              sha256: F.m27l1f6,
+              prompt:
+                "After installing your E9 (!spreadtest shows the rewrite) " +
+                "and restoring the pristine sled bytes, submit the secret " +
+                "!spreadtest prints.",
+              points: 250,
+            },
+          ],
+        },
+        {
+          id: "m27.l1.lab3",
+          kind: "sogen",
+          title: "DRx hook vs the thread-context audit",
+          brief:
+            "Arm DR0 over cl_sendinput, trip it across a frame batch " +
+            "without touching .text, meet !drxaudit, then clear yourself " +
+            "clean.",
+          scenario: "drx-hook",
+          flags: [
+            {
+              id: "m27.l1.f7",
+              sha256: F.m27l1f7,
+              prompt:
+                "With DR0 armed on cl_sendinput, run !frametest 16. How " +
+                "many #DB trips does it report? Decimal.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f8",
+              sha256: F.m27l1f8,
+              prompt:
+                "!drxaudit stamps a one-word verdict while registers are " +
+                "armed. Submit it (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f9",
+              sha256: F.m27l1f9,
+              prompt:
+                "Clear the registers, re-audit clean after having tripped, " +
+                "and submit the acknowledged secret.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m27.l2",
+      title: "Defense: pointer graphs, sled-aware integrity, DR audits",
+      body: m27l2Body,
+      requires: ["m27.l1"],
+      labs: [
+        {
+          id: "m27.l2.lab1",
+          kind: "quiz",
+          title: "Pick the countermeasure",
+          brief: "Reading comprehension check on the deep-cuts defenses.",
+          scenario: null,
+          flags: [
+            {
+              id: "m27.l2.f1",
+              sha256: F.m27l2f1,
+              prompt:
+                "Which technique redirects virtual calls purely by " +
+                "swapping a pointer to a method table? Submit the common " +
+                "three-letter abbreviation for such a table.",
+              points: 100,
+            },
+            {
+              id: "m27.l2.f2",
+              sha256: F.m27l2f2,
+              prompt:
+                "Which two-instruction sequence marks a function as " +
+                "Microsoft hot-patchable? Submit it exactly as written in " +
+                "the lesson (lowercase, with comma).",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module25 = {
+  id: "m25",
+  title: "Architectural Hooks: MSR / IDT / GDT",
+  track: "windows-kernel",
+  summary:
+    "Hooks below every table: redirect IA32_LSTAR and own the syscall " +
+    "boundary — then meet the two regimes that kill it on modern x64 " +
+    "(mini-PatchGuard sweeps and HVCI write refusal), and build the " +
+    "rdmsr attestation sensor.",
+  lessons: [
+    {
+      id: "m25.l1",
+      title: "LSTAR redirects vs the verifier regimes",
+      body: m25l1Body,
+      requires: ["m24.l2"],
+      labs: [
+        {
+          id: "m25.l1.lab1",
+          kind: "windbg",
+          title: "Redirect LSTAR, prove it, get caught",
+          brief:
+            "Legacy regime: point IA32_LSTAR at kfarch.sys's handler, " +
+            "prove syscalls reroute with !syscalltest — then cross a " +
+            "PatchGuard sweep.",
+          scenario: "arch-hooks",
+          flags: [
+            {
+              id: "m25.l1.f1",
+              sha256: F.m25l1f1,
+              prompt:
+                "!msr lstar names the register you are about to rewrite. " +
+                "Submit its MSR address as 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m25.l1.f2",
+              sha256: F.m25l1f2,
+              prompt:
+                "After !msr lstar 0xfffff8055a768000, !syscalltest completes " +
+                "with a magic status. Submit it as 0x-prefixed 8-digit hex.",
+              points: 150,
+            },
+            {
+              id: "m25.l1.f3",
+              sha256: F.m25l1f3,
+              prompt:
+                "The first redirected syscall releases a payoff secret " +
+                "(!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+            {
+              id: "m25.l1.f4",
+              sha256: F.m25l1f4,
+              prompt:
+                "Leave the redirect installed and !dpcpump past a sweep. " +
+                "Which STOP code fires? Decimal (no 0x).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m25.l1.lab2",
+          kind: "windbg",
+          title: "The HVCI ceiling",
+          brief:
+            "Same redirect attempt on arch-hardened: the WRMSR is refused " +
+            "before it lands. Confirm via !analyze -v and !pgscan.",
+          scenario: "arch-hardened",
+          flags: [
+            {
+              id: "m25.l1.f5",
+              sha256: F.m25l1f5,
+              prompt:
+                "Which mechanism refuses the write on this world? Submit " +
+                "the four-letter acronym (lowercase).",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m25.l2",
+      title: "Defense: KF-Sentinel v6 — rdmsr attestation engine",
+      body: m25l2Body,
+      requires: ["m25.l1"],
+      labs: [
+        {
+          id: "m25.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v6: attest the syscall entry from ring 0",
+          brief:
+            "Compile a sensor that reads IA32_LSTAR through the modeled " +
+            "__readmsr shim, convicts any target outside ntoskrnl, and " +
+            "attributes the redirect to its module.",
+          scenario: "arch-hooks",
+          compileTask: "sentinel-v6",
+          starterFiles: [
+            { path: "driver/kfsentinel_v6.c", content: SENTINEL_V6_STARTER },
+          ],
+          flags: [
+            {
+              id: "m25.l2.f1",
+              sha256: F.m25l2f1,
+              prompt:
+                "Your sensor prints the live LSTAR. Submit the foreign " +
+                "handler VA as full 16-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m25.l2.f2",
+              sha256: F.m25l2f2,
+              prompt:
+                "The attribution line names one module. Submit its exact " +
+                "image name (with .sys).",
+              points: 100,
+            },
+            {
+              id: "m25.l2.f3",
+              sha256: F.m25l2f3,
+              prompt:
+                "On conviction the sensor prints its completion secret. " +
+                "Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module28 = {
+  id: "m28",
+  title: "Hypervisor Escape Hatch: VM-Exit MSR Interception",
+  track: "windows-kernel",
+  summary:
+    "The only way to hook syscall flow without PatchGuard: own layer two, " +
+    "intercept RDMSR/WRMSR via VM-exit, fake success. The guest never knows " +
+    "the hypervisor owns the MSR. Detection via timing divergence and " +
+    "consistency checks.",
+  lessons: [
+    {
+      id: "m28.l1",
+      title: "VM-exit MSR interception: the final layer",
+      body: m28l1Body,
+      requires: ["m27.l2"],
+      labs: [
+        {
+          id: "m28.l1.lab1",
+          kind: "windbg",
+          title: "Install a redirect, detect the hypervisor",
+          brief:
+            "kfhyp.sys intercepts LSTAR writes via VM-exit. Install a redirect " +
+            "with !msr lstar, prove it with !syscalltest, then detect the " +
+            "hypervisor with !vmexit.",
+          scenario: "msr-exit",
+          flags: [
+            {
+              id: "m28.l1.f1",
+              sha256: F.m28l1f1,
+              prompt:
+                "Which MSR decides where every syscall lands? Submit its " +
+                "address as 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m28.l1.f2",
+              sha256: F.m28l1f2,
+              prompt:
+                "!vmexit prints a secret when it shows the trap log. Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23],
+  version: 6,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module25, module26, module27, module28],
 };

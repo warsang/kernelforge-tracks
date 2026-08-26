@@ -13,6 +13,7 @@
  */
 
 import { M64 } from "./cpu.mjs";
+import { containingModule } from "./objtypes.mjs";
 
 export const IRP_MJ = {
   CREATE: 0x00,
@@ -313,6 +314,59 @@ export async function sendIoctl(kernel, device, code, input, outputLen = 0) {
     input,
     outputLen,
   });
+}
+
+// --------------------------------------------------- m24: dispatch scanning
+
+/**
+ * Snapshot a DRIVER_OBJECT's 28 MajorFunction slots as the load-time
+ * baseline for later tamper diffs (the EDR "attest at load" pattern).
+ * Call AFTER the driver finished its legitimate DriverEntry wiring.
+ */
+export function snapshotMajorBaseline(kernel, drvRec, mem = kernel.mem) {
+  const bytes = mem.read(drvRec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION),
+    IRP_MJ_COUNT * 8);
+  drvRec.majorBaseline = bytes.slice();
+  return drvRec.majorBaseline;
+}
+
+/**
+ * Install kernel.scanForeignDispatch(). Idempotent.
+ *
+ * A MajorFunction slot is FOREIGN when it is neither the default
+ * IopInvalidDeviceRequest thunk nor inside its own driver's image range
+ * ([DriverStart, DriverStart+DriverSize)). That is the classic IRP-hook
+ * signature: the slot was redirected into some other module's code.
+ *
+ * @returns {Array<{drvRec:{name:string}, code:number, codeName:string,
+ *                  handler:bigint, owner:string|null}>}
+ */
+export function installDispatchScan(kernel) {
+  if (kernel.scanForeignDispatch) return kernel;
+  kernel.scanForeignDispatch = function scanForeignDispatch() {
+    const mem = kernel.mem;
+    const out = [];
+    for (const rec of kernel.driverObjects?.values() ?? []) {
+      const start = BigInt(mem.u64(rec.va + BigInt(DRIVER_OBJECT.DRIVER_START)));
+      const size = BigInt(mem.u64(rec.va + BigInt(DRIVER_OBJECT.DRIVER_SIZE)));
+      const inImage = (fn) => size > 0n && fn >= start && fn < start + size;
+      for (let i = 0; i < IRP_MJ_COUNT; i++) {
+        const handler = mem.u64(
+          rec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION + i * 8));
+        if (handler === rec.defaultMajorThunk) continue;
+        if (inImage(handler)) continue;
+        out.push({
+          drvRec: rec,
+          code: i,
+          codeName: IRP_MJ_NAMES[i] ?? `0x${i.toString(16)}`,
+          handler,
+          owner: containingModule(kernel, handler),
+        });
+      }
+    }
+    return out;
+  };
+  return kernel;
 }
 
 /** Invoke DriverUnload if present. */
