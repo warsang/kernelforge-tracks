@@ -16,6 +16,3 @@ packages/v86-lab/build/
 packages/v86-lab/artifacts/
 packages/v86-lab/vendor/artifacts/
 apps/web/public/vendor/artifacts/
-
-# sogen wasm payload (boot-fetched, ~90 MB — see packages/sogen-runtime/vendor/README.md)
-apps/web/public/sogen/32/analyzer.wasm
