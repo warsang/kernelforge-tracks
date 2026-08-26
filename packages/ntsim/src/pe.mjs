@@ -11,6 +11,21 @@ const PAGE = 4096;
 function u16(b, o) { return b[o] | (b[o + 1] << 8); }
 function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 
+/**
+ * Read a NUL-terminated byte string. A fixed-window + regex trim is NOT safe
+ * here: if a 0x0A byte follows the first NUL inside the window, /\0.*$/ fails
+ * to match and the whole window (embedded NULs, padding, hint bytes, adjacent
+ * names) silently becomes the "name". Scan for the terminator instead.
+ */
+function readCString(b, off, max = 256) {
+  const end = Math.min(off + max, b.length);
+  let i = off;
+  while (i < end && b[i] !== 0) i++;
+  let s = "";
+  for (let j = off; j < i; j++) s += String.fromCharCode(b[j]);
+  return s;
+}
+
 export class PeError extends Error {}
 
 export function parsePe(bytes) {
@@ -120,17 +135,19 @@ export function mapPe(bytes, mem, baseAddr, resolveImport) {
   const impDir = pe.dirs[1];
   if (impDir.rva && impDir.size) {
     let descOff = rvaToOffset(pe, impDir.rva);
+    if (descOff === null) throw new PeError(`import directory RVA 0x${impDir.rva.toString(16)} not in any raw section`);
     for (;;) {
       const nameRva = u32(bytes, descOff + 12);
       const firstThunkRva = u32(bytes, descOff + 16); // IAT
       if (!nameRva && !firstThunkRva) break;
-      const dllName = String.fromCharCode(
-        ...bytes.subarray(rvaToOffset(pe, nameRva), rvaToOffset(pe, nameRva) + 32)
-      ).replace(/\0.*$/, "").toLowerCase();
+      const dllNameOff = rvaToOffset(pe, nameRva);
+      if (dllNameOff === null) throw new PeError(`import DLL name RVA 0x${nameRva.toString(16)} not in any raw section`);
+      const dllName = readCString(bytes, dllNameOff).toLowerCase();
 
       let thunkRva = firstThunkRva;
       for (;;) {
         const oftFieldOff = rvaToOffset(pe, thunkRva);
+        if (oftFieldOff === null) break; // IAT runs past raw data -> no more thunks
         const hintRva = u32(bytes, oftFieldOff);
         if (hintRva === 0) break;
         let fname;
@@ -138,9 +155,8 @@ export function mapPe(bytes, mem, baseAddr, resolveImport) {
           fname = `ord:${hintRva & 0xffff}`;
         } else {
           const hOff = rvaToOffset(pe, hintRva & 0x7fffffff);
-          fname = String.fromCharCode(
-            ...bytes.subarray(hOff + 2, hOff + 2 + 64)
-          ).replace(/\0.*$/, "");
+          if (hOff === null) throw new PeError(`hint/name RVA 0x${(hintRva & 0x7fffffff).toString(16)} not in any raw section`);
+          fname = readCString(bytes, hOff + 2); // skip 2-byte hint, name is NUL-terminated
         }
         const resolved = resolveImport(`${dllName}!${fname}`);
         if (resolved === null || resolved === undefined) {
