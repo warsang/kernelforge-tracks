@@ -615,7 +615,8 @@ function renderLesson(lesson) {
             consoleHost.before(shellHost);
             let facade = null;
             try {
-              facade = pane.mountShell(session, {
+              // sogen panes resolve their backend asynchronously (wasm probe)
+              facade = await pane.mountShell(session, {
                 card, consoleHost, shellHost, h,
                 consoleDebugger: currentDebugger,
               });
@@ -778,7 +779,25 @@ function renderLesson(lesson) {
       card.append(editorHost, h("div", { class: "controls" }, compileBtn), compileStatus);
     }
 
-    card.append(h("div", { class: "controls" }, backendSel, bootBtn));
+    const controls = [backendSel, bootBtn];
+    if (pane.targetUpload) {
+      // Target binary for the sogen WASM core (uploaded, in-memory only).
+      // With a target attached, the debugger shell controls the REAL
+      // emulated process; without one it uses the JS reference backend.
+      const targetInput = h("input", { type: "file", class: "target-upload" });
+      targetInput.addEventListener("change", async () => {
+        const f = targetInput.files?.[0];
+        if (!f) return;
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const { addSogenTarget } = await import("./sogen-targets.js");
+        addSogenTarget(f.name, bytes);
+        currentDebugger?.write(
+          `target "${f.name}" staged — Boot / Reset attaches the wasm core.`, "dim");
+        targetInput.value = "";
+      });
+      controls.push(targetInput);
+    }
+    card.append(h("div", { class: "controls" }, ...controls));
     card.append(consoleHost);
 
     // ---- flag submission

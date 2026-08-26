@@ -10,6 +10,7 @@
   "dependencies": {
     "@kernelforge/debugger-ui": "*",
     "@kernelforge/ntsim": "*",
-    "capstone-wasm": "^1.0.3"
+    "capstone-wasm": "^1.0.3",
+    "flatbuffers": "^25.9.23"
   }
 }
