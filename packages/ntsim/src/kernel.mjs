@@ -179,6 +179,15 @@ export class NtKernel {
     /** captured DbgPrint lines */
     this.dbgLog = [];
 
+    /** chronological call-trace events (see tracer.mjs); capped ring */
+    this.traceEvents = [];
+    this.traceLimit = 8192;
+    this.tracePhase = "run";
+    this.traceSeq = 0;
+
+    /** ETW capture (EtwRegister/EtwWrite models) */
+    this.etwLog = [];
+
     /** bugcheck state */
     this.crash = null;
 
@@ -710,7 +719,22 @@ export class NtKernel {
       }
     });
     this.dbgLog.push(out);
+    this.emitTrace({ kind: "dbgprint", text: out });
     return out;
+  }
+
+  /**
+   * Append a chronological trace event (capped). Decoding/pretty-printing
+   * lives in tracer.mjs; the kernel only records raw facts.
+   * @param {{kind: string, [k: string]: any}} evt
+   */
+  emitTrace(evt) {
+    if (this.traceEvents.length >= this.traceLimit) return;
+    this.traceEvents.push({
+      seq: ++this.traceSeq,
+      phase: this.tracePhase,
+      ...evt,
+    });
   }
 
   findEprocessByPid(pid) {
@@ -766,6 +790,14 @@ export class NtKernel {
               retAddr,
             });
           }
+          this.emitTrace({
+            kind: "api",
+            name,
+            args: args.slice(0, 8).map((a) => a & M64),
+            ret: this.cpu.regs.rax,
+            retAddr: retAddr & M64,
+            irql: this.currentIrql ?? 0,
+          });
           return true;
         }
       }
@@ -806,6 +838,13 @@ export class NtKernel {
       handled: !!dispatch.handled,
       detail: dispatch.detail,
     });
+    this.emitTrace({
+      kind: "exception",
+      faultRip: r.error?.rip ?? 0n,
+      message: String(r.error?.message ?? r.error ?? ""),
+      handled: !!dispatch.handled,
+      detail: dispatch.detail,
+    });
     if (!dispatch.handled) return r;
     return {
       status: "ok",
@@ -838,20 +877,24 @@ export class NtKernel {
       for (const d of dpcs) {
         counts.dpcs++;
         this.dbgLog.push(`nt: KiRetireDpcList: DPC @ ${d.dpcVa.toString(16)} fired`);
+        this.emitTrace({ kind: "dpc", routine: d.routine ?? 0n, context: d.context ?? 0n, detail: "fired" });
         try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
         if (!d.routine) continue;
         const r = this.cpu.callFunction(d.routine, [d.dpcVa ?? 0n, d.context ?? 0n, 0n, 0n]);
         this.dbgLog.push(`[dpc] routine 0x${d.routine.toString(16)} -> ${r.status}`);
+        this.emitTrace({ kind: "dpc", routine: d.routine, context: d.context ?? 0n, detail: `-> ${r.status}` });
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "dpc", detail: r.status });
       }
       for (const w of work) {
         counts.workItems++;
+        this.emitTrace({ kind: "workitem", worker: w.worker, context: w.context ?? 0n });
         const r = this.cpu.callFunction(w.worker, [w.device ?? 0n, w.context ?? 0n]);
         this.dbgLog.push(`[work] worker 0x${w.worker.toString(16)} -> ${r.status}`);
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "work", detail: r.status });
       }
       for (const a of apcs) {
         counts.apcs++;
+        this.emitTrace({ kind: "apc", routine: a.normalRoutine, context: a.normalContext ?? 0n });
         const r = this.cpu.callFunction(a.normalRoutine, [a.normalContext ?? 0n, a.systemArgument1 ?? 0n, a.systemArgument2 ?? 0n]);
         this.dbgLog.push(`[apc] normalRoutine 0x${a.normalRoutine.toString(16)} -> ${r.status}`);
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "apc", detail: r.status });
@@ -859,8 +902,19 @@ export class NtKernel {
       for (const t of threads) {
         counts.threads++;
         this.dbgLog.push(`[thread] system thread 0x${t.handle.toString(16)} start routine 0x${t.startRoutine.toString(16)}`);
+        this.emitTrace({
+          kind: "thread",
+          handle: t.handle,
+          startRoutine: t.startRoutine,
+          startContext: t.startContext ?? 0n,
+          detail: "start (PsCreateSystemThread)",
+        });
+        const prevPhase = this.tracePhase;
+        this.tracePhase = `${prevPhase}:thread`;
         const r = this.cpu.callFunction(t.startRoutine, [t.startContext ?? 0n]);
+        this.tracePhase = prevPhase;
         this.dbgLog.push(`[thread] start routine 0x${t.startRoutine.toString(16)} -> ${r.status}`);
+        this.emitTrace({ kind: "thread", handle: t.handle, startRoutine: t.startRoutine, detail: `-> ${r.status}`, error: r.error?.message ?? null });
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "thread", detail: r.status });
       }
     }

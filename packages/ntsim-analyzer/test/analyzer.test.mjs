@@ -186,3 +186,82 @@ test("analyzeDriver: SEH scope-table dispatch rescues faulting entry", async () 
   assert.equal(r.entry.retval, "0xdeadc0de");
   assert.ok(r.exceptions.some((e) => e.handled));
 });
+
+test("analyzeDriver: chronological call trace with decoded args + phases", async () => {
+  // DriverEntry body: call DbgPrint(fmt) via IAT, then xor eax,eax ; ret.
+  // fmt string lives in .rdata (stable across the run, unlike stack strings).
+  const t = probeTextRva(0x60);
+  const fmt = "[kf] traced %d\n";
+  const rdata = new Uint8Array(0x20);
+  for (let i = 0; i < fmt.length; i++) rdata[i] = fmt.charCodeAt(i);
+
+  const b0 = new PeBuilder().addSection(".text", new Uint8Array(0x60), 0x60000020);
+  const tRva = parsePe(b0.build(0).image).sections[0].rva;
+
+  const text = new Uint8Array(0x60);
+  let o = t + 0x10;
+  const push = (...bytes) => { text.set(bytes, o - t); o += bytes.length; };
+  void push;
+  // mov rcx, fmtVa (48 B9 dq)
+  const fmtVa = BASE + BigInt(tRva + 0x30);
+  const fb = [];
+  let x = fmtVa;
+  for (let i = 0; i < 8; i++) { fb.push(Number(x & 0xffn)); x >>= 8n; }
+  text.set([0x48, 0xb9, ...fb], 0x10);
+  // mov edx, 7
+  text.set([0xba, 0x07, 0x00, 0x00, 0x00], 0x1a);
+  // call qword [rip+disp32] — disp patched after layout known
+  const CALL_OFF = 0x1f;
+  text.set([0xff, 0x15, 0, 0, 0, 0], CALL_OFF);
+  // xor eax,eax ; ret
+  text.set([0x31, 0xc0, 0xc3], 0x25);
+  text.set(rdata, 0x30);
+
+  const b = new PeBuilder();
+  b.addSection(".text", text, 0x60000020);
+  b.addSection(".rdata", new Uint8Array(0x40), 0xc0000040);
+  b.addImports([{ dll: "ntoskrnl.exe", funcs: ["DbgPrint"] }]);
+  const { image } = b.build(t + 0x10);
+  const img = image;
+
+  // patch the rip-relative disp against the built IAT
+  const pe = parsePe(image);
+  const rd = pe.sections.find((s) => s.name === ".rdata");
+  void rd;
+  // find IAT rva: walk import dir in built image
+  const r2o = (rva) => {
+    for (const s of pe.sections) {
+      if (rva >= s.rva && rva < s.rva + Math.max(s.virtualSize, s.rawSize)) {
+        const d = rva - s.rva;
+        if (d < s.rawSize) return s.rawPtr + d;
+        break;
+      }
+    }
+    return null;
+  };
+  const descOff = r2o(pe.dirs[1].rva);
+  const u32At = (p) =>
+    image[p] | (image[p + 1] << 8) | (image[p + 2] << 16) | (image[p + 3] << 24);
+  const iatRva = u32At(descOff + 16);
+  const disp = iatRva - (t + CALL_OFF + 6);
+  image.set(u32(disp), r2o(t + CALL_OFF) + 2);
+
+  const r = await analyzeDriver(img, {
+    tables: await loadTables(),
+    autoIrp: false,
+    name: "trace-fixture.sys",
+  });
+  assert.equal(r.entry.status, "ok", JSON.stringify(r.entry));
+  assert.ok(Array.isArray(r.trace) && r.trace.length > 0, "trace events recorded");
+  assert.ok(typeof r.traceText === "string" && r.traceText.length > 0);
+
+  const dbgEvent = r.trace.find((e) => e.kind === "api" && e.name === "DbgPrint");
+  assert.ok(dbgEvent, "DbgPrint call captured");
+  assert.match(dbgEvent.text, /fmt="\[kf\] traced %d/);
+  assert.equal(dbgEvent.caller, `trace-fixture.sys+0x${dbgCallRetRva(t).toString(16)}`);
+  assert.match(r.traceText, /--- phase: DriverEntry ---/);
+});
+
+function dbgCallRetRva(t) {
+  return t + 0x1f + 6;
+}

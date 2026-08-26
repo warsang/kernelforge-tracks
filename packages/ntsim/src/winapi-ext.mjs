@@ -1092,14 +1092,91 @@ export function installWinApiExt(kernel, ctx) {
 
   k.define("IoWMIRegistrationControl", () => STATUS_SUCCESS);
   k.define("IoWMIQueryAllData", () => 0xc0000001n);
-  k.define("EtwRegister", (_guid, cb, c, handleOut) => {
-    mem.w64(handleOut, 0xe7000001n);
-    void cb; void c;
+
+  // --------------------------------------------------------------- ETW capture
+  //
+  // Providers register with EtwRegister(GUID, ...) and emit through
+  // EtwWrite/EtwWriteTransfer. We record registrations and decode
+  // EVENT_DESCRIPTOR {Level u16, Channel u8, Opcode u8, Task u16, Keyword u64}
+  // plus EVENT_DATA_DESCRIPTOR arrays {Ptr u64, Size u32} so the trace shows
+  // what a driver tried to tell its (missing) listeners.
+
+  const guidAt = (va) => {
+    const hex = (x) => "0x" + BigInt.asUintN(64, BigInt(x ?? 0)).toString(16);
+    try {
+      if (!va) return "NULL";
+      const b = mem.read(va, 16);
+      const u32 = (o) => ((b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0).toString(16).padStart(8, "0");
+      const u16 = (o) => (b[o] | (b[o + 1] << 8)).toString(16).padStart(4, "0");
+      const d4 = [...b.slice(8, 16)].map((x) => x.toString(16).padStart(2, "0")).join("");
+      return `{${u32(0)}-${u16(4)}-${u16(6)}-${d4.slice(0, 4)}-${d4.slice(4)}}`;
+    } catch { return hex(va); }
+  };
+  let nextEtwHandle = 0xe7000001n;
+
+  k.define("EtwRegister", (guid, cb, ctx, handleOut) => {
+    void cb; void ctx;
+    const h = nextEtwHandle++;
+    if (handleOut) mem.w64(handleOut, h);
+    kernel.etwLog.push({ kind: "register", handle: ptrSizeMask(h), guid: guidAt(guid) });
+    kernel.emitTrace({ kind: "etw", op: "register", summary: `provider ${guidAt(guid)} -> handle 0x${ptrSizeMask(h).toString(16)}` });
     return STATUS_SUCCESS;
   });
-  k.define("EtwUnregister", () => STATUS_SUCCESS);
-  k.define("EtwWrite", () => STATUS_SUCCESS);
-  k.define("EtwWriteTransfer", () => STATUS_SUCCESS);
+  k.define("EtwUnregister", (h) => {
+    kernel.etwLog.push({ kind: "unregister", handle: ptrSizeMask(h) });
+    kernel.emitTrace({ kind: "etw", op: "unregister", summary: `handle 0x${ptrSizeMask(h).toString(16)}` });
+    return STATUS_SUCCESS;
+  });
+
+  const describeEtwPayload = (dataCount, dataArray) => {
+    try {
+      if (!dataArray || !dataCount) return "";
+      const n = Math.min(Number(dataCount), 4);
+      const chunks = [];
+      for (let i = 0; i < n; i++) {
+        const d = dataArray + BigInt(i * 16);
+        const ptr = mem.u64(d);
+        const size = Number(BigInt.asUintN(32, mem.u64(d + 8n)));
+        if (!ptr || !size || size > 256) continue;
+        const bytes = [...mem.read(ptr, Math.min(size, 32))].map((x) => x.toString(16).padStart(2, "0")).join("");
+        chunks.push(`[${size}B] ${bytes}`);
+      }
+      return chunks.join(" ");
+    } catch { return ""; }
+  };
+
+  k.define("EtwWrite", (regHandle, desc, filterData, dataCount, dataArray) => {
+    void filterData;
+    let level = 0, opcode = 0, keyword = 0n;
+    try {
+      if (desc) {
+        level = mem.u16(desc);          // Level @+0
+        opcode = mem.u8(desc + 3n);     // Opcode @+3
+        keyword = mem.u64(desc + 8n);   // Keyword @+8
+      }
+    } catch { /* bad descriptor — still record */ }
+    const payload = describeEtwPayload(dataCount, dataArray);
+    const rec = {
+      kind: "write",
+      handle: ptrSizeMask(regHandle),
+      level,
+      opcode,
+      keyword: keyword.toString(16),
+      payload,
+    };
+    kernel.etwLog.push(rec);
+    kernel.emitTrace({
+      kind: "etw",
+      op: "write",
+      summary: `handle=0x${ptrSizeMask(regHandle).toString(16)} level=${level} opcode=${opcode} keyword=0x${keyword.toString(16)}${payload ? " " + payload : ""}`,
+    });
+    return STATUS_SUCCESS;
+  });
+  k.define("EtwWriteTransfer", (regHandle, desc, activity, relatedActivity, dataCount, dataArray) => {
+    void activity; void relatedActivity;
+    // same descriptor layout as EtwWrite; transfer events carry ActivityIds
+    return impls.EtwWrite(regHandle, desc, 0n, dataCount, dataArray);
+  });
   k.define("EtwActivityIdControl", (_cur, nextOut) => {
     if (nextOut) mem.w64(nextOut, 0x1122334455667788n);
     return STATUS_SUCCESS;

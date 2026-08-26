@@ -85,8 +85,10 @@ function inputPatterns(opts) {
  */
 export async function autoDriveIrps(kernel, device, cfg) {
   const sendIrp = cfg.sendIrp;
+  const onPhase = cfg.onPhase ?? (() => {});
   const results = [];
-  const push = async (spec) => {
+  const push = async (spec, phase) => {
+    if (phase) onPhase(phase);
     const r = await sendIrp(kernel, device, spec);
     results.push({
       ...r,
@@ -97,24 +99,25 @@ export async function autoDriveIrps(kernel, device, cfg) {
   };
 
   // lifecycle
-  await push({ major: IRP_MJ.CREATE });
+  await push({ major: IRP_MJ.CREATE }, "irp MJ_CREATE");
   if (results.at(-1).status !== "ok") return results;
 
   for (const code of (cfg.harvested ?? []).slice(0, cfg.maxCodes ?? 32)) {
     let hardFail = false;
+    let i = 0;
     for (const input of inputPatterns(cfg)) {
       const r = await push({
         major: IRP_MJ.DEVICE_CONTROL,
         ioctl: BigInt(code.value),
         input,
         outputLen: cfg.outputLen ?? 64,
-      });
+      }, `ioctl 0x${code.value.toString(16)} #${++i}`);
       if (r.status !== "ok") { hardFail = true; break; }
       if (kernel.bugcheck || kernel.crash) return results;
     }
     if (hardFail) break;
   }
 
-  await push({ major: IRP_MJ.CLOSE });
+  await push({ major: IRP_MJ.CLOSE }, "irp MJ_CLOSE");
   return results;
 }

@@ -176,6 +176,7 @@ export async function analyzeDriver(imageBytes, opts = {}) {
   mem.writeUtf16(regPathBuf, regPath);
 
   // ------------------------------------------------------ DriverEntry
+  kernel.tracePhase = "DriverEntry";
   const entryResult = kernel.callFunctionSeh(mapped.entry, [drvRec.va, regPathBuf], image);
   report.entry = summarizeCall(entryResult);
   report.dbgLog.push(...kernel.dbgLog.splice(0));
@@ -186,6 +187,7 @@ export async function analyzeDriver(imageBytes, opts = {}) {
 
   // ------------------------------------------------------- deferred work
   if (entryResult.status === "ok" && !report.bugcheck) {
+    kernel.tracePhase = "deferred";
     report.deferred = kernel.drainDeferred();
     report.dbgLog.push(...kernel.dbgLog.splice(0));
     report.exceptions.push(...kernel.exceptionTrace.splice(0));
@@ -209,12 +211,14 @@ export async function analyzeDriver(imageBytes, opts = {}) {
         hex: `0x${h.value.toString(16).padStart(8, "0")}`,
         rva: `0x${h.rva.toString(16)}`,
       }));
+      kernel.tracePhase = "auto-irp";
       report.autoIrps = await autoDriveIrps(kernel, device, {
         sendIrp,
         harvested,
         maxCodes: cfg.maxCodes ?? 32,
         inputPatterns: cfg.inputPatterns,
         outputLen: cfg.outputLen ?? 64,
+        onPhase: (label) => { kernel.tracePhase = label; },
       });
       report.dbgLog.push(...kernel.dbgLog.splice(0));
       report.exceptions.push(...kernel.exceptionTrace.splice(0));
@@ -224,11 +228,13 @@ export async function analyzeDriver(imageBytes, opts = {}) {
 
     for (const spec of opts.ioctls ?? []) {
       if (report.bugcheck) break;
+      const codeBig = typeof spec.code === "string"
+        ? BigInt(spec.code.replace(/^0x/i, ""))
+        : BigInt(spec.code ?? 0);
+      kernel.tracePhase = `ioctl 0x${codeBig.toString(16)}`;
       const r = await sendIrp(kernel, device, {
         major: spec.major ?? IRP_MJ.DEVICE_CONTROL,
-        ioctl: typeof spec.code === "string"
-          ? BigInt(spec.code.replace(/^0x/i, ""))
-          : BigInt(spec.code ?? 0),
+        ioctl: codeBig,
         input: spec.input instanceof Uint8Array ? spec.input : hexToBytes(spec.inputHex ?? spec.input),
         outputLen: spec.outputLen ?? 0,
         minor: spec.minor,
@@ -247,12 +253,30 @@ export async function analyzeDriver(imageBytes, opts = {}) {
 
   // ------------------------------------------------------------ unload
   if (opts.runUnload && entryResult.status === "ok" && !report.bugcheck) {
+    kernel.tracePhase = "unload";
     report.unload = summarizeCall(await callDriverUnload(kernel, drvRec));
     report.dbgLog.push(...kernel.dbgLog.splice(0));
     report.exceptions.push(...kernel.exceptionTrace.splice(0));
   }
 
   // ------------------------------------------------------------ summary
+  // chronological call trace (ktrace-style) over everything that ran
+  {
+    const { finalizeTrace } = await import("@kernelforge/ntsim/src/tracer.mjs");
+    const modules = [
+      { name: driverName, base: mapped.base, size: mapped.imageSize },
+      ...(kernel.loadedModules ?? [])
+        .filter((m) => m.base !== undefined)
+        .map((m) => ({ name: m.name, base: BigInt(m.base), size: Number(m.imageSize ?? m.size ?? 0x1000) })),
+    ];
+    if (!opts.trace?.disable) {
+      const { events, text } = finalizeTrace(kernel, modules);
+      report.trace = events;
+      report.traceText = text;
+    }
+    report.etw = kernel.etwLog ?? [];
+    kernel.tracePhase = "idle";
+  }
   report.apiTraceSummary = summarizeApiTrace(kernel.apiTrace);
   report.symbolicLinks = kernel.symbolicLinks ?? [];
   report.registryWrites = summarizeRegistryWrites(kernel);

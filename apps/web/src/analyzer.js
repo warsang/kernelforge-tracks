@@ -179,6 +179,30 @@ export function renderAnalyzer(main) {
       wrap.append(sec);
     }
 
+    // chronological call trace (ktrace-style)
+    if (report.traceText) {
+      const sec = el("div", { class: "section" },
+        el("h3", null, `Call trace (${(report.trace ?? []).length} events)`));
+      const pre = el("pre", { class: "mono trace-log" });
+      pre.textContent = report.traceText;
+      sec.append(pre);
+      const dl = el("button", { class: "btn btn-sm", type: "button" }, "Download trace");
+      dl.addEventListener("click", () => {
+        const blob = new Blob([report.traceText], { type: "text/plain" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${report.load?.driverName ?? "driver"}.trace.txt`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+      const cp = el("button", { class: "btn btn-sm", type: "button" }, "Copy");
+      cp.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(report.traceText); } catch { /* denied */ }
+      });
+      sec.append(el("div", { class: "row gap" }, dl, cp));
+      wrap.append(sec);
+    }
+
     if (report.dbgLog.length) {
       const sec = el("div", { class: "section" }, el("h3", null, "DbgPrint"));
       for (const line of report.dbgLog.slice(0, 64)) {
