@@ -57,9 +57,9 @@ test("lm shows ntoskrnl", async () => {
 
 test("!process <pid> resolves kftarget", async () => {
   const kd = await booted();
-  const out = kd.execute("!process 666");
+  const out = kd.execute("!process 888");
   assert.match(out, /kftarget\.exe/);
-  assert.match(out, /UniqueProcessId: 666/);
+  assert.match(out, /UniqueProcessId: 888/);
 });
 
 test("unknown command errors like windbg", async () => {

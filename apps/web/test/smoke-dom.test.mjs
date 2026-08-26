@@ -28,8 +28,8 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
   // vite define-replacement of window.process.env; give that object a home.
   window.process = { env: {
     KF_FLAG_M1L1F1: "kfprobe.sys",
-    KF_FLAG_M1L1F2: "312",
-    KF_FLAG_M1L2F1: "0xffffc80000001448",
+    KF_FLAG_M1L1F2: "1312",
+    KF_FLAG_M1L2F1: "0xffffa40bc9e74208",
   } };
 
   // File-backed fetch shim: serves /tables/** from public/ so the scenario's

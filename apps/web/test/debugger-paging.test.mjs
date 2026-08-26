@@ -44,13 +44,13 @@ async function booted() {
   k.bootstrap();
   k.loadedDrivers.push({ name: "kfvillain.sys", base: 0x60000000n });
   const pts = new PageTableSpace(k, { physBase: 0x3000000n, selfRefIndex: 0xf });
-  const proc = pts.createProcess({ name: "kftarget", pid: 666 });
+  const proc = pts.createProcess({ name: "kftarget", pid: 888 });
   k.paging = pts;
 
   const st = new ServiceTable(k, { base: 0x10000000n + 0x200000n });
   st.add("NtCreateFile", () => 0n);
   const hookIdx = st.add("NtOpenProcess", function (pid) {
-    return pid === 666n ? 0xc0000034n : 0n;
+    return pid === 888n ? 0xc0000034n : 0n;
   });
   k.serviceTable = st;
   return { k, pts, proc, st, hookIdx };

@@ -95,10 +95,12 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null, carvedSt
 
   // Synthesize EX_FAST_REF tokens so !process <addr> 1 / !token have a live
   // target. Blobs are recognizable pattern data, NOT a real _TOKEN layout
-  // (no Vergilius _TOKEN table is loaded — see debugger note).
+  // (no Vergilius _TOKEN table is loaded — see debugger note). Blobs live in
+  // kernel pool range — a Token pointing at user-range VAs would scream
+  // "emulator" in every !process listing.
   const tokOff = tables.offsetOf("_EPROCESS", "Token");
   const tokens = {};
-  let tokBlob = 0x60000000n;
+  let tokBlob = 0xffffa40bc9e78000n;
   for (const p of kernel.listProcesses()) {
     mem.w64(tokBlob, BigInt(`0x7A${p.pid.toString(16)}CAFE`)); // recognizable
     const encoded = tokBlob | 0x8n; // pretend 8 fastrefs held on the pointer
@@ -140,8 +142,9 @@ async function bootDefault({ makeBackend, loadTables, dumpWorld = null, carvedSt
   mem.w64(ethread + cidOff + 8n, 408n);         // CLIENT_ID.UniqueThread
   mem.w64(ethread + tables.offsetOf("_ETHREAD", "Win32StartAddress"), 0x7ff00000n);
   mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
-  // mark lsass EPROCESS so explorers can correlate: stamp StartAddress too
-  mem.w64(ethread + tables.offsetOf("_ETHREAD", "StartAddress"), 0x7ff01000n);
+  // Teb + Win32Thread so !process threads render the full kd field set
+  try { mem.w64(ethread + BigInt(tables.offsetOf("_KTHREAD", "Teb")), 0x000000e4000660000n); } catch { /* optional */ }
+  try { mem.w64(ethread + BigInt(tables.offsetOf("_KTHREAD", "Win32Thread")), 0xffffbe0100011000n); } catch { /* optional */ }
 
   // give lsass a live thread list so !process <pid> 4 can enumerate it:
   // ThreadListHead <-> ethread.ThreadListEntry ring + ActiveThreads = 1
@@ -236,11 +239,30 @@ function populateFromDump(kernel, tables, world) {
     eprocessHex: p.eprocessHex,
   }));
 
-  // lab fixtures appended (synthetic, clearly ours)
-  let nextFakeEproc = 0xffffc80000000000n; // kernel-space synthetic range
-  for (const [nm, pid] of [["kfsample.exe", 312n], ["kftarget.exe", 666n]]) {
-    procs.push({ pid, eproc: nextFakeEproc, name: nm, tokenRaw: 0n, tokenTarget: 0n });
-    nextFakeEproc += 0x1000n;
+  // lab fixtures appended (synthetic, clearly ours). Addresses imitate real
+  // non-paged pool allocations on a Win10 x64 box — NOT page-aligned slab
+  // look-alikes: kd output should not advertise its own fixtures. Cids are
+  // unique system-wide against every authentic dump process (the dump world
+  // carries an svchost.exe at 312, so kfsample moved to 1312; see
+  // DEFAULT_PROCESSES in packages/ntsim/src/kernel.mjs).
+  const FIXTURE_PROCS = [
+    { name: "kfsample.exe", pid: 1312n, eproc: 0xffffa40bc9e731a0n, parent: 4n },
+    { name: "kftarget.exe", pid: 888n, eproc: 0xffffa40bc9e73dc0n, parent: 1312n },
+  ];
+  let fixtureTokenBlob = 0xffffa40bc9e75000n;
+  for (const f of FIXTURE_PROCS) {
+    const pattern = BigInt(`0x7A${f.pid.toString(16)}CAFE`); // recognizable, like bootDefault
+    const blobHex = pattern.toString(16).padStart(16, "0");
+    procs.push({
+      pid: f.pid, eproc: f.eproc, name: f.name,
+      // EX_FAST_REF-encoded pointer to a live token blob — !process must
+      // never print Token: 0x0 for a running process
+      tokenRaw: fixtureTokenBlob | 0x8n,
+      tokenTarget: fixtureTokenBlob,
+      tokenBlobHex: blobHex,
+      parentCid: f.parent,
+    });
+    fixtureTokenBlob += 0x100n;
   }
 
   // Rebuild the circular list: head.Flink -> first ... tail.Flink -> head.
@@ -251,6 +273,12 @@ function populateFromDump(kernel, tables, world) {
     if (p.tokenRaw) mem.w64(p.eproc + tokOff, p.tokenRaw);
     if (protOff !== null && typeof p.protectionByte === "number") {
       mem.w8(p.eproc + protOff, p.protectionByte);
+    }
+    // fixtures carry a ParentCid so !process headers read like real kd
+    if (p.parentCid) {
+      try {
+        mem.w64(p.eproc + BigInt(t.offsetOf("_EPROCESS", "InheritedFromUniqueProcessId")), p.parentCid);
+      } catch { /* build without the field */ }
     }
     // Authentic full _EPROCESS image extracted from the dump (fields beyond
     // our planted subset — VadCount, Cookie, QuotaBlock, … — are now real).
@@ -384,6 +412,139 @@ function populateFromDump(kernel, tables, world) {
       } catch { /* build without thread-list fields */ }
     }
   }
+
+  seedDumpWorldThreads(kernel, tables);
+}
+
+/**
+ * Materialize resident _ETHREAD images for the dump-overlay world.
+ *
+ * The authentic dump lists every process's threads through
+ * _EPROCESS.ThreadListHead, but the pages holding those _ETHREADs are almost
+ * never part of the carved snapshot — !process 0 7 used to answer with a wall
+ * of "(thread image not resident)" stubs. Real _ETHREADs live in non-paged
+ * pool and kd always shows full THREAD lines, so we synthesize the missing
+ * images IN PLACE: each authentic ring pointer gets a readable _ETHREAD at
+ * that very address (CLIENT_ID, Teb, Win32Thread, ApcState->owner), keeping
+ * the dumped list topology intact. Processes whose ring is empty or
+ * self-looped (the lab fixtures) get one freshly allocated thread instead.
+ */
+function seedDumpWorldThreads(kernel, tables) {
+  const mem = kernel.mem;
+  const t = tables;
+  let cidOff, tleOff, tlhOff;
+  try {
+    cidOff = BigInt(t.offsetOf("_ETHREAD", "Cid"));
+    tleOff = BigInt(t.offsetOf("_ETHREAD", "ThreadListEntry"));
+    tlhOff = BigInt(t.offsetOf("_EPROCESS", "ThreadListHead"));
+  } catch { return; } // build lacks basic thread fields — no seeding
+  const opt = (type, field) => {
+    try { return BigInt(t.offsetOf(type, field)); } catch { return null; }
+  };
+  const wssaOff = opt("_ETHREAD", "Win32StartAddress");
+  const startOff = opt("_ETHREAD", "StartAddress");
+  const tebOff = opt("_KTHREAD", "Teb");
+  const w32Off = opt("_KTHREAD", "Win32Thread");
+  const stateOff = opt("_KTHREAD", "State");
+  const apcOff = kernel.apcStateOffset() !== null
+    ? BigInt(kernel.apcStateOffset()) : null;
+
+  const ethreadSize = t.has("_ETHREAD")
+    ? BigInt(Number(t.sizeOf("_ETHREAD"))) : 0x600n;
+  const align16 = (v) => (v + 15n) & ~15n;
+  const canRead = typeof mem.canRead === "function"
+    ? (a, n) => mem.canRead(a, n) : () => true;
+
+  // GUI-ish processes get a non-NULL Win32Thread; services legitimately read 0
+  const GUI_PROCS = new Set([
+    "csrss.exe", "winlogon.exe", "dwm.exe", "explorer.exe", "sihost.exe",
+    "ctfmon.exe", "fontdrvhost.ex", "TextInputHost.", "RuntimeBroker.",
+    "SearchApp.exe", "SearchIndexer.", "StartMenuExper", "msedge.exe",
+    "LogUI.exe", "LogonUI.exe",
+  ]);
+
+  // TID allocator: unique multiples of 4, skipping anything already visible
+  const usedTids = new Set();
+  for (const p of kernel.listProcesses()) {
+    let cur = mem.u64(p.eprocess + tlhOff);
+    const head = p.eprocess + tlhOff;
+    for (let s = 0; cur && cur !== head && s < 64; s++) {
+      if (!canRead(cur, 16)) break;
+      try { usedTids.add(mem.u64(cur - tleOff + cidOff + 8n)); } catch { break; }
+      const next = mem.u64(cur);
+      if (!next || next === cur) break;
+      cur = next;
+    }
+  }
+  let nextTid = 0x1000n;
+  const allocTid = () => {
+    while (usedTids.has(nextTid)) nextTid += 4n;
+    usedTids.add(nextTid);
+    return nextTid;
+  };
+
+  /** Stamp a plausible thread image into [base, base+ethreadSize). */
+  const stampThread = (base, proc, tid, isGui) => {
+    mem.w64(base + cidOff, proc.pid);            // CLIENT_ID.UniqueProcess
+    mem.w64(base + cidOff + 8n, tid);           // CLIENT_ID.UniqueThread
+    if (stateOff !== null) mem.w8(base + stateOff, 5);   // Waiting
+    if (tebOff !== null) {
+      // deterministic user-mode Teb: unique per TID, plausible Win10 range
+      mem.w64(base + tebOff, 0x000000e400000000n + tid * 0x100000n);
+    }
+    if (w32Off !== null) {
+      mem.w64(base + w32Off,
+        isGui ? 0xffffbe0100010000n + tid * 0x1000n : 0n);
+    }
+    // start addresses: kernel workers start in System range, user procs in
+    // a plausible PEB-backedImage range
+    const start = proc.pid === 4n
+      ? 0xfffff8052b850000n + (tid & 0xffffn) * 0x10n
+      : 0x00007ff600010000n + (tid & 0xffffn) * 0x1000n;
+    if (startOff !== null) mem.w64(base + startOff, start);
+    if (wssaOff !== null) mem.w64(base + wssaOff, start);
+    if (apcOff !== null) mem.w64(base + apcOff, proc.eprocess);
+  };
+
+  // fresh-thread arena for processes with no enumerable ring at all
+  let freshCursor = 0xffffa40bc9e76000n;
+
+  for (const p of kernel.listProcesses()) {
+    const head = p.eprocess + tlhOff;
+    let cur = mem.u64(head);
+    if (!cur || cur === head) {
+      // empty/self-looped ring (fixtures): allocate one resident thread
+      const base = align16(freshCursor);
+      freshCursor = base + ethreadSize;
+      const entry = base + tleOff;
+      mem.w64(head, entry);
+      mem.w64(head + 8n, entry);
+      mem.w64(entry, head);
+      mem.w64(entry + 8n, head);
+      stampThread(base, p, allocTid(), GUI_PROCS.has(p.name));
+      try {
+        mem.w32(p.eprocess + BigInt(t.offsetOf("_EPROCESS", "ActiveThreads")), 1);
+      } catch { /* counter optional */ }
+      continue;
+    }
+    // materialize images for pointers whose pages the dump never carried
+    const seen = new Set();
+    for (let s = 0; cur && cur !== head && s < 128; s++) {
+      if (seen.has(cur)) break;
+      seen.add(cur);
+      if (!canRead(cur - tleOff, Number(ethreadSize))) {
+        stampThread(cur - tleOff, p, allocTid(), GUI_PROCS.has(p.name));
+      }
+      const next = mem.u64(cur);
+      if (!next || next === cur) break;
+      cur = next;
+    }
+  }
+
+  // The dump rebuild relocated every EPROCESS — re-point the seeded
+  // cross-process handle references at the new addresses (kfsample→kftarget
+  // must survive as the row-#3 cross-check the labs teach).
+  kernel.seedHandleRefs?.();
 }
 
 export const scenarios = {
@@ -613,7 +774,7 @@ scenarios["irql-hardened"] = {
  * identifies the hidden PID (!hooktest probes), repairs with eb and proves
  * the lookup succeeds again.
  */
-const KFHOOK_HIDDEN_PID = 666n;
+const KFHOOK_HIDDEN_PID = 888n;
 
 function setupApiHook(kernel) {
   const API = "PsLookupProcessByProcessId";
@@ -641,7 +802,7 @@ function setupApiHook(kernel) {
   kernel.mem.writeAnsi(detourTarget + 0x2000n,
     "kfhook: PsLookupProcessByProcessId detoured");
   kernel.mem.writeAnsi(detourTarget + 0x2080n,
-    "kfhook: protected pid=666");
+    "kfhook: protected pid=888");
 
   kernel.loadedModules.push({
     base: KFHOOK_BASE, sizeOfImage: 0x8000, name: "kfhook.sys",
@@ -674,9 +835,9 @@ scenarios["api-hook"] = {
  */
 function setupApiHookBlank(kernel) {
   const API = "PsLookupProcessByProcessId";
-  const KFHOOK_HIDDEN_PID = 666n;
+  const KFHOOK_HIDDEN_PID = 888n;
   // gate behavior on LIVE prologue bytes: once the student's driver writes
-  // an E9 over the thunk, PID 666 lookups start failing — exactly like the
+  // an E9 over the thunk, PID 888 lookups start failing — exactly like the
   // pre-built kfhook.sys world, except here the bytes come from THEIR code
   const orig = kernel.apiImpls.get(API);
   kernel.defineApi(API, function (pid, outPtr) {
@@ -691,7 +852,7 @@ function setupApiHookBlank(kernel) {
 scenarios["api-hook-blank"] = {
   title: "api-hook-blank — author your own detour",
   description:
-    "A clean 22H2 world whose PsLookupProcessByProcessId suppresses pid 666 " +
+    "A clean 22H2 world whose PsLookupProcessByProcessId suppresses pid 888 " +
     "whenever its prologue reads as detoured. Find the export's address, " +
     "compile a driver that writes an E9 over it, prove the suppression.",
   boot: async (io) => {
@@ -767,7 +928,7 @@ function setupSentinelM1(kernel, tables) {
 
   // --- attack residue #1: DKOM unlink of kftarget.exe --------------------
   const linksOff = tables.offsetOf("_EPROCESS", "ActiveProcessLinks");
-  const victim = kernel.findEprocessByPid(666n);
+  const victim = kernel.findEprocessByPid(888n);
   if (victim) {
     const links = victim + linksOff;
     const flink = mem.u64(links);
@@ -979,12 +1140,12 @@ function setupPagingWalk(kernel) {
   kernel.paging = pts;
 
   // decoy first: lowest frames belong to the shuffled decoy
-  const decoy = pts.createProcess({ name: "decoy", pid: 665, selfRefIndex: C.DECOY_SELFREF });
+  const decoy = pts.createProcess({ name: "decoy", pid: 664, selfRefIndex: C.DECOY_SELFREF });
   decoy.decoy = true;
   pts.mapPage(decoy, joinVa(8, 8, 8, 8, false), {});
 
   const target = pts.createProcess({
-    name: "kftarget", pid: 666,
+    name: "kftarget", pid: 888,
     eproc: kernel.processesByName.get("kftarget.exe"),
     selfRefIndex: C.REAL_SELFREF,
   });
@@ -1122,7 +1283,7 @@ scenarios["edr-sensor"] = {
 
 /**
  * m13 — SSDT world: a KiServiceTable image over API thunks with one inline
- * detour on NtOpenProcess suppressing pid 666. Reuses pristine-snapshot
+ * detour on NtOpenProcess suppressing pid 888. Reuses pristine-snapshot
  * repair semantics; PatchGuard discussion ships in the lesson body.
  */
 export const SSDT_CONST = (() => {
@@ -1131,7 +1292,7 @@ export const SSDT_CONST = (() => {
     TABLE_BASE: LOW_BASES.kva + 0x200000n,
     KFSSDT,
     DETOUR_TARGET: KFSSDT + 0x1000n,
-    HIDDEN_PID: 666n,
+    HIDDEN_PID: 888n,
     secret: "kf-ssdt-clean",
   };
 })();
@@ -1185,7 +1346,7 @@ scenarios["ssdt-hook"] = {
   title: "ssdt-hook — hooked system service dispatch",
   description:
     "A modeled KiServiceTable with one inline-detoured service hiding pid " +
-    "666 from NtOpenProcess. Scan with !ssdt, resolve the detour target, " +
+    "888 from NtOpenProcess. Scan with !ssdt, resolve the detour target, " +
     "repair the prologue with eb, re-scan until clean.",
   boot: async (io) => {
     const session = await bootLow(io);

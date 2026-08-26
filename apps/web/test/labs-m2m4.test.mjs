@@ -108,7 +108,7 @@ test("hook suppresses hidden PID only; eb repair restores lookup", async () => {
   assert.match(c.text(), /STATUS_SUCCESS/);
 
   // hidden PID is suppressed by the hook
-  c.exec("!hooktest PsLookupProcessByProcessId 666");
+  c.exec("!hooktest PsLookupProcessByProcessId 888");
   assert.match(c.text(), /STATUS_INVALID_PARAMETER.*PROLOGUE DETOURED/);
 
   // repair from the printed pristine byte
@@ -120,7 +120,7 @@ test("hook suppresses hidden PID only; eb repair restores lookup", async () => {
 
   // fresh capture so assertions only see post-repair behavior
   const after = capture(kernel);
-  after.exec("!hooktest PsLookupProcessByProcessId 666");
+  after.exec("!hooktest PsLookupProcessByProcessId 888");
   assert.match(after.text(), /STATUS_SUCCESS/);
   assert.doesNotMatch(after.text(), /PROLOGUE DETOURED/);
 });

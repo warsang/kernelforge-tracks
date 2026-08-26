@@ -65,17 +65,30 @@ test("lm tolerates flags like lmD with a note", async () => {
   assert.match(c.text(), /not modeled/);
 });
 
-test("!process <addr> 1 walks real _EPROCESS fields incl decoded Token", async () => {
+test("!eproc walks real _EPROCESS fields incl decoded Token", async () => {
   const { kernel } = await booted();
   const lsass = kernel.processesByName.get("lsass.exe");
   const c = capture(kernel);
-  c.exec(`!process ${lsass} 1`);
+  c.exec(`dt _EPROCESS ${lsass}`);
   const t = c.text();
   assert.match(t, /UniqueProcessId/);
   assert.match(t, /108\)/); // decimal pid annotation
   assert.match(t, /Token\s+:.*fastref refs=8/);
-  assert.match(t, /-> 0x0000000060000300/);
+  assert.match(t, /-> 0xffffa40bc9e78300/); // pool-range token blob
   assert.match(t, /ActiveProcessLinks\.Flink/); // embedded LIST_ENTRY decoded
+});
+
+test("!process <pid|name> renders a kd-style block with flags", async () => {
+  const { kernel } = await booted();
+  const c = capture(kernel);
+  c.exec("!process lsass 7"); // name form must resolve across worlds
+  const t = c.text();
+  assert.match(t, /PROCESS 0x[0-9a-f]+ {2}SessionId: none {2}Cid: 0108 {2}Peb:/);
+  assert.match(t, /ImageFileName: lsass\.exe/);
+  assert.match(t, /Token: 0xffffa40bc9e78300 {2}ActiveThreads: 1/); // flag 0x2
+  // this harness loads partial tables (no _KTHREAD), so only the CLIENT_ID
+  // segment renders here; the full field set is asserted in apcstate-crossref
+  assert.match(t, /THREAD 0x[0-9a-f]+ {2}Cid 108\.408/); // flag 0x4
 });
 
 test("!process 0 0 lists all processes; clear clears", async () => {
@@ -112,7 +125,7 @@ test("!process <pid> 7 enumerates ThreadListHead threads (synthetic world)", asy
   const t = c.text();
   // the wired lsass thread is enumerated beneath its parent, by ETHREAD base
   assert.match(t, new RegExp(`THREAD 0x${ethread.toString(16).padStart(16, "0")}`));
-  assert.match(t, /Tid: 408/); // CLIENT_ID.UniqueThread planted by scenario
+  assert.match(t, /Cid 108\.408/); // CLIENT_ID pair planted by scenario
   // ActiveThreads count is read from _EPROCESS.ActiveThreads (+0x5f0)
   assert.ok(Number(tables.offsetOf("_EPROCESS", "ActiveThreads")) === 0x5f0);
 });
@@ -126,10 +139,10 @@ test("!process 0 4 lists THREAD entries under their parent process only", async 
   // ring to its own synthetic ETHREAD (Tid 408), so still exactly one per proc
   assert.equal(threadLines.length, 7,
     `expected one resident thread per process, got: ${threadLines}`);
-  for (const l of threadLines) assert.match(l, /Tid: \d+/);
+  for (const l of threadLines) assert.match(l, /Cid \d+\.\d+/);
   // lsass's thread sits BENEATH its parent process line
   const parentIdx = c.lines.findIndex((l) => l.includes("lsass.exe"));
-  const threadIdx = c.lines.findIndex((l) => l.includes("Tid: 408"));
+  const threadIdx = c.lines.findIndex((l) => l.includes("108.408"));
   assert.ok(parentIdx !== -1 && threadIdx > parentIdx, "thread not nested under parent");
 });
 
@@ -139,21 +152,21 @@ test("!process handles empty/corrupt ThreadListHead without hanging", async () =
   const sys = kernel.findEprocessByPid(4n);
   const c = capture(kernel);
   c.exec(`!process ${sys} 7`);
-  const sysThreads = c.lines.filter((l) => l.includes("Tid: 1024"));
+  const sysThreads = c.lines.filter((l) => l.includes("4.1024"));
   assert.equal(sysThreads.length, 1, "seeded System thread must be listed");
 
   // corrupt ring pointing at itself must terminate
   const tleOff = kernel.tables.offsetOf("_ETHREAD", "ThreadListEntry");
   const tlhOff = kernel.tables.offsetOf("_EPROCESS", "ThreadListHead");
   kernel.mem.w64(sys + BigInt(tlhOff), sys + BigInt(tlhOff)); // head -> itself
-  const kftarget = kernel.findEprocessByPid(666n);
+  const kftarget = kernel.findEprocessByPid(888n);
   kernel.mem.w64(kftarget + BigInt(tlhOff), kftarget + BigInt(tlhOff) - BigInt(tleOff));
   const c2 = capture(kernel);
   c2.exec("!process 0 4"); // walks every process; must return
   assert.ok(c2.lines.length > 0);
 });
 
-test("!process 0 1 shows real ActiveThreads counts from dump blobs", async () => {
+test("!process 0 2 shows real ActiveThreads counts from dump blobs", async () => {
   const raw = JSON.parse(await readFile(
     path.join(path.dirname(fileURLToPath(import.meta.url)),
       "../../../apps/web/public/dumps/kdemu-win10-19041.json"), "utf8"));
@@ -162,7 +175,7 @@ test("!process 0 1 shows real ActiveThreads counts from dump blobs", async () =>
     makeBackend: (mem) => new JsInterpreter(mem), loadTables, dumpWorld: raw,
   });
   const c = capture(kernel);
-  c.exec("!process 0 1");
+  c.exec("!process 0 2"); // flag bit 0x2 = wide walk (Token + ActiveThreads)
   const t = c.text();
   // regression: populateFromDump used to drop eprocessHex, so every count
   // read 0. System carries 151 threads in the authentic blob.
@@ -183,7 +196,7 @@ test("!process 0 7 reports the dumped CurrentThread as resident under System", a
   c.exec("!process 0 7");
   const t = c.text();
   assert.match(t, /THREAD 0xffff8f8b8eb4d040/); // world.kpcr.currentThread
-  assert.match(t, /Tid: 6760/);                 // its authentic CLIENT_ID
+  assert.match(t, /Cid 4\.6760/);               // its authentic CLIENT_ID
 });
 
 // ------------------------------------------------ manual-map lab flow ----
@@ -307,7 +320,7 @@ test("!token via pid decodes fastref and dumps blob", async () => {
   const c = capture(kernel);
   c.exec("!token 108");
   const t = c.text();
-  assert.match(t, /TOKEN @ 0x0*60000300/);
+  assert.match(t, /TOKEN @ 0x0*ffffa40bc9e78300/);
   assert.match(t, /7a6ccafe/i); // pid=108=0x6c pattern qword
 });
 

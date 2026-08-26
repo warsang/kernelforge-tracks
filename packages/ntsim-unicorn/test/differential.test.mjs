@@ -100,7 +100,7 @@ test("differential: DKOM unlink driver is byte-identical across backends", async
     // the emulated list walk must no longer see the target on EITHER backend
     const after = k.listProcesses();
     assert.equal(after.find((p) => p.name === "kftarget.exe"), undefined, `[${be}] not hidden`);
-    assert.equal(k.findEprocessByPid(666n), null, `[${be}] pid lookup still hits`);
+    assert.equal(k.findEprocessByPid(888n), null, `[${be}] pid lookup still hits`);
 
     kernels[be] = k;
   }

@@ -9,8 +9,10 @@
  * exact expected format so grading is unambiguous.
  *
  * Deterministic addresses verified against the 22h2 table set:
- *   - kftarget.exe _EPROCESS fixed by populateFromDump() at 0xffffc80000001000,
- *     ActiveProcessLinks +0x448 => answer 0xffffc80000001448   (m1.l2.f1)
+ *   - kftarget.exe _EPROCESS fixed by populateFromDump() at 0xffffa40bc9e73c00,
+ *     ActiveProcessLinks +0x448 => answer 0xffffa40bc9e74048   (m1.l2.f1)
+ *   - kfsample.exe Cid is 1312 in EVERY world (the dump overlay carries an
+ *     authentic svchost.exe at 312 — Cids must stay unique system-wide)
  *   - irql-dpc world: DeferredRoutine at 0xfffff8055a401400    (m2.l1.f2)
  *   - irql-attackers world (m2.l3/m2.l4): kvmdrv.sys base
  *     0xfffff8055a700000 — victim KDPC 0xfffff8055a701000, heartbeat routine
@@ -58,24 +60,29 @@ import m18l1Body from "./lessons/m18-l1.mjs";
 import m19l1Body from "./lessons/m19-l1.mjs";
 
 const F = {
+  // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
+  m1l0f1: "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a", // records count (4)
+  m1l0f2: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // ApcState field name
+  m1l0f3: "885d784b273b576aaff1dd2b7fde02c961223c6749cbd5da5e159e64a10b761c", // kfsample's handle target
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
-  m1l1f2: "865736a1c30a82dc67aba820360a01b1d9d0da5643234cd07c4d60b06eb530c5",
-  // kftarget.exe _EPROCESS is fixed by populateFromDump() at 0xffffc80000001000
-  // and ActiveProcessLinks sits at +0x448 (22h2 tables) => 0xffffc80000001448
-  m1l2f1: "fb5bee16424f0ead5c88377e236904125c495c6b0ab7cbfff5dc4bfc6de85b0a",
+  m1l1f2: "712dca40936b39ce670dc803736fe3735cf99311030a928de039a36f77926230", // kfsample Cid (1312 — 312 collides with a real dump svchost)
+  // kftarget.exe _EPROCESS is fixed by populateFromDump() at 0xffffa40bc9e73dc0
+  // and ActiveProcessLinks sits at +0x448 (22h2 tables) => 0xffffa40bc9e74208
+  // (Cids/addresses follow Windows realism: multiples of 4, non-slab pool VAs)
+  m1l2f1: "b521dce529fc0173433b3abf4ebbeb4f9f62a28c4d25d7a0207f41843ef58ff2",
   m1l3f1: "fac4db6ff2799f9496b9274d97f297372527ccfd2ac51d4ebcac83244a11a377",
   m2l1f1: "e629fa6598d732768f7c726b4b621285f9c3b85303900aa912017db7617d8bdb",
   m2l1f2: "eb6ac6d19614930b2043d812fa2f921182d705a123fa25a0960ba32885c1c5ec",
   m2l1f3: "6531630236cc0988185d752ba4774bdaef12e7cc3e9aafef44fac35512c90157",
   m3l1f1: "795c965da66b249e55cd9d0f73b177afea944ec6d076f81092f9657c540db6d3",
-  m3l1f2: "c7e616822f366fb1b5e0756af498cc11d2c0862edcb32ca65882f622ff39de1b",
+  m3l1f2: "5e968ce47ce4a17e3823c29332a39d049a8d0afb08d157eb6224625f92671a51",
   m3l1f3: "c55edb2e0282de46e56e00d9708090d56690bda1bf2fb2daa061067ba19f60dc",
   // m3.l1.lab2 (author-your-own-hook): thunk VAs are deterministic —
   // PsLookupProcessByProcessId is the 4th defineApi call => bases.thunk+0x30
   m3l1f4: "1517f7b43bddbd7889d718031169acafe107f73b267df8a0d0c3b9f97223a862",
   m3l1f5: "f8aa067dc961c4f182e93bda11cec69361b2b9882c88eeba3a1e3439aba80c34",
   // --- KF-Sentinel defense labs (windows-kernel track) ---
-  m1l4f1: "c7e616822f366fb1b5e0756af498cc11d2c0862edcb32ca65882f622ff39de1b", // carved victim pid
+  m1l4f1: "5e968ce47ce4a17e3823c29332a39d049a8d0afb08d157eb6224625f92671a51", // carved victim pid (888 — Cids are multiples of 4)
   m1l4f2: "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683", // linked entries post-DKOM
   m1l4f3: "355cbb85edcf7eac7e437a0a597c733c2f41b78e98f5f2370e83e50a8c21e2ca", // sentinel v1 secret
   m2l2f1: "e629fa6598d732768f7c726b4b621285f9c3b85303900aa912017db7617d8bdb", // sampled IRQL
@@ -160,7 +167,7 @@ const F = {
 const HOOK_AUTHOR_STARTER = `// m3.l1.lab2 - author your own inline hook
 //
 // kfhook.sys showed you WHAT a detour looks like; now write one yourself.
-// The emulated nt! suppresses pid 666 lookups whenever the export prologue
+// The emulated nt! suppresses pid 888 lookups whenever the export prologue
 // reads as detoured (first byte == E9). Your job:
 //
 //   1. Boot the lab world and discover the export's address:
@@ -169,7 +176,7 @@ const HOOK_AUTHOR_STARTER = `// m3.l1.lab2 - author your own inline hook
 //   2. Paste that address into g_TargetFn below.
 //   3. Compile & load, then prove it from the debugger:
 //        kd> !hookscan                           ; DETECTED INLINE HOOKS
-//        kd> !hooktest PsLookupProcessByProcessId 666
+//        kd> !hooktest PsLookupProcessByProcessId 888
 
 #include <ntddk.h>
 
@@ -229,7 +236,47 @@ export const module1 = {
       title: "Kernel objects primer — the four places a process exists",
       body: m1l0Body,
       requires: [],
-      labs: [],
+      labs: [
+        {
+          id: "m1.l0.lab1",
+          kind: "windbg",
+          title: "First contact: confirm rows #1–#3 in a pristine world",
+          brief:
+            "Boot the debugger and prove each cross-check exists BEFORE anything " +
+            "is hidden: walk the process list, read a thread's ApcState " +
+            "back-pointer, and enumerate the seeded handle references.",
+          scenario: "boot-default",
+          flags: [
+            {
+              id: "m1.l0.f1",
+              sha256: F.m1l0f1,
+              prompt:
+                "The primer names several independent records an EDR diffs " +
+                "against each other. Submit that count as a decimal digit.",
+              points: 50,
+            },
+            {
+              id: "m1.l0.f2",
+              sha256: F.m1l0f2,
+              prompt:
+                "Boot the lab, run `!process kfsample 7`. The THREAD line ends " +
+                "with an arrow annotation naming the process the thread " +
+                "belongs to. Submit the structure field name before the -> " +
+                "(one word, lowercase).",
+              points: 100,
+            },
+            {
+              id: "m1.l0.f3",
+              sha256: F.m1l0f3,
+              prompt:
+                "Run `!handles kfsample` in the debugger. The seeded reference " +
+                "shows kfsample.exe holds a handle against another lab " +
+                "process — submit its exact image name.",
+              points: 100,
+            },
+          ],
+        },
+      ],
     },
     {
       id: "m1.l1",
@@ -792,7 +839,7 @@ export const module3 = {
           brief:
             "Flip sides: find PsLookupProcessByProcessId's address in the debugger " +
             "(x / u / sym), paste it into the driver template, compile and load it — " +
-            "your code writes the E9 detour that makes pid 666 unlookupable. Prove with " +
+            "your code writes the E9 detour that makes pid 888 unlookupable. Prove with " +
             "!hookscan and !hooktest.",
           scenario: "api-hook-blank",
           compileTask: "inline-hook",
@@ -814,7 +861,7 @@ export const module3 = {
               sha256: F.m3l1f5,
               prompt:
                 "After your driver loads and !hookscan reports the detour, !hooktest " +
-                "PsLookupProcessByProcessId 666 proves suppression — and the DbgPrint buffer " +
+                "PsLookupProcessByProcessId 888 proves suppression — and the DbgPrint buffer " +
                 "holds your driver's secret line. Submit the secret value exactly.",
               points: 200,
             },
@@ -1562,7 +1609,7 @@ export const module16 = {
           title: "Find and repair the detoured service",
           brief:
             "kfvillain.sys detoured one KiServiceTable entry to hide pid " +
-            "666. Scan the table, resolve the E9 target, restore the " +
+            "888. Scan the table, resolve the E9 target, restore the " +
             "prologue, prove the lookup succeeds.",
           scenario: "ssdt-hook",
           flags: [

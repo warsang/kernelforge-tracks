@@ -52,7 +52,7 @@ NTSTATUS DriverEntry(
     UNREFERENCED_PARAMETER(RegistryPath);
 
     PEPROCESS targetProcess = NULL;
-    HANDLE targetPid = (HANDLE)666; // kftarget.exe
+    HANDLE targetPid = (HANDLE)888; // kftarget.exe
 
     NTSTATUS status = PsLookupProcessByProcessId(targetPid, &targetProcess);
     if (!NT_SUCCESS(status)) {
@@ -249,7 +249,7 @@ function verifyInlineHookTask(kernel, loaded, status) {
     return false;
   }
   status("good", `✓ ${HOOK_API} prologue @ ${thunk ? "0x" + thunk.toString(16) : "?"} reads as detoured.`);
-  status("dim", "Prove it: !hookscan, then !hooktest PsLookupProcessByProcessId 666");
+  status("dim", "Prove it: !hookscan, then !hooktest PsLookupProcessByProcessId 888");
   if (printed) {
     status("mono", printed.trim());
   }
@@ -284,7 +284,7 @@ COMPILE_TASKS["sentinel-v1"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([
     ["process-list walk", /SENTINEL-V1: process list walk/],
-    ["DKOM carve detection", /carve hit 'kftarget\.exe'.*pid=666|no hidden-process signatures/],
+    ["DKOM carve detection", /carve hit 'kftarget\.exe'.*pid=888|no hidden-process signatures/],
     ["unbacked-exec classification", /UNBACKED EXEC DETECTED|belongs to a listed module/],
     ["completion secret", /secret=kf-sentinel-v1-ok/],
   ]),
@@ -483,15 +483,18 @@ function upgradeCodeFences(body) {
   const mountFence = (f) => {
     if (f.mounted) return;
     f.mounted = true;
-    // content-sized height (Monaco needs an explicit box), capped for huge dumps
+    // content-sized height (Monaco needs an explicit box), capped for huge
+    // dumps. The height travels to the editor host itself — sizing the outer
+    // .fence-editor box instead used to clip the textarea fallback and let
+    // the Monaco canvas paint over the lesson text below it.
     const lines = f.src.split("\n").length;
-    f.holder.style.height = `${Math.min(Math.max(lines * 19 + 10, 60), 480)}px`;
+    const px = `${Math.min(Math.max(lines * 19 + 10, 60), 480)}px`;
     void createCodeEditor(f.holder, {
       value: f.src,
       language: f.monacoLang,
       readOnly: true,
       lineNumbers: true,
-      height: "100%",
+      height: px,
     });
   };
   if (typeof IntersectionObserver === "undefined") {

@@ -43,7 +43,7 @@ test("compiled DKOM driver: real exec -> kftarget hidden -> canonical flag addre
 
   // locate target exactly like main.js does
   const kftarget = kernel.processesByName.get("kftarget.exe")
-    ?? kernel.findEprocessByPid(666n);
+    ?? kernel.findEprocessByPid(888n);
   assert.ok(kftarget, "kftarget.exe missing from booted world");
 
   const obj = new Uint8Array(await readFile(FIXTURE));
@@ -59,7 +59,7 @@ test("compiled DKOM driver: real exec -> kftarget hidden -> canonical flag addre
   // the driver's OWN DbgPrint must carry the canonical links address
   const printed = kernel.dbgLog.find((l) => l.includes("Overwrote _LIST_ENTRY at:"));
   assert.ok(printed, "no DbgPrint from driver");
-  assert.match(printed, /ffffc80000001448/, `flag address diverged: ${printed}`);
+  assert.match(printed, /ffffa40bc9e74208/, `flag address diverged: ${printed}`);
 
   // option A: visible to lm
   const entry = kernel.loadedModules.find((m) => m.name === "kf_m1_l2_lab1.sys");

@@ -68,7 +68,7 @@ test("DKOM unlink hides process: full driver emulation", async () => {
   const after = k.listProcesses();
   assert.equal(after.find((p) => p.name === "kftarget.exe"), undefined);
   // PID lookup must also fail now
-  assert.equal(k.findEprocessByPid(666n), null);
+  assert.equal(k.findEprocessByPid(888n), null);
 });
 
 test("DbgPrint formatting works with %d and %p", async () => {
@@ -105,7 +105,7 @@ test("EDR cross-check: ApcState still finds a process after DKOM unlink", async 
   const blink = k.mem.u64(links + 8n);
   k.mem.w64(blink, flink);
   k.mem.w64(flink + 8n, blink);
-  assert.equal(k.findEprocessByPid(666n), null); // list source is blind now
+  assert.equal(k.findEprocessByPid(888n), null); // list source is blind now
 
   // but the thread cross-reference still names the hidden process:
   // walk every listed process's threads and collect ApcState targets.
@@ -121,10 +121,10 @@ test("EDR cross-check: ApcState still finds a process after DKOM unlink", async 
   }
   // kftarget's own ring is orphaned, so walk its seeded thread directly —
   // exactly what an EDR does from its boot-time thread inventory
-  const thr = k.threadsByPid.get(666n);
+  const thr = k.threadsByPid.get(888n);
   assert.equal(k.mem.u64(thr + apcOff), target);
   assert.equal(
-    k.mem.u64(thr + cidOff), 666n,
+    k.mem.u64(thr + cidOff), 888n,
     "CLIENT_ID.UniqueProcess still identifies the hidden process");
 });
 
@@ -179,7 +179,7 @@ test("ZwQuerySystemInformation(SystemHandleInformation) enumerates cross-refs", 
     const e = buf + 8n + BigInt(i * 24);
     const ownerPid = k.mem.u32(e);
     const obj = k.mem.u64(e + 16n);
-    if (ownerPid === 312 && obj === target) sawKfsampleToKftarget = true;
+    if (ownerPid === 1312 && obj === target) sawKfsampleToKftarget = true;
     void pidOff;
   }
   assert.ok(sawKfsampleToKftarget,

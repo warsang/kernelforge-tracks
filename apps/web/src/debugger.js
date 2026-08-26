@@ -229,7 +229,15 @@ export function createCommands(kernel) {
 
   const resolveProcess = (token) => {
     let v;
-    try { v = BigInt(token); } catch { return null; }
+    try { v = BigInt(token); } catch {
+      // not numeric — accept image names ("lsass", "kfsample.exe") so lab
+      // commands stay world-agnostic (pids differ between dump overlays)
+      const want = String(token).toLowerCase().replace(/\.(exe|sys)$/, "");
+      for (const [nm, ep] of kernel.processesByName ?? []) {
+        if (nm.toLowerCase().replace(/\.(exe|sys)$/, "") === want) return ep;
+      }
+      return null;
+    }
     if (v > 0xffffn) return v;
     return kernel.findEprocessByPid(v);
   };
@@ -306,14 +314,20 @@ export function createCommands(kernel) {
     return out;
   };
 
-  /** One `THREAD <ethread>` output line per walked thread. */
+  /**
+   * One `THREAD <ethread>` output line per walked thread, kd-style:
+   *   THREAD ffffa40b...  Cid 1312.4096  Teb: 000000e4....  Win32Thread: 0x...
+   *                                                              ApcState->owner
+   */
   const threadLines = (eproc, w) => {
     const threads = listThreads(eproc);
     if (!threads.length) return 0;
-    let cidOff = null, tleOff = null, apcOff = null;
+    let cidOff = null, tleOff = null, apcOff = null, tebOff = null, w32Off = null;
     try { cidOff = BigInt(tables.offsetOf("_ETHREAD", "Cid")); } catch { /* optional */ }
     try { tleOff = BigInt(tables.offsetOf("_ETHREAD", "ThreadListEntry")); } catch { /* optional */ }
     try { apcOff = BigInt(tables.offsetOf("_KTHREAD", "ApcState")); } catch { /* optional */ }
+    try { tebOff = BigInt(tables.offsetOf("_KTHREAD", "Teb")); } catch { /* optional */ }
+    try { w32Off = BigInt(tables.offsetOf("_KTHREAD", "Win32Thread")); } catch { /* optional */ }
     for (const t of threads) {
       // walkers carry _LIST_ENTRY addresses; WinDbg prints _ETHREAD bases
       const base = tleOff !== null ? t.addr - tleOff : t.addr;
@@ -321,11 +335,25 @@ export function createCommands(kernel) {
         w(`    THREAD ${fmtAddr(base)}  (thread image not resident — pointer from authentic list)`, "dim");
         continue;
       }
-      let note = "";
+      let cidPair = "?.?";
       if (cidOff !== null) {
         try {
-          const tid = mem.u64(base + cidOff + 8n); // CLIENT_ID.UniqueThread
-          note = `  Tid: ${tid}`;
+          const upid = mem.u64(base + cidOff);            // CLIENT_ID.UniqueProcess
+          const utid = mem.u64(base + cidOff + 8n);       // CLIENT_ID.UniqueThread
+          cidPair = `${upid}.${utid}`;
+        } catch { /* optional */ }
+      }
+      let line = `    THREAD ${fmtAddr(base)}  Cid ${cidPair}`;
+      if (tebOff !== null) {
+        try {
+          const teb = mem.u64(base + tebOff);
+          if (teb) line += `  Teb: ${teb.toString(16).padStart(16, "0")}`;
+        } catch { /* optional */ }
+      }
+      if (w32Off !== null) {
+        try {
+          const w32 = mem.u64(base + w32Off);
+          line += `  Win32Thread: ${w32 ? "0x" + w32.toString(16) : "00000000"}`;
         } catch { /* optional */ }
       }
       if (apcOff !== null) {
@@ -336,13 +364,52 @@ export function createCommands(kernel) {
           const tgt = mem.u64(base + apcOff);
           if (tgt) {
             const nm = mem.readAnsi(tgt + tables.offsetOf("_EPROCESS", "ImageFileName"), 15);
-            note += `  ApcState->${nm}`;
+            line += `  ApcState->${nm}`;
           }
         } catch { /* optional */ }
       }
-      w(`    THREAD ${fmtAddr(base)}${note}`);
+      w(line);
     }
     return threads.length;
+  };
+
+  /**
+   * WinDbg-style per-process block shared by `!process 0 <flags>` and
+   * `!process <pid|eproc> <flags>`:
+   *   PROCESS ffffa40b...  SessionId: none  Cid: 00e4  Peb: ...  ParentCid: 0004
+   *       ImageFileName: lsass.exe
+   *       Token: ...  ActiveThreads: N     (flag 0x2)
+   *       THREAD lines                     (flag 0x4)
+   * Flag bits mirror WinDbg: 0x2 = wide walk (token/threads count),
+   * 0x4 = enumerate ThreadListHead threads.
+   */
+  const processBlock = (eproc, bits, w) => {
+    let pid = 0n, name = "";
+    try {
+      pid = mem.u64(eproc + BigInt(tables.offsetOf("_EPROCESS", "UniqueProcessId")));
+      name = mem.readAnsi(eproc + tables.offsetOf("_EPROCESS", "ImageFileName"), 15);
+    } catch { /* minimal fields */ }
+    let pebStr = "00000000", parentStr = pid === 4n ? "0004" : "0000";
+    try {
+      const peb = mem.u64(eproc + BigInt(tables.offsetOf("_EPROCESS", "Peb")));
+      if (peb) pebStr = peb.toString(16);
+    } catch { /* optional field */ }
+    try {
+      const parent = mem.u64(eproc +
+        BigInt(tables.offsetOf("_EPROCESS", "InheritedFromUniqueProcessId")));
+      if (parent) parentStr = parent.toString().padStart(4, "0");
+    } catch { /* optional field */ }
+    w(`PROCESS ${fmtAddr(eproc)}  SessionId: none  Cid: ${pid.toString().padStart(4, "0")}  Peb: ${pebStr}  ParentCid: ${parentStr}`, "hdr");
+    if (name) w(`    ImageFileName: ${name}`);
+    if (bits & 2) {
+      try {
+        const tokOff = tables.offsetOf("_EPROCESS", "Token");
+        const raw = mem.u64(eproc + tokOff);
+        const threads = mem.u32(eproc + tables.offsetOf("_EPROCESS", "ActiveThreads"));
+        w(`    Token: ${fmtAddr(raw & FAST_REF_MASK)}  ActiveThreads: ${threads}`, "dim");
+      } catch { /* optional fields */ }
+    }
+    if (bits & 4) threadLines(eproc, w);
   };
 
   function* dumpStruct(typeName, addr, { max = 96 } = {}) {
@@ -755,12 +822,13 @@ export function createCommands(kernel) {
       w("  lm                        loaded modules");
       w("  !drivers                  driver objects (loadedDrivers + lm merge)");
       w("  !drvobj [name|addr]       DRIVER_OBJECT walk incl. MajorFunction table");
-      w("  !process 0 [flags]        process list (flag bit2=0x4 walks threads)");
-      w("  !process <addr|pid> [f]   detail _EPROCESS walk; 0x4 = ThreadListHead");
+      w("  !process 0 [flags]        process list (0x2 token/threads, 0x4 threads)");
+      w("  !process <addr|pid> [f]   kd-style process block; 0x2 + 0x4 as above");
       w("  !eproc <addr|pid>         short summary");
       w("  !token <addr|pid>         decode Token EX_FAST_REF + raw dump");
       w("  !pcr [addr] / !kpcr       KPCR -> PRCB -> CurrentThread chain");
       w("  !ps / !pt                 alias for !process 0 0 / current thread summary");
+      w("  !handles [pid]            seeded cross-process handle references (EDR row #3)");
       w("  !prcb [addr]              _KPRCB field walk");
       w("  dt <Type> [addr]          struct layout or memory walk from build tables");
       w("  dt <Type> <Field>         single field lookup");
@@ -858,37 +926,24 @@ export function createCommands(kernel) {
     "!process"(args, w) {
       if (!args.length || args[0] === "0") {
         const bits = Number(args[1] ?? 0);
-        w("PROCESS fff...  SessionId: none  Cid: xxxx  Peb: 00000000  ParentCid: 0004", "hdr");
         const procs = kernel.listProcesses();
-        for (const p of procs) {
-          w(`PROCESS ${fmtAddr(p.eprocess)}  Cid: ${p.pid.toString().padStart(4, "0")}  ImageFileName: ${p.name}`);
-          if (bits > 0) {
-            try {
-              const tokOff = tables.offsetOf("_EPROCESS", "Token");
-              const raw = mem.u64(p.eprocess + tokOff);
-              const threads = mem.u32(p.eprocess + tables.offsetOf("_EPROCESS", "ActiveThreads"));
-              w(`    Token: ${fmtAddr(raw & FAST_REF_MASK)}  ActiveThreads: ${threads}`, "dim");
-            } catch { /* optional fields */ }
-          }
-          if (bits & 4) threadLines(p.eprocess, w);
-        }
+        for (const p of procs) processBlock(p.eprocess, bits, w);
         return;
       }
       // thread-address guard: route obviously-thread addresses to a hint
-      if (kernel.currentThread && BigInt(args[0]) === kernel.currentThread) {
-        return w(`!process: ${fmtAddr(kernel.currentThread)} is an _ETHREAD — use !thread`, "err");
-      }
-      if (kernel.threads?.[String(BigInt(args[0]))]) {
-        return w(`!process: ${fmtAddr(BigInt(args[0]))} is an _ETHREAD — use !thread`, "err");
+      let asAddr = null;
+      try { asAddr = BigInt(args[0]); } catch { /* name arg — no guard */ }
+      if (asAddr !== null) {
+        if (kernel.currentThread && asAddr === kernel.currentThread) {
+          return w(`!process: ${fmtAddr(kernel.currentThread)} is an _ETHREAD — use !thread`, "err");
+        }
+        if (kernel.threads?.[String(asAddr)]) {
+          return w(`!process: ${fmtAddr(asAddr)} is an _ETHREAD — use !thread`, "err");
+        }
       }
       const eproc = resolveProcess(args[0]);
       if (!eproc) return w(`!process: no process for "${args[0]}"`, "err");
-      // second arg is a WinDbg-style flag bitmask: bit1=0x2 wide walk,
-      // bit2=0x4 enumerate ThreadListHead threads beneath this process
-      const flags = Number(args[1] ?? 1);
-      w(`Dumping _EPROCESS for "${args[0]}" (flags ${args[1] ?? "1"}):`, "hdr");
-      for (const line of dumpStruct("_EPROCESS", eproc, { max: flags > 1 ? 200 : 140 })) w(line);
-      if (flags & 4) threadLines(eproc, w);
+      processBlock(eproc, Number(args[1] ?? 0), w);
     },
 
     "!eproc"(args, w) {
@@ -898,11 +953,12 @@ export function createCommands(kernel) {
     },
 
     "!token"(args, w) {
-      if (!args[0]) return w("usage: !token <TokenAddress|pid>", "err");
+      if (!args[0]) return w("usage: !token <TokenAddress|pid|name>", "err");
       let target = 0n;
       try {
-        const v = BigInt(args[0]);
-        if (v > 0xffffn) target = v & FAST_REF_MASK;
+        let v = null;
+        try { v = BigInt(args[0]); } catch { /* name form */ }
+        if (v !== null && v > 0xffffn) target = v & FAST_REF_MASK;
         else {
           const off = tables.offsetOf("_EPROCESS", "Token");
           const e = resolveProcess(args[0]);
@@ -981,6 +1037,34 @@ export function createCommands(kernel) {
 
     "!ps"(args, w) {
       commands["!process"](["0", "0"], w);
+    },
+    "!handles"(args, w) {
+      // Enumerate the seeded cross-process handle references (the row-#3
+      // cross-check from the m1.l0 primer). Optional arg filters by owner
+      // pid:  !handles          every owner's table
+      //       !handles 1312     only kfsample.exe's open handles
+      const refs = kernel.objectHandles ?? [];
+      if (!refs.length) {
+        return w("!handles: no handle tables seeded in this world", "err");
+      }
+      const byEproc = new Map(
+        [...(kernel.processesByName ?? [])].map(([nm, ep]) => [ep, nm]));
+      let ownerFilter = null;
+      if (args[0]) {
+        const eproc = resolveProcess(args[0]);
+        if (!eproc) return w(`!handles: no process for "${args[0]}"`, "err");
+        ownerFilter = eproc;
+      }
+      w("Owner process                          Handle   Object            GrantedAccess", "hdr");
+      let shown = 0;
+      for (const r of refs) {
+        if (ownerFilter && r.ownerEproc !== ownerFilter) continue;
+        w(`${(byEproc.get(r.ownerEproc) ?? "???").padEnd(38)} ` +
+          `0x${r.handle.toString(16).padStart(4, "0")}   ` +
+          `${fmtAddr(r.targetEproc)}  0x${r.grantedAccess.toString(16)}`);
+        shown++;
+      }
+      if (!shown && ownerFilter) w("  (no seeded handles for this process)", "dim");
     },
     "!pt"(args, w) {
       // Walk threads of the current process
@@ -1751,7 +1835,7 @@ export function createCommands(kernel) {
 
     "!hooktest"(args, w) {
       if (!args[0]) {
-        return w("usage: !hooktest <Export> [args...]   e.g. !hooktest PsLookupProcessByProcessId 666", "err");
+        return w("usage: !hooktest <Export> [args...]   e.g. !hooktest PsLookupProcessByProcessId 888", "err");
       }
       const name = args[0].replace(/^nt!|ntoskrnl\.exe!/i, "");
       const impl = kernel.apiImpls.get(name);

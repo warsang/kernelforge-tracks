@@ -72,7 +72,7 @@ Debugger: `!hookscan [module]` diffs live vs pristine bytes and symbolizes the
 detour target; repair uses existing `eb`; `!hooktest <api> <args…>` exercises
 the modeled call.
 
-Lab flow: `kfhook.sys` detoured `PsLookupProcessByProcessId` to hide PID 666.
+Lab flow: `kfhook.sys` detoured `PsLookupProcessByProcessId` to hide PID 888.
 Student identifies the hooked export, the suppressed PID, restores the
 prologue, and confirms the lookup succeeds again.
 
@@ -195,7 +195,7 @@ the driver-mode C that produces the same information from inside the kernel.
 
 **KF-Sentinel defense lessons/labs (compiler kind, real wasm clang):**
 - m1.l4 v1 (`sentinel-m1`): list-vs-carve DKOM detection + unbacked-exec
-  classification against a linked KLDR chain. Answers: 666 / 6 / kf-sentinel-v1-ok.
+  classification against a linked KLDR chain. Answers: 888 / 6 / kf-sentinel-v1-ok.
 - m2.l2 v2 (`irql-dpc`): IRQL watchdog samples KeGetCurrentIrql, restores
   DISPATCH_LEVEL, releases the stranded DPC. Answers: 15 / kf-watchdog-ok.
 - m3.l2 v3 (`api-hook`): prologue attestation engine vs known-good baseline;
