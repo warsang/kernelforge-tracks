@@ -740,6 +740,54 @@ export function installWinApiExt(kernel, ctx) {
   k.define("KeQueryDpcQueueDepth", () =>
     BigInt((kernel.pendingDpcs ?? []).filter((d) => !d.drained).length));
 
+  // ------------------------------------------- modeled GS base / pseudo-KPCR
+  //
+  // The m2.l4 telemetry lab teaches the x64 idiom `prcb = __readgsqword(0x20)`
+  // followed by a _KDPC_DATA walk at PRCB+0x3000. ntsim materializes a small
+  // pseudo-KPCR page whose layout matches the lesson exactly and refreshes
+  // the live DpcQueueDepth on every read, so raw offset-walk drivers report
+  // the same numbers the modeled APIs do (issue #21).
+  const KPCR_VA = 0x00f00000n;   // below every LOW_BASES region
+  const PRCB_VA = 0x00f01000n;
+  const KDPCDATA_OFF = 0x3000n;  // PRCB + 0x3000 -> _KDPC_DATA[0]
+  const DPC_QUEUE_DEPTH_OFF = 0x18n; // LIST_ENTRY(16) + DpcLock(8)
+  k.define("__readgsqword", (offset) => {
+    const off = BigInt(offset ?? 0);
+    // refresh the live fields, then service the read from memory
+    mem.w64(KPCR_VA + 0x20n, PRCB_VA);
+    const depth = BigInt((kernel.pendingDpcs ?? []).filter((d) => !d.drained).length);
+    mem.w32(PRCB_VA + KDPCDATA_OFF + DPC_QUEUE_DEPTH_OFF, Number(depth));
+    mem.w32(PRCB_VA + KDPCDATA_OFF + DPC_QUEUE_DEPTH_OFF + 4n, Number(depth)); // DpcCount
+    try {
+      return mem.u64(KPCR_VA + off);
+    } catch {
+      return 0n; // unmapped offset reads as zero (reads-as-zeros semantics)
+    }
+  });
+  k.define("KfReadGs", (offset) => k.apiImpls.get("__readgsqword")(offset));
+
+  // ------------------------------------------------- port I/O / physical map
+  //
+  // Modeled port thunks: writes to APMC/SMI ports drive the SMM chipset when
+  // one is attached; everything else logs. MmMapIoSpace is identity in the
+  // low-half worlds so physical == virtual for lab fixtures.
+  const ioLog = (dir, size, port, val) =>
+    kernel.dbgLog?.push(`io: ${dir}${size} 0x${BigInt(port).toString(16)}${val !== undefined ? ` <- 0x${BigInt(val).toString(16)}` : ""}`);
+  k.define("KfIoRead8", (port) => { ioLog("inb", "8", port); return 0n; });
+  k.define("KfIoRead32", (port) => { ioLog("ind", "32", port); return 0n; });
+  k.define("KfIoWrite8", (port, value) => {
+    const p = BigInt(port), v = BigInt(value ?? 0);
+    ioLog("outb", "8", p, v);
+    if (p === 0xb2n && kernel.smm) kernel.smm.chipset.smiPending = true; // APM latch
+    return undefined;
+  });
+  k.define("KfIoWrite32", (port, value) => { ioLog("outd", "32", port, value); return undefined; });
+  k.define("MmMapIoSpace", (physAddr, numberOfBytes) => {
+    void numberOfBytes;
+    return physAddr ? BigInt(physAddr) : 0n;
+  });
+  k.define("MmUnmapIoSpace", (_base, _len) => undefined);
+
   k.define("ExInitializeFastMutex", (fm) => {
     mem.w32(fm, 1); mem.w32(fm + 4n, 0); mem.w64(fm + 8n, 0n);
     return undefined;

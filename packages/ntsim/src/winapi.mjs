@@ -34,7 +34,10 @@ function usRead(mem, va) {
 
 export function installWinApi(kernel) {
   const mem = kernel.mem;
-  const t = kernel.tables;
+  // tables are resolved lazily: loadTablesFromDir() may swap the StructTables
+  // object AFTER construction, and a captured reference would go stale
+  // ("unknown type _EPROCESS" from every offset walk)
+  const t = { offsetOf: (...a) => kernel.tables.offsetOf(...a) };
 
   // ------------------------------------------------------------- state
   kernel.registry = new Map(); // path -> Map(valueName -> {type,data})
@@ -268,7 +271,10 @@ export function installWinApi(kernel) {
   k.define("PsGetCurrentProcess", () => currentEproc() ?? 0n);
   k.define("IoGetCurrentProcess", () => currentEproc() ?? 0n);
   k.define("PsGetCurrentThread", () => kernel.currentThread ?? 0n);
+  k.define("KeGetCurrentThread", () => kernel.currentThread ?? 0n);
   k.define("PsGetProcessId", (eproc) => mem.u64(eproc + t.offsetOf("_EPROCESS", "UniqueProcessId")));
+  k.define("PsGetProcessImageFileName", (eproc) =>
+    eproc ? eproc + t.offsetOf("_EPROCESS", "ImageFileName") : 0n);
   k.define("PsLookupProcessByProcessId", (pid, out) => {
     const e = kernel.findEprocessByPid(pid);
     if (!e) return 0xc000000bn;
@@ -339,9 +345,9 @@ export function installWinApi(kernel) {
   /** lab extension: sample another logical core's IRQL (directed-DPC labs). */
   k.define("KeQueryPerCpuIrql", (num) => BigInt(kernel.cpuIrql(Number(BigInt.asUintN(8, BigInt(num ?? 0n))))));
   k.define("KeInitializeDpc", (dpc, deferred, ctx) => {
-    mem.w64(dpc, 0x4b444350n); // 'DPCk' marker
-    mem.w64(dpc + 8n, ptrSizeMask(deferred));
-    mem.w64(dpc + 16n, ptrSizeMask(ctx));
+    mem.w64(dpc, 0x4b444350n); // 'DPCk' marker in the header word
+    mem.w64(dpc + 0x18n, ptrSizeMask(deferred));   /* DeferredRoutine @+0x18 */
+    mem.w64(dpc + 0x20n, ptrSizeMask(ctx));        /* DeferredContext  @+0x20 */
     return undefined;
   });
   k.define("KeInsertQueueDpc", (dpc, sysArg1, sysArg2) => {
@@ -351,8 +357,8 @@ export function installWinApi(kernel) {
     const target = kernel.dpcTargetCpu.get(va) ?? 0;
     const ok = kernel.queueDpc(
       va,
-      mem.u64(dpc + 8n),
-      mem.u64(dpc + 16n),
+      mem.u64(dpc + 0x18n),
+      mem.u64(dpc + 0x20n),
       { targetCpu: target },
     );
     // directed delivery: a DPC targeted at another core raises that core to

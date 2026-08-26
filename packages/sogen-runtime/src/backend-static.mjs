@@ -23,6 +23,7 @@ export function createStaticDebugSession(world) {
     // introspection is always legal against the static world
     paused: true,
     pauseCount: 1,
+    canExecute: false, // static backend cannot execute - needs WASM core
     onStateChange() { return () => {}; },
 
     async getRegisters() { return []; },
@@ -107,7 +108,7 @@ export function createStaticDebugSession(world) {
     },
     async listBreakpoints() { return [...breakpoints.values()]; },
 
-    async stepInto() { throw new Error("reference backend cannot execute — sogen WASM core pending"); },
+    async stepInto() { throw new Error("Execution requires the sogen WASM core — upload a target binary to enable stepping"); },
     stepOver() { return this.stepInto(); },
     stepOut() { return this.stepInto(); },
     runTo() { return this.stepInto(); },

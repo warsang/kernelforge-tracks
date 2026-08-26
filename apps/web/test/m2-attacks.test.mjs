@@ -165,13 +165,13 @@ for (const be of ["js", "unicorn"]) {
 
 test("DeferredRoutine hijack executes attacker code inside the victim slot", async () => {
   const { kernel } = await bootScenario("irql-attackers");
-  const victimBefore = kernel.mem.u64(KFWARZ_VICTIM_DPC + 8n);
+  const victimBefore = kernel.mem.u64(KFWARZ_VICTIM_DPC + 0x18n);
   assert.equal(victimBefore, 0xfffff8055a701400n, "victim queued with heartbeat routine");
 
   const obj = new Uint8Array(await readFile(FIX("kfhijack.obj")));
   const r = await runAttack(kernel, obj, "m2.l3.lab4");
   assert.equal(r.status, "ok", `fault: ${r.error?.message}`);
-  const patched = kernel.mem.u64(KFWARZ_VICTIM_DPC + 8n);
+  const patched = kernel.mem.u64(KFWARZ_VICTIM_DPC + 0x18n);
   assert.notEqual(patched, victimBefore, "routine pointer rewritten");
 
   const c = capture(kernel);

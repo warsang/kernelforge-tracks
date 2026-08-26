@@ -18,7 +18,7 @@ alias windows under your chosen index so plain \`dq\`/\`eb\` reach them.
 ## The lab
 
 1. Find the REAL DirectoryTableBase — the lowest frames belong to a
-   decoy whose self-map sits at a different index (an EAC-style CR3
+   decoy whose self-map sits at a different index (an anti-cheat-style CR3
    shuffle). The genuine PML4 self-references through index 0xF.
 2. Hand-split CODE_VA into 9-bit fields and compute the PTE alias:
    \`va(s, pml4(V), pdpt(V), pd(V), pt(V)*8)\`. Submit it (\`dq\` to verify).

@@ -199,12 +199,22 @@ export class UnicornCpuBackend {
 
   // ------------------------------------------------------------- raw ccalls
 
+  /** Guard against half-initialized vendored builds surfacing as cryptic
+   *  "Cannot read properties of undefined (reading 'ccall')" faults (#13). */
+  #requireUc() {
+    if (!this.uc || typeof this.uc.ccall !== "function") {
+      throw new CpuError("unicorn: core not initialized (wasm module unavailable)", 0n);
+    }
+  }
+
   #rawMap(base, size, perms) {
+    this.#requireUc();
     return this.uc.ccall("uc_mem_map", "number",
       ["pointer", "i64", "i64", "number"],
       [this.handle, toI64(base), toI64(size), perms]);
   }
   #rawWrite(addr, bytes) {
+    this.#requireUc();
     const p = this.uc._malloc(bytes.length);
     this.uc.writeArrayToMemory(bytes, p);
     const r = this.uc.ccall("uc_mem_write", "number",
@@ -214,6 +224,7 @@ export class UnicornCpuBackend {
     if (r !== 0) throw new CpuError(`uc_mem_write failed (${r})`, addr);
   }
   #rawRead(addr, len) {
+    this.#requireUc();
     const p = this.uc._malloc(len);
     try {
       const r = this.uc.ccall("uc_mem_read", "number",

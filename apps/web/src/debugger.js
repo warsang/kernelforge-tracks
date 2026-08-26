@@ -103,8 +103,12 @@ const unquote = (s) => String(s ?? "").replace(/`/g, "");
  * Tiny expression evaluator for the `?` command: hex/dec numbers, symbols
  * resolvable by `resolver`, registers via `@name`, unary +/-/~, and binary
  * + - * / % & | ^ << >> with C precedence and parentheses. BigInt throughout.
+ *
+ * opts.hexRadix: WinDbg's default radix is 16 — address expressions like
+ * `dq <va>+78 L1` mean +0x78 (issue #27), while `?`/`r` keep the historic
+ * decimal reading for bare integers unless written 0n<dec>.
  */
-export function evalExpr(expr, resolver) {
+export function evalExpr(expr, resolver, { hexRadix = false } = {}) {
   const src = String(expr ?? "");
   let pos = 0;
   const skip = () => { while (pos < src.length && /\s/.test(src[pos])) pos++; };
@@ -136,9 +140,11 @@ export function evalExpr(expr, resolver) {
       const t = unquote(numM[0]);
       pos += numM[0].length;
       // windbg default radix is 16: bare numbers parse as hex when they
-      // contain a-f or are >= 8 digits; plain decimals stay decimal
+      // contain a-f or are >= 8 digits; plain decimals stay decimal (unless
+      // hexRadix mode — then 0n<dec> is the explicit decimal escape)
       if (/^0x/i.test(t)) return BigInt(t);
-      if (/^[0-9]+$/.test(t)) return BigInt(t);
+      if (/^0n[0-9]+$/.test(t)) return BigInt(t.slice(2));
+      if (/^[0-9]+$/.test(t)) return hexRadix ? BigInt("0x" + t) : BigInt(t);
       return BigInt("0x" + t);
     }
     const symM = /^[A-Za-z_][A-Za-z0-9_!.]*/.exec(src.slice(pos));
@@ -306,6 +312,91 @@ export function createCommands(kernel) {
       if (mod) return mod.base + BigInt(parseInt(rel[2], 16));
     }
     return null;
+  };
+
+  /** Module image base by (extension-tolerant) name — null when unknown. */
+  const modBase = (name) => {
+    const want = String(name).toLowerCase().replace(/\.(sys|exe|dll)$/, "");
+    for (const m of kernel.loadedModules ?? []) {
+      const nm = String(m.name).toLowerCase();
+      if (nm === want || nm.replace(/\.(sys|exe|dll)$/, "") === want) return m.base;
+    }
+    return null;
+  };
+
+  /**
+   * Expression-aware address argument: plain forms go through resolveArg,
+   * everything else through the full evaluator so WinDbg-style inline
+   * arithmetic works (`dq 0x50101000+78 L1`, `u nt!DbgPrint+0x10`,
+   * `bp kfhook.sys+0x40+2`). Null when nothing resolves.
+   */
+  const tryEvalAddr = (tok) => {
+    const text = String(tok ?? "").trim();
+    if (!text) return null;
+    const direct = resolveArg(unquote(text));
+    if (direct !== null) return direct;
+    try {
+      return evalExpr(text, (kind, key) => {
+        if (kind === "@") {
+          const regs = kernel.cpu?.regs ?? {};
+          if (key in regs) return BigInt.asUintN(64, BigInt(regs[key]));
+          throw new Error(`unknown register @${key}`);
+        }
+        const v = resolveArg(key);
+        if (v !== null) return v;
+        const base = modBase(key);
+        if (base !== null && base !== undefined) return base;
+        throw new Error(`cannot resolve '${key}'`);
+      }, { hexRadix: true });
+    } catch { return null; }
+  };
+
+  /**
+   * WinDbg memory commands take `<expr> [<len|Llen>]`, but students paste
+   * spaced arithmetic too (`db 0x400000 + 0x40 L10`). Fold every token
+   * except a trailing `L<count>` into one address expression; a non-L second
+   * token stays the length (back-compat with plain decimal counts).
+   */
+  const splitAddrLen = (args, defaultLenTok) => {
+    if (!args.length) return { exprText: "", lenTok: defaultLenTok };
+    const lastTok = args[args.length - 1];
+    if (/^[Ll]\+?(0x[0-9a-fA-F]+|[0-9a-fA-F]+|`[0-9a-fA-F`]+`)$/.test(unquote(lastTok))) {
+      return { exprText: args.slice(0, -1).join(" "), lenTok: lastTok };
+    }
+    return { exprText: args[0], lenTok: args[1] ?? defaultLenTok };
+  };
+
+  /**
+   * PageTableSpace world guard: `kernel.paging` doubles as the boolean flag
+   * for guest-paged Mmu worlds, and truthiness alone crashed !cr3/!pte/
+   * !vtop there ("Cannot read properties of undefined (reading 'values')",
+   * identically under both backends because this is world-shape logic).
+   */
+  const pageWorld = () =>
+    kernel.paging && kernel.paging.processes instanceof Map ? kernel.paging : null;
+
+  /** Raw byte rows shared by the `u` degrade path. */
+  const dumpRawRows = (va, len, w) => {
+    const bytes = readForward(mem, va, Math.min(len, 128));
+    if (!bytes.length) { w(`  <no readable bytes at ${fmtAddr(va)}>`, "dim"); return; }
+    for (let row = 0; row < bytes.length; row += 16) {
+      const chunk = [...bytes.slice(row, row + 16)];
+      const hex = chunk.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+      const ascii = chunk.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
+      w(`${fmtAddr(va + BigInt(row))}  ${hex.padEnd(47)}  |${ascii}|`, "dim");
+    }
+  };
+
+  /** Unassemble failure output: loader problems must not masquerade as
+   *  memory faults (issue #28/#29 "expected magic word" confusion). */
+  const unasmError = (cmd, va, e, w, count = 8) => {
+    if (/^disassembler-unavailable/.test(e.message ?? "")) {
+      w(`${cmd}: ${e.message}`, "err");
+      w("  raw bytes instead (the capstone-wasm asset is missing/broken):", "dim");
+      dumpRawRows(va, count * 8, w);
+      return;
+    }
+    w(memErr(va, e.message === "unmapped" ? "unmapped" : e.message), "err");
   };
 
   /**
@@ -903,6 +994,10 @@ export function createCommands(kernel) {
       w("  !cr3 [proc]               page-table base + self-map index (paging labs)");
       w("  !pte <va> [proc]          full 4-level walk: entries, aliases, bits");
       w("  !vtop <va> [proc]         translate VA -> PA");
+      w("  !cr                       control registers (cr0/cr3/cr4/efer)");
+      w("  !smep [0|1]               query or toggle SMEP (CR4 bit 20)");
+      w("  !dbgprint                 dump the buffered DbgPrint log");
+      w("  !smram / !smmc            SMRAM state / SMRAMC decode (SMM labs)");
       w("  !notifyroutines           registered process/thread/image/Ob/Cm callbacks");
       w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
       w("  !ssdt [module]            system service table + inline-hook scan");
@@ -1206,7 +1301,7 @@ export function createCommands(kernel) {
       if (a[0] === "-a") { ascii = true; a.shift(); }
       let start, len, pat = [];
       try {
-        start = BigInt(a[0]);
+        start = tryEvalAddr(a[0]) ?? BigInt(a[0]);
         len = parseLen(a[1] ?? "128");
         if (ascii) {
           const q = a.slice(2).join(" ").replace(/^"|"$/g, "");
@@ -1285,8 +1380,8 @@ export function createCommands(kernel) {
     // ---- breakpoints -------------------------------------------------------
     bp(args, w) {
       const tok = args[0];
-      if (!tok) return w("usage: bp <addr|module!sym|Export>   (e.g. bp kfhook.sys+0x1010)", "err");
-      const addr = resolveArg(unquote(tok));
+      if (!tok) return w("usage: bp <addr|module!sym|expr>   (e.g. bp kfhook.sys+0x1010)", "err");
+      const addr = tryEvalAddr(tok);
       if (addr === null) return w(`bp: cannot resolve "${tok}"`, "err");
       if (bp.map.has(addr)) return w(`breakpoint already set @ ${fmtAddr(addr)}`, "warn");
       bp.map.set(addr, { enabled: true, hits: 0 });
@@ -1314,7 +1409,7 @@ export function createCommands(kernel) {
         relaxPolicy();
         return w("all breakpoints cleared");
       }
-      const addr = resolveArg(unquote(tok));
+      const addr = tryEvalAddr(tok);
       if (addr === null || !bp.map.has(addr)) return w(`bc: no breakpoint at "${tok}"`, "err");
       engineClearBp(addr);
       bp.map.delete(addr);
@@ -1323,7 +1418,7 @@ export function createCommands(kernel) {
     },
 
     bd(args, w) {
-      const addr = resolveArg(unquote(args[0] ?? ""));
+      const addr = args[0] ? tryEvalAddr(args[0]) : null;
       const rec = addr !== null ? bp.map.get(addr) : null;
       if (!rec) return w("usage: bd <addr>", "err");
       rec.enabled = false;
@@ -1332,7 +1427,7 @@ export function createCommands(kernel) {
     },
 
     be(args, w) {
-      const addr = resolveArg(unquote(args[0] ?? ""));
+      const addr = args[0] ? tryEvalAddr(args[0]) : null;
       const rec = addr !== null ? bp.map.get(addr) : null;
       if (!rec) return w("usage: be <addr>", "err");
       rec.enabled = true;
@@ -1406,12 +1501,12 @@ export function createCommands(kernel) {
     },
 
     async u(args, w) {
-      // usage: u [addr|symbol] [count|Lcount] — default: rip, 12 instructions
+      // usage: u [addr|symbol|expr] [count|Lcount] — default: rip, 12 instructions
       let idx = 0;
       let va = kernel.cpu.regs.rip ?? 0n;
       let from = "rip";
       if (args[0] && !/^[Ll]/.test(args[0])) {
-        va = resolveArg(unquote(args[0]));
+        va = tryEvalAddr(args[0]);
         if (va === null) return w(`u: cannot resolve "${args[0]}"`, "err");
         from = unquote(args[0]);
         idx = 1;
@@ -1431,14 +1526,14 @@ export function createCommands(kernel) {
           w(`${fmtAddr(i.va)}  ${bytes.padEnd(21)} ${disasmLine(i, hiBase)}`);
         }
       } catch (e) {
-        w(memErr(va, e.message === "unmapped" ? "unmapped" : e.message), "err");
+        unasmError("u", va, e, w, count);
       }
     },
 
     async uf(args, w) {
       // usage: uf <addr|symbol> — unassemble until unconditional ret/jmp
       if (!args[0]) return w("usage: uf <addr|symbol>   e.g. uf nt!PsLookupProcessByProcessId", "err");
-      const va = resolveArg(unquote(args[0]));
+      const va = tryEvalAddr(args[0]);
       if (va === null) return w(`uf: cannot resolve "${args[0]}"`, "err");
       const hiBase = BigInt.asUintN(64, va) & ~0xffffffffn;
       try {
@@ -1450,13 +1545,13 @@ export function createCommands(kernel) {
         }
         if (insns.length >= 128) w("... (cap reached — no terminating ret found)", "dim");
       } catch (e) {
-        w(memErr(va, e.message === "unmapped" ? "unmapped" : e.message), "err");
+        unasmError("uf", va, e, w, 12);
       }
     },
 
     da(args, w) {
       // usage: da <addr> [len|Llen] — ASCII string display (NUL-terminated)
-      const addr = args[0] ? resolveArg(unquote(args[0])) : null;
+      const addr = args[0] ? tryEvalAddr(args[0]) : null;
       if (addr === null) return w("usage: da <addr> [len]", "err");
       let len;
       try { len = parseLen(args[1] ?? "64"); } catch { return w("da: bad length", "err"); }
@@ -1473,8 +1568,8 @@ export function createCommands(kernel) {
     },
 
     du(args, w) {
-      // usage: du <addr> [len|Llen] — UTF-16LE string display
-      const addr = args[0] ? resolveArg(unquote(args[0])) : null;
+      // usage: du <addr> [len|Llen] — UTF-16 string display
+      const addr = args[0] ? tryEvalAddr(args[0]) : null;
       if (addr === null) return w("usage: du <addr> [len]", "err");
       let len;
       try { len = parseLen(args[1] ?? "64"); } catch { return w("du: bad length", "err"); }
@@ -1605,10 +1700,12 @@ export function createCommands(kernel) {
     "!drivobj"(args, w) { commands["!drvobj"](args, w); }, // alias (both spellings seen in the wild)
 
     db(args, w) {
-      let addr = args[0] ? resolveArg(args[0]) : 0n;
-      if (addr === null) return w("db: bad address", "err");
+      const { exprText, lenTok } = splitAddrLen(args, "128");
+      if (!exprText) return w("usage: db <addr> [n|Ln]", "err");
+      const addr = tryEvalAddr(exprText);
+      if (addr === null) return w(`db: cannot resolve "${exprText}"`, "err");
       let len;
-      try { len = parseLen(args[1] ?? "128"); } catch { return w("db: bad length (try: db <addr> L40)", "err"); }
+      try { len = parseLen(lenTok); } catch { return w("db: bad length (try: db <addr> L40)", "err"); }
       len = Math.min(len, 512);
       if (addr !== 0n) {
         const why = memFault(addr, len);
@@ -1624,10 +1721,12 @@ export function createCommands(kernel) {
     },
 
     dq(args, w) {
-      let addr = args[0] ? resolveArg(args[0]) : 0n;
-      if (addr === null) return w("dq: bad address", "err");
+      const { exprText, lenTok } = splitAddrLen(args, "8");
+      if (!exprText) return w("usage: dq <addr> [n|Ln]", "err");
+      const addr = tryEvalAddr(exprText);
+      if (addr === null) return w(`dq: cannot resolve "${exprText}"`, "err");
       let count;
-      try { count = parseLen(args[1] ?? "8"); } catch { return w("dq: bad count (try: dq <addr> L8)", "err"); }
+      try { count = parseLen(lenTok); } catch { return w("dq: bad count (try: dq <addr> L8)", "err"); }
       count = Math.min(count, 64);
       if (addr !== 0n) {
         const why = memFault(addr, count * 8);
@@ -1642,8 +1741,10 @@ export function createCommands(kernel) {
     // new pages on write so typos can't fabricate phantom backing.
     eb(args, w) {
       if (args.length < 2) return w("usage: eb <addr> <byte> [bytes...]", "err");
-      let addr;
-      try { addr = BigInt(args[0]); } catch { return w("eb: bad address", "err"); }
+      let addr = tryEvalAddr(args[0]);
+      if (addr === null) {
+        try { addr = BigInt(args[0]); } catch { return w(`eb: cannot resolve "${args[0]}"`, "err"); }
+      }
       if (addr < 0n) addr = BigInt.asUintN(64, addr);
       const vals = [];
       for (const tok of args.slice(1)) {
@@ -1694,7 +1795,12 @@ export function createCommands(kernel) {
       w("DPC queue (per-CPU, drained at <= DISPATCH_LEVEL)", "hdr");
       w("  DPC               DeferredRoutine     Target  Status", "hdr");
       for (const d of q) {
-        const target = d.routine ? `${fmtAddr(d.routine)}${sym(d.routine) ? ` (${sym(d.routine)})` : ""}` : "NULL";
+        // LIVE read of KDPC.DeferredRoutine (+0x18) every invocation, resolved
+        // against the current lm table — a patched slot shows the patch, not
+        // the insert-time snapshot (issue #16)
+        const live = kernel.liveDpcRoutine(d) ?? 0n;
+        const drift = live !== d.routine ? "  (patched)" : "";
+        const target = live ? `${fmtAddr(live)}${sym(live) ? ` (${sym(live)})` : ""}${drift}` : "NULL";
         const cpu = (d.targetCpu ?? 0) > 0 ? `cpu${d.targetCpu}` : "  -  ";
         w(`  ${fmtAddr(d.dpcVa)}  ${target}  ${cpu}   ${d.drained ? "drained" : "QUEUED"}`,
           d.drained ? "dim" : "");
@@ -1844,7 +1950,7 @@ export function createCommands(kernel) {
     },
 
     "!eptview"(args, w) {
-      const va = args[0] ? resolveArg(args[0]) : null;
+      const va = args[0] ? tryEvalAddr(args[0]) : null;
       if (va === null || va === undefined) {
         return w("usage: !eptview <va>   host(EPT) view of a shadowed range", "err");
       }
@@ -2163,9 +2269,92 @@ export function createCommands(kernel) {
       }
     },
 
+    "!cr"(args, w) {
+      // control registers: Mmu worlds carry the authoritative state; plain
+      // worlds keep cr0 on the kernel object (WP tamper labs)
+      const mmu = kernel.mmu;
+      const cr0 = BigInt(mmu?.cr0 ?? kernel.cr0 ?? 0n);
+      const cr3 = mmu ? BigInt(mmu.cr3 ?? 0n) : null;
+      const cr4 = mmu ? BigInt(mmu.cr4 ?? 0n) : null;
+      const efer = mmu ? BigInt(mmu.efer ?? 0n) : null;
+      if (!mmu && kernel.cr0 === undefined) {
+        return w("!cr: no control-register state in this world", "err");
+      }
+      w(`cr0=${fmtAddr(cr0)}  pg=${(cr0 & 0x80000000n) !== 0n ? 1 : 0}` +
+        `  wp=${(cr0 & 0x10000n) !== 0n ? 1 : 0}`);
+      if (cr3 !== null) w(`cr3=${fmtAddr(cr3)}   (DirectoryTableBase)`);
+      if (cr4 !== null) w(`cr4=${fmtAddr(cr4)}  pae=${(cr4 & 0x20n) !== 0n ? 1 : 0}` +
+        `  smep=${(cr4 & (1n << 20n)) !== 0n ? 1 : 0}`);
+      if (efer !== null) w(`efer=${fmtAddr(efer)}  lma=${(efer & 0x400n) !== 0n ? 1 : 0}`);
+      if (!mmu) w("  (non-paged world: only cr0 is modeled)", "dim");
+    },
+
+    "!smep"(args, w) {
+      // Toggle or query SMEP (Supervisor Mode Execution Prevention)
+      // Usage: !smep [0|1]
+      const mmu = kernel.mmu;
+      if (!mmu) return w("!smep: no paging world (SMEP requires CR4)", "err");
+      const SMEP_BIT = 1n << 20n;
+      if (args.length === 0) {
+        const on = (mmu.cr4 & SMEP_BIT) !== 0n;
+        w(`SMEP: ${on ? "enabled" : "disabled"} (CR4 bit 20 = ${on ? 1 : 0})`);
+        return;
+      }
+      const val = parseInt(args[0], 10);
+      if (val !== 0 && val !== 1) return w("!smep: usage: !smep [0|1]", "err");
+      if (val === 1) mmu.cr4 |= SMEP_BIT;
+      else mmu.cr4 &= ~SMEP_BIT;
+      w(`SMEP: ${val ? "enabled" : "disabled"} (CR4 = ${fmtAddr(mmu.cr4)})`);
+    },
+
+    "!dbgprint"(args, w) {
+      const log = kernel.dbgLog ?? [];
+      if (!log.length) return w("!dbgprint: no debug output buffered", "dim");
+      for (const l of log) w(l);
+    },
+
+    "!smram"(args, w) {
+      const smm = kernel.smm;
+      if (!smm) return w("!smram: no SMM engine attached to this session", "err");
+      const cs = smm.chipset;
+      w("SMRAM state", "hdr");
+      w(`  base=${fmtAddr(BigInt(cs.tsegBase))} end=${fmtAddr(BigInt(cs.tsegEnd))}` +
+        ` size=0x${BigInt(cs.tsegSize).toString(16)}`);
+      w(`  D_OPEN=${cs.dOpen ? 1 : 0} D_CLS=${cs.dCls ? 1 : 0}` +
+        ` D_LCK=${cs.dLck ? 1 : 0} G_SMRAME=${cs.gSmrame ? 1 : 0}`);
+      w(`  ring0 visibility: ${cs.isSmramVisibleFromRing0(BigInt(cs.tsegBase) + 0x1000n) ? "OPEN" : "HIDDEN"}`);
+      w(`  SMBASE=${fmtAddr(BigInt(smm.currentSmbase))}` +
+        ` entry=${fmtAddr(BigInt(smm.currentSmbase) + 0x8000n)}`);
+      w(`  SMI: raised=${smm.stats.raised} exited=${smm.stats.exited}` +
+        ` relocated=${smm.stats.relocated}${cs.smiPending ? " (PENDING)" : ""}`);
+    },
+
+    "!smmc"(args, w) {
+      const smm = kernel.smm;
+      if (!smm) return w("!smmc: no SMM engine attached to this session", "err");
+      const cs = smm.chipset;
+      w(`PCI 0:0:0 reg 0x9d (SMRAMC) = 0x${BigInt(cs.smramc).toString(16).padStart(2, "0")}`, "hdr");
+      w(`  [3] D_OPEN  = ${cs.dOpen ? 1 : 0}   <- set to peek SMRAM from ring 0`);
+      w(`  [2] D_CLS   = ${cs.dCls ? 1 : 0}`);
+      w(`  [1] D_LCK   = ${cs.dLck ? 1 : 0}   <- locks D_OPEN/D_CLS until reset`);
+      w(`  [0] G_SMRAME= ${cs.gSmrame ? 1 : 0}`);
+    },
+
     "!cr3"(args, w) {
-      const pts = kernel.paging;
-      if (!pts) return w("!cr3: no paging world booted (this lab has no page tables)", "err");
+      const pts = pageWorld();
+      if (!pts) {
+        // guest-paged Mmu world (SMM track): report the live DirectoryTableBase
+        // instead of crashing on the missing per-process table space (#25)
+        if (kernel.paging && kernel.mmu) {
+          const cr3 = BigInt(kernel.cr3 ?? kernel.mmu.cr3 ?? 0n);
+          w("guest-paged world — one live CR3, translation via the MMU", "hdr");
+          w(`  DirectoryTableBase  : 0x${cr3.toString(16).padStart(16, "0")}` +
+            `  (PFN 0x${(cr3 >> 12n).toString(16)})`);
+          w(`  self-map PML4 index : n/a (hardware walk; try !pte / !vtop <va>)`);
+          return;
+        }
+        return w("!cr3: no paging world booted (this lab has no page tables)", "err");
+      }
       const token = args[0];
       let proc = null;
       if (token) {
@@ -2185,8 +2374,24 @@ export function createCommands(kernel) {
     },
 
     "!pte"(args, w) {
-      const pts = kernel.paging;
-      if (!pts) return w("!pte: no paging world booted (this lab has no page tables)", "err");
+      const pts = pageWorld();
+      if (!pts) {
+        if (kernel.paging && kernel.mmu) {
+          const va = args[0] ? parseAddr(args[0]) : null;
+          if (va === null) return w("usage: !pte <va> [proc]", "err");
+          const pte = kernel.readPte(va);
+          if (pte === null || pte === undefined) {
+            return w(`!pte: no PTE for ${fmtAddr(va)} (unmapped or demand-filled on access)`, "err");
+          }
+          const d = decodePte(pte);
+          w(`VA ${fmtAddr(va)}  (guest-paged world, DTB 0x${BigInt(kernel.cr3 ?? kernel.mmu.cr3 ?? 0n).toString(16)})`, "hdr");
+          w(`         contains ${pte.toString(16).padStart(16, "0")}` +
+            `   [${pteBitsString(pte)}]` +
+            (d.large ? "  LARGE" : "") + `  pfn 0x${d.pfn.toString(16)}`);
+          return;
+        }
+        return w("!pte: no paging world booted (this lab has no page tables)", "err");
+      }
       const va = args[0] ? parseAddr(args[0]) : null;
       if (va === null) return w("usage: !pte <va> [proc]", "err");
       const proc = args[1] ? pts.findProcess(args[1]) :
@@ -2211,8 +2416,20 @@ export function createCommands(kernel) {
     },
 
     "!vtop"(args, w) {
-      const pts = kernel.paging;
-      if (!pts) return w("!vtop: no paging world booted (this lab has no page tables)", "err");
+      const pts = pageWorld();
+      if (!pts) {
+        if (kernel.paging && kernel.mmu) {
+          const va = args[0] ? parseAddr(args[0]) : null;
+          if (va === null) return w("usage: !vtop <va> [proc]", "err");
+          const pa = kernel.vtop(va);
+          if (pa === null || pa === undefined) {
+            return w(`!vtop: ${fmtAddr(va)} -> not mapped (PTE not present in the live CR3)`, "err");
+          }
+          w(`!vtop: ${fmtAddr(va)} -> ${fmtAddr(pa)}  (guest-paged world, live CR3)`, "good");
+          return;
+        }
+        return w("!vtop: no paging world booted (this lab has no page tables)", "err");
+      }
       const va = args[0] ? parseAddr(args[0]) : null;
       if (va === null) return w("usage: !vtop <va> [proc]", "err");
       const proc = args[1] ? pts.findProcess(args[1]) :
@@ -2377,6 +2594,14 @@ export function createDebugger(kernel, out) {
   const exec = async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
+    // Decorative separators pasted from lab transcripts ("====…0.==",
+    // "----------") are transcript furniture, not commands — skip them
+    // silently instead of emitting a confusing Couldn't-resolve error
+    // (issue #28). A real command always carries letters after the junk.
+    const compact = trimmed.replace(/\s+/g, "");
+    if (/^[=\-_*~]{4,}/.test(compact) && !/[a-zA-Z]/.test(compact.replace(/^[=\-_*~]+/, ""))) {
+      return;
+    }
     write(`kd> ${trimmed}`, "prompt");
     let [cmd, ...args] = trimmed.split(/\s+/);
     // tolerate windbg-style command flags: lmD / lmv -> lm <flag>

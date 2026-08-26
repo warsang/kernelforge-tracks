@@ -44,10 +44,10 @@ test("m16 reversing: !funcs count + !pseudocode fixture render", async () => {
     await cmds[c]?.(a, w, {}); // handlers may return promises (e.g. !pseudocode)
   };
 
-  await exec("!funcs kfalcon.sys");
+  await exec("!funcs kfwatch.sys");
   const gridCount = [...lines.join("\n").matchAll(/0x[0-9a-f]{16}/g)].length;
   assert.ok(gridCount >= 32, `grid functions visible (${gridCount})`);
-  assert.match(lines.join("\n"), /kfalcon\.sys — \d+ function\(s\)/);
+  assert.match(lines.join("\n"), /kfwatch\.sys — \d+ function\(s\)/);
 
   await exec(`!pseudocode 0x${EDR_CONST.CALLBACK.toString(16)}`);
   const code = lines.join("\n");

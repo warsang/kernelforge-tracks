@@ -137,7 +137,11 @@ export class RspClient {
       const timer = setTimeout(() => {
         this.waiter = null;
         this.#setState("idle");
-        reject(new Error(`rsp: timeout waiting for reply to "${data.slice(0, 24)}"`));
+        const cmd = data.split(":")[0];
+        reject(new Error(
+          `rsp: timeout waiting for reply to "${cmd}" (${timeoutMs ?? this.timeoutMs}ms) — ` +
+          `gdbserver may not be running on ttyS1, or the serial link is broken`
+        ));
       }, timeoutMs ?? this.timeoutMs);
       this.waiter = (pkt) => {
         clearTimeout(timer);

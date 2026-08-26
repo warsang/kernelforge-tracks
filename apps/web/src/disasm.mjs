@@ -15,12 +15,31 @@
  */
 
 let capstoneMod = null;
+let loadFailure = null;
 async function loadCapstoneOnce() {
-  if (!capstoneMod) {
-    capstoneMod = await import("capstone-wasm");
-    await capstoneMod.loadCapstone();
+  if (capstoneMod) return capstoneMod;
+  if (loadFailure) throw loadFailure;
+  try {
+    const mod = await import("capstone-wasm");
+    await mod.loadCapstone();
+    capstoneMod = mod;
+    return capstoneMod;
+  } catch (e) {
+    // Cache and rethrow a DISTINCT error so callers can tell "the disassembler
+    // asset failed to load" apart from a genuine unmapped-VA fault — `u` used
+    // to report instantiate failures as "Memory read error … expected magic
+    // word" (issues #28/#29).
+    loadFailure = new Error(
+      `disassembler-unavailable: capstone-wasm failed to load ` +
+      `(${String(e?.message ?? e).slice(0, 140)})`);
+    throw loadFailure;
   }
-  return capstoneMod;
+}
+
+/** Test/UX hook: clear a cached loader failure so the next call retries. */
+export function resetDisassemblerCache() {
+  capstoneMod = null;
+  loadFailure = null;
 }
 
 const MAX_WINDOW = 4096; // bytes fetched per disassemble request

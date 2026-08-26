@@ -662,6 +662,11 @@ function setupIrqlDpc(kernel) {
     full: "\\SystemRoot\\system32\\drivers\\kfdpc.sys", lab: true,
   });
   kernel.materializeModuleRange(KFDPC_BASE, 0x8000);
+
+  // memory image must match the queued record AFTER materializeModuleRange:
+  // 'DPCk' @+0, routine @+0x18 (real x64 layout)
+  kernel.mem.writeAnsi(DPC_STRUCT, "DPCk");
+  kernel.mem.w64(DPC_STRUCT + 0x18n, DPC_ROUTINE);
 }
 
 scenarios["irql-dpc"] = {
@@ -687,7 +692,7 @@ scenarios["irql-dpc"] = {
  *
  * Deterministic layout (catalog.mjs header tracks these anchors):
  *   KFWARZ_BASE      0xfffff8055a700000   kvmdrv.sys image base
- *   VICTIM_DPC       base + 0x1000        KDPC struct ('DPCk' @+0, routine @+8)
+ *   VICTIM_DPC       base + 0x1000        KDPC struct ('DPCk' @+0, routine @+0x18)
  *   VICTIM_ROUTINE   base + 0x1400        heartbeat DeferredRoutine
  *   TIMER_STRUCT     base + 0x1800        KTIMER for the periodic heartbeat
  *   CANARY_PAGE      base + 0x2000        protected-range canary (64 bytes)
@@ -703,8 +708,9 @@ function setupIrqlWarzone(kernel, { hvci = false } = {}) {
   kernel.currentIrql = 2;
 
   // victim module with a queued heartbeat DPC
+  // (real x64 _KDPC: 'DPCk' marker @+0, DeferredRoutine @+0x18)
   kernel.mem.writeAnsi(KFWARZ_VICTIM_DPC, "DPCk");
-  kernel.mem.w64(KFWARZ_VICTIM_DPC + 8n, KFWARZ_VICTIM_ROUTINE);
+  kernel.mem.w64(KFWARZ_VICTIM_DPC + 0x18n, KFWARZ_VICTIM_ROUTINE);
   // real body for the heartbeat routine (mov eax,0x100; ret) so timer fires
   // and drains execute cleanly instead of hitting CC filler
   kernel.mem.write(KFWARZ_VICTIM_ROUTINE, new Uint8Array([0xb8, 0x00, 0x01, 0x00, 0x00, 0xc3]));
@@ -1021,6 +1027,37 @@ scenarios["dkom-pid"] = {
   },
 };
 
+scenarios["dkom-smep"] = {
+  title: "dkom-smep — SMEP toggle and ret2usr",
+  description:
+    "Paging world with SMEP enabled (CR4 bit 20). A user-mode page contains " +
+    "a shellcode payload. With SMEP on, fetching from it faults. Clear SMEP " +
+    "with !smep 0, execute the payload, collect the secret.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    // Enable SMEP in CR4
+    if (kernel.mmu) {
+      kernel.mmu.cr4 |= 0x100000n; // bit 20
+    }
+    // Seed a user-mode page with shellcode that prints a secret
+    const userPage = 0x10000n; // user-mode VA
+    kernel.mem.write(userPage, new Uint8Array([
+      0x48, 0x8d, 0x0d, 0x10, 0x00, 0x00, 0x00, // lea rcx, [rip+0x10]
+      0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // movabs rax, DbgPrint
+      0xff, 0xd0, // call rax
+      0xc3, // ret
+      // string: "SMEP: ret2usr payload executed\n"
+      0x53, 0x4d, 0x45, 0x50, 0x3a, 0x20, 0x72, 0x65,
+      0x74, 0x32, 0x75, 0x73, 0x72, 0x20, 0x70, 0x61,
+      0x79, 0x6c, 0x6f, 0x61, 0x64, 0x20, 0x65, 0x78,
+      0x65, 0x63, 0x75, 0x74, 0x65, 0x64, 0x0a, 0x00,
+    ]));
+    session.kind = "dkom-smep";
+    return session;
+  },
+};
+
 /**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
@@ -1271,7 +1308,7 @@ scenarios["task-hide"] = {
 /* ---------------------------------------------------------------------- */
 
 /**
- * m11 — x64 paging world. A decoy DTB is registered FIRST (EAC-style CR3
+ * m11 — x64 paging world. A decoy DTB is registered FIRST (anti-cheat-style CR3
  * shuffle), so the lowest frame is a trap. kftarget.exe carries the real
  * tables with self-map index 0xF; one code-page PTE was corrupted with NX,
  * failing the driver's integrity pass until the student repairs it through
@@ -1311,6 +1348,15 @@ function setupPagingWalk(kernel) {
   pts.mapPage(target, C.STACK_VA, {});
   pts.mapPage(target, C.LARGE_VA, { size: 0x200000 });
 
+  // m14: kfmm.sys rides in kftarget's address space — seed real page tables
+  // (identity frames) + code content so hand walks, !vtop and the self-map
+  // alias windows over its VAs actually resolve (issue #27)
+  const KFMM_BASE = LOW_BASES.driver + 0x100000n;
+  writeFunctionGrid(kernel.mem, KFMM_BASE, 0x8000);
+  for (let off = 0; off < 0x8000; off += 0x1000) {
+    pts.mapPage(target, KFMM_BASE + BigInt(off), { writable: true, pa: KFMM_BASE + BigInt(off) });
+  }
+
   // corrupt the code page's PTE with NX through the alias window
   // (poke keeps physical frame + alias in sync)
   const pteRow = pts.translate(C.CODE_VA, target).rows.at(-1);
@@ -1338,7 +1384,7 @@ scenarios["paging-walk"] = {
   title: "paging-walk — four-level translation under a shuffled CR3",
   description:
     "Low-memory world with real PML4/PDPT/PD/PT pages. One process sports an " +
-    "EAC-style shuffled self-map entry as a decoy. Walk the tables by hand " +
+    "anti-cheat-style shuffled self-map entry as a decoy. Walk the tables by hand " +
     "(!cr3/!pte/!vtop), repair the NX-smashed code PTE through the alias.",
   boot: async (io) => {
     const session = await bootLow(io);
@@ -1349,24 +1395,24 @@ scenarios["paging-walk"] = {
 };
 
 /**
- * m12 — EDR sensor world: kfalcon.sys registers a REAL Ex-style process-
+ * m12 — EDR sensor world: kfwatch.sys registers a REAL Ex-style process-
  * creation callback (hand-assembled machine code executing on whichever
  * backend the pane selected — js and QEMU behave identically) that denies
  * kfimplant.exe via PS_CREATE_NOTIFY_INFO.CreationStatus.
  */
 export const EDR_CONST = (() => {
-  const KFALCON = LOW_BASES.driver + 0x100000n; // 0x50100000
+  const KFWATCH = LOW_BASES.driver + 0x100000n; // 0x50100000
   return {
-    KFALCON,
-    CALLBACK: KFALCON + 0x1000n,
-    GRID: KFALCON + 0x1800n,
+    KFWATCH,
+    CALLBACK: KFWATCH + 0x1000n,
+    GRID: KFWATCH + 0x1800n,
     BLOCKED_NAME: "kfimplant.exe",
     DENY_STATUS: 0xc0000022n, // STATUS_ACCESS_DENIED
     secret: "kf-edr-blindspot",
   };
 })();
 
-/** Assemble kfalcon's Ex callback (see packages/ntsim/test/notify.test.mjs). */
+/** Assemble kfwatch's Ex callback (see packages/ntsim/test/notify.test.mjs). */
 function assembleSensorCallback() {
   const enc = (s) => [...s].flatMap((c) => [c.charCodeAt(0), 0]);
   const q = (b) => [...b].reduceRight((a, x) => (a << 8n) | BigInt(x), 0n);
@@ -1403,7 +1449,7 @@ function setupEdrSensor(kernel) {
   // and !notifyroutines see exactly what a real driver registration does
   kernel.apiImpls.get("PsSetCreateProcessNotifyRoutineEx")(C.CALLBACK, 0);
   kernel.obCallbacks = [{
-    callback: C.KFALCON + 0x2000n, altitude: "385201",
+    callback: C.KFWATCH + 0x2000n, altitude: "385201",
     masks: { process: 0xffedcfffn, thread: 0xffedf3ffn },
   }];
 
@@ -1413,22 +1459,22 @@ function setupEdrSensor(kernel) {
     const res = fire(pid, imageName, opts);
     if (!res.blocked && imageName === C.BLOCKED_NAME && !paid) {
       paid = true;
-      kernel.dbgLog.push("kfalcon: telemetry gap — implant spawn went unreported");
-      kernel.dbgLog.push(`kfalcon: secret=${C.secret}`);
+      kernel.dbgLog.push("kfwatch: telemetry gap — implant spawn went unreported");
+      kernel.dbgLog.push(`kfwatch: secret=${C.secret}`);
     }
     return res;
   };
 
   kernel.loadedModules.push({
-    base: C.KFALCON, sizeOfImage: 0x8000, name: "kfalcon.sys",
-    full: "\\SystemRoot\\system32\\drivers\\kfalcon.sys", lab: true,
+    base: C.KFWATCH, sizeOfImage: 0x8000, name: "kfwatch.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfwatch.sys", lab: true,
   });
 }
 
 scenarios["edr-sensor"] = {
-  title: "edr-sensor — Falcon-style process-create blocking",
+  title: "edr-sensor — KF-Watch-style process-create blocking",
   description:
-    "kfalcon.sys registers a kernel process-creation callback that denies " +
+    "kfwatch.sys registers a kernel process-creation callback that denies " +
     "kfimplant.exe via CreationStatus. Enumerate callbacks, read the deny in " +
     "!notifytest, then blind the sensor by patching its name compare.",
   boot: async (io) => {

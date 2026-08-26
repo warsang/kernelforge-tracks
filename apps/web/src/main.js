@@ -390,6 +390,25 @@ COMPILE_TASKS["sensor-deadline"] = {
     ["telemetry secret", /secret=kf-deadline-ok/],
   ]),
 };
+
+COMPILE_TASKS["smm-vault"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["SMRAM opened", /D_OPEN set|SMRAM opened|vault opened/],
+    ["SMI triggered", /SMI|port 0xB2|trigger/],
+    ["exploit complete", /secret|exfiltrat|landing/i],
+  ]),
+};
+
+COMPILE_TASKS["smm-reloc"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["SMBASE relocated", /SMBASE|relocat/i],
+    ["stub planted", /stub|handler|new.*base/i],
+    ["persistence achieved", /persist|second.*SMI|reloc.*complete/i],
+  ]),
+};
+
 const taskFor = (lab) => COMPILE_TASKS[lab.compileTask ?? (lab.id.includes("dkom") ? "dkom-hide" : "")] ?? null;
 
 // ---------------------------------------------------------------- rendering
@@ -807,7 +826,11 @@ function renderLesson(lesson) {
       // Target binary for the sogen WASM core (uploaded, in-memory only).
       // With a target attached, the debugger shell controls the REAL
       // emulated process; without one it uses the JS reference backend.
-      const targetInput = h("input", { type: "file", class: "target-upload" });
+      const targetInput = h("input", {
+        type: "file",
+        class: "target-upload",
+        title: "Upload a Windows PE binary to debug in the sogen emulator (enables stepping/execution)",
+      });
       targetInput.addEventListener("change", async () => {
         const f = targetInput.files?.[0];
         if (!f) return;

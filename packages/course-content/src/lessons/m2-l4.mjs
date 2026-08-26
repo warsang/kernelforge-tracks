@@ -24,7 +24,7 @@ watchdog DPC and alarm if it misses its deadline. Your starter pins the
 other cores (the Attack-2 primitive) *and* arms a periodic timer-DPC
 targeted at core 1. A healthy core retires it within a tick; a locked-down
 core cannot. The driver polls the clock, sees the deadline slip, and
-reports **MISSED** — the exact signal BattlEye/EAC-class products raise
+reports **MISSED** — the same class of signal commercial anti-cheat products raise
 when someone parks the scheduler. Run \`!dpcstat\` afterwards: the aged-DPC
 anomaly line is the same finding from the outside.
 

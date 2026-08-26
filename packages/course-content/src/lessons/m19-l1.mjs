@@ -2,14 +2,14 @@
 export default `## Read the sensor without running it
 
 Dynamic analysis tripped alarms in m15; static analysis never executes a
-byte. Over kfalcon.sys you recover function boundaries from prologue
+byte. Over kfwatch.sys you recover function boundaries from prologue
 signatures (\`!funcs\`), resolve rel32 transfers, and read fixture-shaped
 pseudo-C via \`!pseudocode <addr>\` — a deterministic decompiler path for
 known sensor idioms while the full Ghidra wasm engine stays vendored-out.
 
 ## The lab
 
-1. \`!funcs kfalcon.sys\` — boundary scan over the .text grid; submit
+1. \`!funcs kfwatch.sys\` — boundary scan over the .text grid; submit
    the recovered function count.
 2. Submit the registered process-callback VA you found in m15
    (!notifyroutines still knows).
@@ -27,7 +27,7 @@ to full pseudocode without changing this lab.
 
 ### Further reading
 
-- 0xdbgman — Inside the Falcon, Section 2 (CS_BuildCreationEvent layout)
+- 0xdbgman — Inside a kernel sensor, Section 2 (CS_BuildCreationEvent layout)
 - momo5502.com — "Reverse Engineering Integrity Checks in Black Ops 3", MW2 AI-decompilation posts
 - secret.club — Striga x86-to-LLVM lifting; MBA deobfuscation via equality saturation
 - whereisr0da.github.io / codeneverdies.github.io — static RE field notes

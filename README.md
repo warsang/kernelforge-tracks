@@ -294,12 +294,12 @@ prove your own exploit dead.
 **Track: blog-labs v4 (windows-kernel / sogen / linux / reversing)**
 
 **Module 14 — x64 Virtual Memory & Page Tables** (`paging-walk`)
-Real PML4/PDPT/PD/PT bytes under a shuffled CR3 decoy (EAC-style): walk
+Real PML4/PDPT/PD/PT bytes under a shuffled CR3 decoy (anti-cheat-style): walk
 translation by hand (`!cr3`/`!pte`/`!vtop`), compute self-map alias VAs,
 repair an NX-smashed code PTE.
 
 **Module 15 — Kernel Callbacks & EDR Sensors** (`edr-sensor`)
-Falcon-style process-create blocking with REAL callback machine code on
+KF-Watch-style process-create blocking with REAL callback machine code on
 both CPU backends; `PS_CREATE_NOTIFY_INFO.CreationStatus` kill switch,
 enumerate → trigger → patch the name compare.
 
@@ -345,7 +345,7 @@ A/D-bit timing counters, CPUID quirks and RDTSC drift.
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +
   momo5502 hypervisor-hook detection are the source material
 - Phase 5: UEFI bootkit simulator
-- Phase 6: BYOVD/misconfiguration labs (RACEAC-style TOCTOU, mhyprot2 pattern)
+- Phase 6: BYOVD/misconfiguration labs (RACanti-cheat-style TOCTOU, mhyprot2 pattern)
 - Sogen WASM core vendor step: replace the reference userland backend with
   real PE execution against Wine-derived DLLs (packages/sogen-runtime/vendor)
 - Playable Sauerbraten client in-browser: gated behind the GUI spike

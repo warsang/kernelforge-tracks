@@ -115,11 +115,16 @@ VOID KeLowerIrql(KIRQL NewIrql);
 
 /*
  * --- control registers / interrupt flag (modeled thunks) --------------------
- * The compiler would emit raw MOV CRx / CLI / STI for these intrinsics, which
- * ntsim's JS interpreter does not decode. The macros below redirect them to
- * modeled thunk exports instead, so attacker-lab code (WPOFFx64-style WP
- * flips) runs identically on the js and unicorn backends and leaves a trace
- * the defender labs can sample. See lesson m2.l3.
+ * The compiler would emit raw MOV CRx / CLI / STI / GS-relative loads for
+ * these intrinsics, which ntsim's JS interpreter does not decode. The macros
+ * below redirect them to modeled thunk exports instead, so attacker-lab code
+ * (WPOFFx64-style WP flips) runs identically on the js and unicorn backends
+ * and leaves a trace the defender labs can sample. See lesson m2.l3.
+ *
+ * Every definition is #undef-guarded so inclusion order versus <intrin.h>
+ * (shipped as a shim in this same include dir) never produces the
+ * "too many arguments provided to function-like macro" clash reported in
+ * issue #21.
  */
 unsigned long long KfReadCr0(void);
 VOID KfWriteCr0(unsigned long long Value);
@@ -128,10 +133,61 @@ VOID KfSti(void);
 ULONG KeQueryPerCpuIrql(ULONG ProcessorNumber); /* lab extension */
 ULONG KeQueryDpcQueueDepth(void);               /* lab extension */
 
+#ifdef __readcr0
+#undef __readcr0
+#endif
+#ifdef __writecr0
+#undef __writecr0
+#endif
+#ifdef _disable
+#undef _disable
+#endif
+#ifdef _enable
+#undef _enable
+#endif
 #define __readcr0()   KfReadCr0()
 #define __writecr0(v) KfWriteCr0((unsigned long long)(v))
 #define _disable()    KfCli()
 #define _enable()     KfSti()
+
+/*
+ * Modeled GS-base reads: ntsim materializes a pseudo-KPCR page whose layout
+ * matches what the m2.l4 telemetry lab teaches (GS:[0x20] -> PRCB pointer,
+ * PRCB+0x3000 -> _KDPC_DATA with DpcQueueDepth at +0x18 backed by LIVE
+ * pending-DPC state). Declared as a plain prototype — identical shape to the
+ * MSVC intrinsic — so including <intrin.h> before or after ntddk.h composes.
+ */
+unsigned long long __readgsqword(unsigned long Offset);
+
+/* --- port I/O (modeled thunks; feeds the chipset/SMM labs) ------------------ */
+
+unsigned char KfIoRead8(unsigned short Port);
+void KfIoWrite8(unsigned short Port, unsigned char Value);
+unsigned long KfIoRead32(unsigned short Port);
+void KfIoWrite32(unsigned short Port, unsigned long Value);
+
+#ifdef __inbyte
+#undef __inbyte
+#endif
+#ifdef __outbyte
+#undef __outbyte
+#endif
+#ifdef __indword
+#undef __indword
+#endif
+#ifdef __outdword
+#undef __outdword
+#endif
+#define __inbyte(p)     KfIoRead8((unsigned short)(p))
+#define __outbyte(p, v) KfIoWrite8((unsigned short)(p), (unsigned char)(v))
+#define __indword(p)    KfIoRead32((unsigned short)(p))
+#define __outdword(p, v) KfIoWrite32((unsigned short)(p), (unsigned long)(v))
+
+/* device/physical mapping (modeled: identity in the low-half lab worlds) */
+PVOID MmMapIoSpace(PHYSICAL_ADDRESS PhysicalAddress, unsigned long long NumberOfBytes, unsigned long CacheType);
+void MmUnmapIoSpace(PVOID BaseAddress, unsigned long long NumberOfBytes);
+#define MmNonCached 0u
+#define MmCached 1u
 
 /* --- spinlocks -------------------------------------------------------------- */
 
@@ -150,17 +206,16 @@ typedef VOID (*PKDEFERRED_ROUTINE)(
     PKDPC Dpc, void *DeferredContext, void *SystemArgument1, void *SystemArgument2);
 
 /*
- * Teaching KDPC layout — matches ntsim's runtime exactly (routine @ +0x08,
- * context @ +0x10) so patches through the struct are visible at drain time.
- * The REAL x64 _KDPC embeds a 16-byte LIST_ENTRY before DeferredRoutine
- * (routine @ +0x18); labs read addresses out of the debugger, so the model
- * keeps the simpler layout (same precedent as KeInitializeApc).
+ * Real x64 _KDPC layout — matches ntsim's runtime exactly (routine @ +0x18,
+ * context @ +0x20) so patches through the struct are visible at drain time
+ * and hand-computed offsets from the Vergilius tables line up (issue #16).
  */
 typedef struct _KDPC {
-    unsigned long long Marker;              /* 'DPCk' set by KeInitializeDpc */
-    PKDEFERRED_ROUTINE DeferredRoutine;     /* +0x08 */
-    void *DeferredContext;                  /* +0x10 */
-    void *SystemArgument1;
+    unsigned long long Header;              /* +0x00 type/importance bits; 'DPCk' marker set by KeInitializeDpc */
+    LIST_ENTRY DpcListEntry;                /* +0x08 */
+    PKDEFERRED_ROUTINE DeferredRoutine;     /* +0x18 */
+    void *DeferredContext;                  /* +0x20 */
+    void *SystemArgument1;                  /* +0x28 */
     void *SystemArgument2;
     void *DpcData;
 } KDPC, *PKDPC;
@@ -176,7 +231,7 @@ typedef struct _KTIMER {
 VOID KeInitializeDpc(PKDPC Dpc, PKDEFERRED_ROUTINE DeferredRoutine, void *DeferredContext);
 BOOLEAN KeInsertQueueDpc(PKDPC Dpc, void *SA1, void *SA2);
 BOOLEAN KeRemoveQueueDpc(PKDPC Dpc);
-VOID KeSetTargetProcessorDpc(PKDPC Dpc, CHAR Number); /* directed-DPC labs */
+VOID KeSetTargetProcessorDpc(PKDPC Dpc, CCHAR Number); /* directed-DPC labs */
 
 VOID KeInitializeTimer(PKTIMER Timer);
 BOOLEAN KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc);
@@ -190,6 +245,7 @@ ULONG KfReleaseDirectedDpcs(void);
 
 typedef struct _PEPROCESS *PEPROCESS;   /* opaque: layout comes from Vergilius tables */
 typedef struct _PETHREAD  *PETHREAD;
+typedef struct _KTHREAD   *PKTHREAD;    /* opaque: scheduler object (KeGetCurrentThread) */
 
 typedef struct _CLIENT_ID {
     HANDLE UniqueProcess;
@@ -213,10 +269,16 @@ HANDLE PsGetCurrentProcessId(void);
 HANDLE PsGetCurrentThreadId(void);
 PEPROCESS PsGetCurrentProcess(void);
 PETHREAD PsGetCurrentThread(void);
+PKTHREAD KeGetCurrentThread(void);
+ULONG KeGetCurrentProcessorNumber(void);
+ULONG KeQueryMaximumProcessorCount(void);
 NTSTATUS PsLookupProcessByProcessId(HANDLE ProcessId, PEPROCESS *Process);
 NTSTATUS PsLookupThreadByThreadId(HANDLE ThreadId, PETHREAD *Thread);
 VOID ObDereferenceObject(void *Object);
-LONG PsSetCreateProcessNotifyRoutineRoutine_placeholder; /* removed below */
+
+/* EPROCESS field accessors (modeled against the active build's tables) */
+HANDLE PsGetProcessId(PEPROCESS Process);                 /* UniqueProcessId */
+PCHAR PsGetProcessImageFileName(PEPROCESS Process);       /* ImageFileName[15] */
 
 /* --- misc kernel services students reach for --------------------------------- */
 

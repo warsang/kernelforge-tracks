@@ -789,8 +789,10 @@ export class NtKernel {
 
   /**
    * Drain-time read of a queued DPC's DeferredRoutine/DeferredContext from
-   * guest memory (teaching layout: routine @+8, context @+16). Re-reading at
-   * drain time is what makes post-insert patches (hijack labs) observable.
+   * guest memory (real x64 layout: routine @+0x18, context @+0x20). Reading
+   * live memory at drain time is what makes post-insert patches (hijack
+   * labs) observable and lets !dpcs/!dpcdrain report the CURRENT pointer
+   * instead of a cached snapshot (issue #16).
    * Falls back to the insert-time snapshot when memory is unmapped/zeroed.
    */
   _liveDpcField(d, byteOffset, fallback) {
@@ -803,8 +805,11 @@ export class NtKernel {
     return fallback;
   }
 
-  liveDpcRoutine(d) { return this._liveDpcField(d, 8n, d.routine); }
-  liveDpcContext(d) { return this._liveDpcField(d, 16n, d.context); }
+  static KDPC_ROUTINE_OFF = 0x18n;
+  static KDPC_CONTEXT_OFF = 0x20n;
+
+  liveDpcRoutine(d) { return this._liveDpcField(d, NtKernel.KDPC_ROUTINE_OFF, d.routine); }
+  liveDpcContext(d) { return this._liveDpcField(d, NtKernel.KDPC_CONTEXT_OFF, d.context); }
 
   queueDpc(dpcVa, routine, context = 0n, opts = {}) {
     if (this.pendingDpcs.some((d) => d.dpcVa === dpcVa && !d.drained)) return false;
@@ -877,10 +882,11 @@ export class NtKernel {
         let context = 0n;
         if (t.dpcVa) {
           try {
-            if (this.mem.canRead(t.dpcVa, 24)) {
-              const r = this.mem.u64(t.dpcVa + 8n);
+            // live reads at the real x64 offsets (routine @+0x18, ctx @+0x20)
+            if (this.mem.canRead(t.dpcVa, 0x28)) {
+              const r = this.mem.u64(t.dpcVa + NtKernel.KDPC_ROUTINE_OFF);
               if (r !== 0n) routine = r;
-              context = this.mem.u64(t.dpcVa + 16n);
+              context = this.mem.u64(t.dpcVa + NtKernel.KDPC_CONTEXT_OFF);
             }
           } catch { /* guarded */ }
           if (!routine) {
@@ -1085,23 +1091,36 @@ export class NtKernel {
   dbgPrint(fmtAddr, args) {
     const fmt = this.mem.readAnsi(fmtAddr, 512);
     let ai = 0;
-    const out = fmt.replace(/%(-?\d+)?(?:\.(\d+))?([wsdIxXpuZgsc])/g, (_m, _w, _p, conv) => {
-      const v = args[ai++] ?? 0n;
-      switch (conv) {
-        case "d": return BigInt.asIntN(64, v).toString();
-        case "u": return v.toString();
-        case "x": case "X": return v.toString(16).padStart(conv === "X" ? 8 : 8, conv === "X" ? "XXXXXXXXXXXXXXXX".slice(0, 8) : "00000000");
-        case "p": return v === 0n ? "0000000000000000" : v.toString(16).padStart(16, "0");
-        case "w": case "Z": {
-          // %wZ = UNICODE_STRING*
-          const usLen = this.mem.u16(v);
-          const buf = this.mem.u64(v + 8n);
-          return this.mem.readUtf16(buf, usLen / 2);
+    // Length modifiers are parsed so the argument is consumed exactly once:
+    // %I64u (MSVC spelling), %llu/%lld and %llx all render their full 64-bit
+    // value instead of printing the literal suffix and desyncing every later
+    // %-conversion in the same string (issue #13).
+    const out = fmt.replace(
+      /%(-?\d+)?(?:\.(\d+))?(I(?:32|64)|l{1,2})?([diuxXpsZwcg])/g,
+      (_m, _w, _p, mod, conv) => {
+        void _p;
+        const wide = !!mod;
+        const v = args[ai++] ?? 0n;
+        switch (conv) {
+          case "d": return BigInt.asIntN(64, v).toString();
+          case "u": return v.toString();
+          case "x": case "X": {
+            const width = wide ? 16 : 8;
+            const digits = v.toString(16);
+            const padded = digits.padStart(width, conv === "X" ? "F" : "0");
+            return conv === "X" ? padded.slice(-width).toUpperCase() : padded.slice(-width);
+          }
+          case "p": return v === 0n ? "0000000000000000" : v.toString(16).padStart(16, "0");
+          case "w": case "Z": {
+            // %wZ = UNICODE_STRING*
+            const usLen = this.mem.u16(v);
+            const buf = this.mem.u64(v + 8n);
+            return this.mem.readUtf16(buf, usLen / 2);
+          }
+          case "s": return this.mem.readAnsi(v);
+          default: return `%${conv}`;
         }
-        case "s": return this.mem.readAnsi(v);
-        default: return `%${conv}`;
-      }
-    });
+      });
     this.dbgLog.push(out);
     this.emitTrace({ kind: "dbgprint", text: out });
     return out;

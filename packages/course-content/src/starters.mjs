@@ -256,7 +256,7 @@ NTSTATUS DriverEntry(
 // Module 2 attack/defense workshops (m2.l3 / m2.l4). World anchors are the
 // KFWARZ_* constants exported from apps/web/src/scenarios.js:
 //   kvmdrv.sys base   0xfffff8055a700000
-//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+8)
+//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+0x18)
 //   canary page       0xfffff8055a702000   (protected range, 64 bytes)
 // ---------------------------------------------------------------------------
 
@@ -335,6 +335,10 @@ export const ATTACK_LOCKDOWN_STARTER = `// ATTACK 2 - directed-DPC CPU lockdown 
 #include <ntddk.h>
 
 #define CORES 4
+
+// deterministic world anchor: keep the full-width VA in your source so the
+// structural validator can tie your patch site to this world's canary page
+#define CANARY_PAGE 0xfffff8055a702000ULL
 
 static KDPC g_lockDpc[CORES];
 
@@ -641,6 +645,94 @@ NTSTATUS DriverEntry(
     DbgPrint("INJ: attach-based write -> ok\\n");
 
     DbgPrint("INJ: secret=kf-ul-inject-ok\\n");
+    return STATUS_SUCCESS;
+}
+`;
+
+export const SMM_VAULT_STARTER = `// SMM vault exploit: open SMRAM, patch the handler, exfiltrate the secret
+//
+// The firmware left D_LCK unset, so you can open the vault from ring 0.
+// Your driver should:
+//   1. Write PCI config to set D_OPEN (SMRAMC bit 3)
+//   2. Patch the SMI handler at SMBASE+0x8000 with your exploit code
+//   3. Trigger an SMI via port 0xB2
+//   4. Read the secret from the landing page
+//
+// Use the modeled port I/O thunks: __outbyte/__outdword for PCI config,
+// __inbyte/__indword for reads. The chipset models SMRAMC at PCI 0x9C.
+
+#include <ntddk.h>
+
+// PCI config space addresses for SMRAMC
+#define PCI_CONFIG_ADDR  0xCF8
+#define PCI_CONFIG_DATA  0xCFC
+#define SMRAMC_REG       0x9C
+
+// SMI trigger port
+#define APMC_PORT        0xB2
+
+// SMBASE and landing page addresses (from the scenario)
+#define SMBASE           0x30000
+#define SMI_HANDLER      (SMBASE + 0x8000)
+#define LANDING_PAGE     0x10000000
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    // TODO: Implement the SMM vault exploit
+    // 1. Open SMRAM: write 0x09 to PCI 0x9C (D_OPEN | G_SMRAME)
+    // 2. Patch the SMI handler at SMI_HANDLER with your exploit code
+    // 3. Trigger SMI: write 0x01 to port 0xB2
+    // 4. Read the secret from LANDING_PAGE
+
+    DbgPrint("SMM: vault exploit not yet implemented\\n");
+    return STATUS_SUCCESS;
+}
+`;
+
+export const SMM_RELOC_STARTER = `// SMM SMBASE relocation: persist below ring 0 forever
+//
+// Extend the vault exploit: relocate SMBASE so the next SMI enters YOUR code.
+// Your driver should:
+//   1. Open SMRAM (D_OPEN)
+//   2. Patch the SMI handler to relocate SMBASE in the save state
+//   3. Plant a stub at the new SMBASE+0x8000
+//   4. Trigger two SMIs: first relocates, second runs your stub
+//
+// The save state layout: SMBASE field is at offset 0x7EF8 from SMBASE.
+
+#include <ntddk.h>
+
+#define PCI_CONFIG_ADDR  0xCF8
+#define PCI_CONFIG_DATA  0xCFC
+#define SMRAMC_REG       0x9C
+#define APMC_PORT        0xB2
+
+#define SMBASE           0x30000
+#define SMI_HANDLER      (SMBASE + 0x8000)
+#define NEW_SMBASE       0x7E400000
+#define NEW_HANDLER      (NEW_SMBASE + 0x8000)
+#define LANDING_PAGE     0x10000000
+#define LANDING_PAGE2    0x10001000
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    // TODO: Implement SMBASE relocation exploit
+    // 1. Open SMRAM
+    // 2. Patch handler at SMI_HANDLER to relocate SMBASE
+    // 3. Plant stub at NEW_HANDLER
+    // 4. Trigger two SMIs
+
+    DbgPrint("SMM: relocation exploit not yet implemented\\n");
     return STATUS_SUCCESS;
 }
 `;
