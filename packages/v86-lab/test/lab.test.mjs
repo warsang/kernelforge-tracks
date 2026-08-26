@@ -53,14 +53,15 @@ test("guest seeds pin every linux flag plaintext", () => {
 
 // ---------------------------------------------------------------- session
 
-test("boot without vendored bundle fails with instructive error", async () => {
+test("boot without a bundle fails with instructive error", async () => {
   await assert.rejects(
-    () => bootLinuxSession({ worldId: "lkm-hello", image: new ArrayBuffer(8) }),
+    () => bootLinuxSession({ worldId: "lkm-hello", image: new ArrayBuffer(8), v86: null }),
     (e) => e instanceof BundleMissingError && /vendor/.test(e.message),
   );
 });
 
-test("resolveV86 degrades to null without throwing", async () => {
+test("resolveV86 finds the vendored bundle or soft-degrades to null", async () => {
   const bundle = await resolveV86();
-  assert.equal(bundle, null);
+  if (bundle === null) return; // not vendored in this checkout — fine
+  assert.equal(typeof bundle.V86, "function");
 });

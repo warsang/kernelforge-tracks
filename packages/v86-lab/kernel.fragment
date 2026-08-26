@@ -18,3 +18,9 @@ CONFIG_KALLSYMS_ALL=y
 CONFIG_RANDOMIZE_BASE=n
 CONFIG_MODULE_SIG=n
 CONFIG_DEBUG_INFO=n
+
+# v86 has no IO-APIC; the i386_defconfig enables SMP/IO-APIC code that
+# dereferences a missing MP table early in setup_IO_APIC. Match v86 hardware.
+CONFIG_X86_UP_IOAPIC=n
+CONFIG_SMP=n
+CONFIG_PCI=n
