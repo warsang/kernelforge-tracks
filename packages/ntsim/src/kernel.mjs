@@ -184,6 +184,10 @@ export class NtKernel {
     this.protectedRanges = [];
     /** mini-PatchGuard state (installPatchguard) — null when not armed */
     this.patchguard = null;
+    /** EPT shadow entries (m22): [{name, va, len, hostBytes, reads}] — the
+     *  guest-visible bytes are whatever sits in flat memory; hostBytes are
+     *  the "physical" view only the hypervisor (and !eptview) can see. */
+    this.eptShadow = [];
 
     // pool
     this.nextPool = this.bases.pool;
@@ -752,6 +756,36 @@ export class NtKernel {
         : null,
     };
   }
+
+  // ------------------------------------------------------- EPT shadow sim
+
+  /**
+   * Model an EPT-backed hidden page (m22): the GUEST view is whatever bytes
+   * sit in flat memory — the kernel and every kd read see them. The HOST
+   * view (`hostBytes`, what the physical machine / a second translation
+   * would return) is kept out-of-band here, exactly the split an EPT hook
+   * creates between fetches and reads. `installEptShadow` records that
+   * second view; it does NOT touch guest memory.
+   */
+  installEptShadow({ name, va, len, hostBytes }) {
+    const entry = {
+      name: String(name),
+      va: BigInt(va),
+      len: Number(len),
+      hostBytes: Uint8Array.from(hostBytes),
+      reads: 0,
+    };
+    this.eptShadow.push(entry);
+    return entry;
+  }
+
+  /** All shadow entries overlapping [va, va+len). */
+  eptShadowAt(va, len = 1) {
+    va = BigInt(va);
+    return this.eptShadow.filter((e) =>
+      va < e.va + BigInt(e.len) && e.va < va + BigInt(len));
+  }
+
 
   /**
    * Drain-time read of a queued DPC's DeferredRoutine/DeferredContext from

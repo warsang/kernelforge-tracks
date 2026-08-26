@@ -934,6 +934,56 @@ scenarios["ul-inject"] = {
 };
 
 /**
+ * m22 EPT-shadow world: a cheat hypervisor (kfhyp.sys in the module list)
+ * detours PsLookupProcessByProcessId BELOW the kernel via EPT — the guest
+ * (flat memory, every kd read) sees an E9 detour, while the host/physical
+ * view kept out-of-band still shows pristine bytes. `!eptview`/`!eptverify`
+ * expose the split views and the detection story.
+ */
+scenarios["ept-shadow"] = {
+  title: "ept-shadow — hidden hook below the kernel",
+  description:
+    "kfhook-style detour with no byte changed where the guest can see it? " +
+    "Worse: the DETOUR is what the guest sees. Compare !eptview against db " +
+    "at the thunk, then !eptverify to prove the fetch/read split.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    setupApiHookBlank(kernel); // gate on live prologue bytes (pid 888)
+
+    const api = "PsLookupProcessByProcessId";
+    const thunk = kernel.apiThunks.get(api);
+    const pristine = [...kernel.pristineThunks.get(api)];
+    // GUEST view: install the detour for real (lookups of pid 888 now fail)
+    kernel.installDetour(api, 0xfffff8055a700800n);
+    // HOST view: what the physical machine would read at that address
+    kernel.installEptShadow({
+      name: "nt!PsLookupProcessByProcessId",
+      va: thunk,
+      len: pristine.length,
+      hostBytes: pristine,
+    });
+    // second shadow: a decoy page whose two views agree (control sample)
+    const flat = 0xfffff8055a701000n;
+    kernel.mem.write(flat, new Uint8Array(16).fill(0xc3));
+    kernel.installEptShadow({
+      name: "kfhyp.sys trampoline",
+      va: flat,
+      len: 16,
+      hostBytes: new Uint8Array(16).fill(0xc3),
+    });
+
+    kernel.loadedModules.push({
+      base: 0xfffff8055a700000n, sizeOfImage: 0x4000,
+      name: "kfhyp.sys", full: "\\SystemRoot\\system32\\drivers\\kfhyp.sys",
+      lab: true,
+    });
+    session.kind = "ept-shadow";
+    return session;
+  },
+};
+
+/**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
  * one trailing guard. Student audits (!poolfind), repairs with eb, verifies

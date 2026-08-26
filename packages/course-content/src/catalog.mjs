@@ -62,6 +62,8 @@ import m19l1Body from "./lessons/m19-l1.mjs";
 import m20l1Body from "./lessons/m20-l1.mjs";
 import m20l2Body from "./lessons/m20-l2.mjs";
 import m21l1Body from "./lessons/m21-l1.mjs";
+import m22l1Body from "./lessons/m22-l1.mjs";
+import m22l2Body from "./lessons/m22-l2.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -170,6 +172,11 @@ const F = {
   m21l1f1: "b287909b883b5658cca5b9590df5aa5c24c8c3bc3b2825da597778fb3613c8e3", // completion secret
   m21l1f2: "139bab6cd5244c9e0dcc9f6a24f022b8fead8cc04fea0824f704a42e39df9492", // PROCESS_VM_WRITE
   m21l1f3: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // ApcState
+
+  // --- m22 custom hypervisors & EPT shadowing ---
+  m22l2f1: "f94f18e5f578ef61e81e2661642524466b535b2ff2542871239fca36f27a2fbb", // guest prologue byte (0xe9)
+  m22l2f2: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // shadowed range count (2)
+  m22l2f3: "745c77fd16f591e32a57fade15e9ac1b08beb08baf11c83d97ceeac4017e022c", // detection secret
 
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -1978,7 +1985,72 @@ export const module21 = {
   ],
 };
 
+export const module22 = {
+  id: "m22",
+  title: "Custom Hypervisors & EPT",
+  track: "windows-kernel",
+  summary:
+    "Ring -1 architecture (VMX/VMCS/EPT) and the EPT-shadow arms race: " +
+    "hidden hooks that split fetches from reads, and the dual-view, timing " +
+    "and CPUID techniques that catch them.",
+  lessons: [
+    {
+      id: "m22.l1",
+      title: "Custom hypervisors — architecture from ring -1",
+      body: m22l1Body,
+      requires: ["m21.l1"],
+      labs: [],
+    },
+    {
+      id: "m22.l2",
+      title: "EPT shadowing, EPT hooks & detection",
+      body: m22l2Body,
+      requires: ["m22.l1"],
+      labs: [
+        {
+          id: "m22.l2.lab1",
+          kind: "windbg",
+          title: "Catch the split view: detect an EPT hook",
+          brief:
+            "kfhyp.sys detours PsLookupProcessByProcessId below the kernel. " +
+            "Guest memory shows the detour; the host/EPT view stays pristine. " +
+            "Compare translations and prove the fetch/read split.",
+          scenario: "ept-shadow",
+          flags: [
+            {
+              id: "m22.l2.f1",
+              sha256: F.m22l2f1,
+              prompt:
+                "db the PsLookupProcessByProcessId thunk in ept-shadow: what " +
+                "is the first opcode byte the GUEST sees? Submit as 0x-prefixed " +
+                "two-digit hex.",
+              points: 150,
+            },
+            {
+              id: "m22.l2.f2",
+              sha256: F.m22l2f2,
+              prompt:
+                "!eptlist reports how many shadowed ranges exist in this " +
+                "world? Submit the decimal count.",
+              points: 100,
+            },
+            {
+              id: "m22.l2.f3",
+              sha256: F.m22l2f3,
+              prompt:
+                "!eptverify sweeps every entry for a guest/host disagreement " +
+                "and prints a secret when at least one range splits. Submit " +
+                "it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22],
 };
