@@ -826,7 +826,11 @@ function renderLesson(lesson) {
       // Target binary for the sogen WASM core (uploaded, in-memory only).
       // With a target attached, the debugger shell controls the REAL
       // emulated process; without one it uses the JS reference backend.
-      const targetInput = h("input", { type: "file", class: "target-upload" });
+      const targetInput = h("input", {
+        type: "file",
+        class: "target-upload",
+        title: "Upload a Windows PE binary to debug in the sogen emulator (enables stepping/execution)",
+      });
       targetInput.addEventListener("change", async () => {
         const f = targetInput.files?.[0];
         if (!f) return;

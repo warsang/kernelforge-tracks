@@ -5,7 +5,7 @@
  * this wrapper only owns presentation.
  */
 
-const PROMPT = "kd> "; // windbg muscle memory is the point
+const PROMPT = "> "; // userland debugger, not kernel
 
 export function createSogenDebugger(session, out) {
   const engine = session.consoleEngine;

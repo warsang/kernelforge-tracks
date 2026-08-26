@@ -276,10 +276,11 @@ export function createDebuggerShell(host, opts = {}) {
     const ripReg = lastRegs.find((r) => /^(rip|eip)$/i.test(r.name));
     statusbar.textContent = session.paused
       ? `stopped @ 0x${fmtAddr(ripReg?.value ?? 0, 8)}`
-      : "running\u2026";
-    btnRun.disabled = !session.paused;
+      : "running…";
+    const canExec = session.canExecute !== false;
+    btnRun.disabled = !session.paused || !canExec;
     btnPause.disabled = !!session.paused;
-    for (const b of [btnInto, btnOver, btnOut, btnRunTo]) b.disabled = !session.paused;
+    for (const b of [btnInto, btnOver, btnOut, btnRunTo]) b.disabled = !session.paused || !canExec;
   }
 
   function scheduleRefresh() {
