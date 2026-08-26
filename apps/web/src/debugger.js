@@ -866,6 +866,7 @@ export function createCommands(kernel) {
       w("  !dpcwatchdog              modeled DPC_WATCHDOG check (bugcheck 0x133)");
       w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
       w("  !pgstatus                 mini-PatchGuard state: sweeps, regions, verdict");
+      w("  !eptlist / !eptview <va> / !eptverify   EPT shadow views (m22)");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
@@ -1803,6 +1804,53 @@ export function createCommands(kernel) {
       if (!foreign) w("  deferred routines: all inside loaded modules", "good");
       if (kernel.hvciMode && diffs.length) {
         w("  HVCI policy: CRITICAL_STRUCTURE_CORRUPTION (0x109) would have fired at write time", "dim");
+      }
+    },
+
+    "!eptlist"(args, w) {
+      const sh = kernel.eptShadow ?? [];
+      if (!sh.length) return w("!eptlist: no EPT shadow entries in this world", "err");
+      w("EPT shadow entries (host view differs from guest view)", "hdr");
+      for (const e of sh) {
+        w(`  ${e.name.padEnd(30)} ${fmtAddr(e.va)}  +0x${e.len.toString(16)} bytes  reads=${e.reads}`);
+      }
+    },
+
+    "!eptview"(args, w) {
+      const va = args[0] ? resolveArg(args[0]) : null;
+      if (va === null || va === undefined) {
+        return w("usage: !eptview <va>   host(EPT) view of a shadowed range", "err");
+      }
+      const hits = kernel.eptShadowAt?.(va, 16) ?? [];
+      if (!hits.length) return w(`!eptview: ${fmtAddr(va)} is not shadowed — host view == guest view`);
+      for (const e of hits) {
+        e.reads++; // A/D-bit analog: every host-view read is observable timing
+        const off = Number(va - e.va);
+        const start = Math.max(0, off);
+        const host = [...e.hostBytes.slice(start, start + 8)];
+        const guest = [...mem.read(e.va + BigInt(start), 8)];
+        w(`${e.name} @ ${fmtAddr(e.va)} (+0x${start.toString(16)})`, "hdr");
+        w(`  host  (physical/EPT): ${hexBytes(host)}`);
+        w(`  guest (kernel view) : ${hexBytes(guest)}`);
+        w(host.some((b, i) => b !== guest[i])
+          ? "  MISMATCH — the two translations disagree (EPT hook present)"
+          : "  views agree", "warn");
+      }
+    },
+
+    "!eptverify"(args, w) {
+      const sh = kernel.eptShadow ?? [];
+      if (!sh.length) return w("!eptverify: no EPT shadow entries in this world", "err");
+      let mismatches = 0;
+      for (const e of sh) {
+        e.reads++;
+        const guest = mem.read(e.va, e.len);
+        if (guest.some((b, i) => b !== e.hostBytes[i])) mismatches++;
+      }
+      w(`EPT verify: ${mismatches}/${sh.length} shadowed ranges disagree`, mismatches ? "warn" : "good");
+      if (mismatches) {
+        w("A hypervisor is splitting fetches from reads below the kernel.");
+        w("secret=kf-ept-detected");
       }
     },
 

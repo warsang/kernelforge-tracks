@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-one modules / thirty-one lessons / ninety flags", () => {
+test("catalog v5 has twenty-two modules / thirty-three lessons / ninety-three flags", () => {
   assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 21);
+  assert.equal(catalog.modules.length, 22);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 31);
+  assert.equal(lessons.length, 33);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 90);
+  assert.equal(flags.length, 93);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -138,6 +138,10 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m21.l1.f1": "kf-ul-inject-ok",
     "m21.l1.f2": "process_vm_write",
     "m21.l1.f3": "apcstate",
+    // m22 custom hypervisors & EPT shadowing
+    "m22.l2.f1": "0xe9",
+    "m22.l2.f2": "2",
+    "m22.l2.f3": "kf-ept-detected",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

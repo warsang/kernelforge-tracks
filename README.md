@@ -315,6 +315,12 @@ against `PsLookupProcessByProcessId` + `KeStackAttachProcess` direct writes.
 The Js interpreter gained a minimal SSE surface (movups/xorps/jcc rel32)
 for clang's vectorized stores.
 
+**Module 22 — Custom Hypervisors & EPT** (`ept-shadow`)
+Ring -1 architecture (VMX root/non-root, VMCS, EPT second translation
+floor), EPT-shadow hooks that split instruction fetches from data reads,
+and the detection stack — dual-view hashing (`!eptview`/`!eptverify`),
+A/D-bit timing counters, CPUID quirks and RDTSC drift.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +
