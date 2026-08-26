@@ -39,6 +39,25 @@ export class SogenConsole {
       case "!etwtrace": return this.cmdEtwTrace();
       case "!providers": return this.cmdEtwProviders();
       case "!etwpump": return this.cmdEtwPump(rest);
+      case "!callview": return this.w.uchooks && this.w.mode === "vtable"
+        ? this.w.callView() : "unknown command";
+      case "!spreadtest": return this.w.uchooks && this.w.mode === "hotpatch"
+        ? this.w.spreadTest() : "unknown command";
+      case "!drset": {
+        if (!this.w.uchooks || this.w.mode !== "drx") return "unknown command";
+        const a = parseNum(rest[0] ?? "");
+        if (a === null) return "usage: !drset <addr>   e.g. !drset 0x004532a0";
+        return this.w.drSet(a);
+      }
+      case "!drclear": return this.w.uchooks && this.w.mode === "drx"
+        ? this.w.drClear() : "unknown command";
+      case "!frametest": {
+        if (!this.w.uchooks || this.w.mode !== "drx") return "unknown command";
+        const n = Number.parseInt(rest[0] ?? "", 10) || 1;
+        return this.w.frameTest(Math.min(n, 64));
+      }
+      case "!drxaudit": return this.w.uchooks && this.w.mode === "drx"
+        ? this.w.drxAudit() : "unknown command";
       case "!spoof-process": {
         if (!this.w.ac) return "unknown command";
         const n = rest.join(" ");
@@ -261,6 +280,11 @@ export class SogenConsole {
       "  !providers               ETW providers + RegHandles (etw-blind world)",
       "  !etwpump <n>             emit n telemetry events through EtwEventWrite",
       "  !etwtrace                delivered vs suppressed telemetry trace",
+      "  !callview                call the object's live vtable slot (vtable-hook)",
+      "  !spreadtest              replay calcspread live bytes (hotpatch-hook)",
+      "  !drset/!drclear <addr>   arm/clear modeled DR0 execute bp (drx-hook)",
+      "  !frametest <n>           replay n frames against armed DRs",
+      "  !drxaudit                anticheat thread-context DR audit",
     ].join("\n");
   }
 }

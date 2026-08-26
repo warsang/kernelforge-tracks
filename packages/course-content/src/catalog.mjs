@@ -71,6 +71,8 @@ import m24l2Body from "./lessons/m24-l2.mjs";
 import m26l1Body from "./lessons/m26-l1.mjs";
 import m26l2Body from "./lessons/m26-l2.mjs";
 import m26l3Body from "./lessons/m26-l3.mjs";
+import m27l1Body from "./lessons/m27-l1.mjs";
+import m27l2Body from "./lessons/m27-l2.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -213,6 +215,19 @@ const F = {
   m26l3f1: "0273f35d56e5badf5f3a6ef5b8bfe4018c58e5018adb077dc5d896a20445246e", // baseline flags
   m26l3f2: "3e9bbfba04f7510ca77c826c15aeb56dd50bc1e8ed748ed02c0a47caa0cb9bab", // session name
   m26l3f3: "7d6b122b7e2c1fe83462204f5e65fd32edb47f2bf535a64ee0a2dee4d5057f50", // sentinel v7 secret
+
+  // --- m27 userland deep cuts: vtable / hot-patch / DRx ---
+  m27l1f1: "0924448f9c7fd0caa41c65cdf5a99d1ed81ef1e2f75b2c36481f8323f98b32ba", // fake vtable VA
+  m27l1f2: "5a289f194839859920ecf9dba63aff9a856dea5bc19e56c795f24fa3a55ffb18", // cheat stub VA
+  m27l1f3: "a743eb26cafb3428a4db6cc528c2ec9257500eceec5045907e8af2bc2c9028c4", // vtable restore secret
+  m27l1f4: "209a4e6d2b386fd55c778af5e884e58573f85f4495bd5de7f8df26ace88807ef", // calcspread VA
+  m27l1f5: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d", // sled NOP count
+  m27l1f6: "2461e3ec000f0a65348e760931c08837f6a6640ca1a10e7e839294789b9db553", // hotpatch restore secret
+  m27l1f7: "b17ef6d19c7a5b1ee83b907c595526dcb1eb06db8227d650d5dda0a9f4ce8cd9", // DR trip count
+  m27l1f8: "5588be887fb18a7d83238d812cbbebb8d2ee193b60ca60c18c97b87dec656389", // audit verdict
+  m27l1f9: "60c1359ae353ac5d64020a410702181a97bef6ba2c1f57bfc1c49bec5af13d25", // drx clean secret
+  m27l2f1: "d4bf696eb64f854fa21cceb64d9b328ee350a9321308bf54ded8e541499a7c80", // technique abbreviation
+  m27l2f2: "cd8644238bd404bc65952f8d21f564e45717d963a254543765ff1b48bbd7aa8c", // hot-patch marker instruction
 
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -2469,7 +2484,173 @@ export const module26 = {
   ],
 };
 
+export const module27 = {
+  id: "m27",
+  title: "Userland Hooking Deep Cuts: VTable / Hot-Patch / DRx",
+  track: "windows-userland",
+  summary:
+    "Three techniques live anticheats hunt hardest: vtable pointer swaps, " +
+    "MS hot-patch sled installs, and debug-register hooks — each with its " +
+    "behavioral proof, each with the audit that convicts it.",
+  lessons: [
+    {
+      id: "m27.l1",
+      title: "Pointer swaps, atomic sleds, hardware breakpoints",
+      body: m27l1Body,
+      requires: ["m26.l3"],
+      labs: [
+        {
+          id: "m27.l1.lab1",
+          kind: "sogen",
+          title: "VTable swap: prove, trace, restore",
+          brief:
+            "The object already points at a cheat-owned fake table. Prove " +
+            "the hijack with !callview, resolve slot0's foreign target, " +
+            "re-point at the honest table.",
+          scenario: "vtable-hook",
+          flags: [
+            {
+              id: "m27.l1.f1",
+              sha256: F.m27l1f1,
+              prompt:
+                "!callview prints the live vtable VA. Submit it as full " +
+                "8-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f2",
+              sha256: F.m27l1f2,
+              prompt:
+                "Slot0 of that table points into cheat memory. Submit the " +
+                "stub VA as full 8-digit hex with 0x prefix (hookscan " +
+                "resolves E9 targets; x helps).",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f3",
+              sha256: F.m27l1f3,
+              prompt:
+                "Re-point the object at the honest table (eb), confirm " +
+                "!callview passes through, and submit the integrity " +
+                "secret.",
+              points: 250,
+            },
+          ],
+        },
+        {
+          id: "m27.l1.lab2",
+          kind: "sogen",
+          title: "Hot-patch slot: install and heal an atomic detour",
+          brief:
+            "cl_calcspread ships hot-patchable. Install the classic E9 " +
+            "into the sled, prove the spread rewrite, restore the NOPs.",
+          scenario: "hotpatch-hook",
+          flags: [
+            {
+              id: "m27.l1.f4",
+              sha256: F.m27l1f4,
+              prompt:
+                "Find cl_calcspread's entry in the lab brief constants " +
+                "(x game.exe!calcspread or scan). Submit as 0x-prefixed " +
+                "8-digit hex.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f5",
+              sha256: F.m27l1f5,
+              prompt:
+                "How many NOP bytes make up Microsoft's hot-patch sled? " +
+                "Decimal.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f6",
+              sha256: F.m27l1f6,
+              prompt:
+                "After installing your E9 (!spreadtest shows the rewrite) " +
+                "and restoring the pristine sled bytes, submit the secret " +
+                "!spreadtest prints.",
+              points: 250,
+            },
+          ],
+        },
+        {
+          id: "m27.l1.lab3",
+          kind: "sogen",
+          title: "DRx hook vs the thread-context audit",
+          brief:
+            "Arm DR0 over cl_sendinput, trip it across a frame batch " +
+            "without touching .text, meet !drxaudit, then clear yourself " +
+            "clean.",
+          scenario: "drx-hook",
+          flags: [
+            {
+              id: "m27.l1.f7",
+              sha256: F.m27l1f7,
+              prompt:
+                "With DR0 armed on cl_sendinput, run !frametest 16. How " +
+                "many #DB trips does it report? Decimal.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f8",
+              sha256: F.m27l1f8,
+              prompt:
+                "!drxaudit stamps a one-word verdict while registers are " +
+                "armed. Submit it (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f9",
+              sha256: F.m27l1f9,
+              prompt:
+                "Clear the registers, re-audit clean after having tripped, " +
+                "and submit the acknowledged secret.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m27.l2",
+      title: "Defense: pointer graphs, sled-aware integrity, DR audits",
+      body: m27l2Body,
+      requires: ["m27.l1"],
+      labs: [
+        {
+          id: "m27.l2.lab1",
+          kind: "quiz",
+          title: "Pick the countermeasure",
+          brief: "Reading comprehension check on the deep-cuts defenses.",
+          scenario: null,
+          flags: [
+            {
+              id: "m27.l2.f1",
+              sha256: F.m27l2f1,
+              prompt:
+                "Which technique redirects virtual calls purely by " +
+                "swapping a pointer to a method table? Submit the common " +
+                "three-letter abbreviation for such a table.",
+              points: 100,
+            },
+            {
+              id: "m27.l2.f2",
+              sha256: F.m27l2f2,
+              prompt:
+                "Which two-instruction sequence marks a function as " +
+                "Microsoft hot-patchable? Submit it exactly as written in " +
+                "the lesson (lowercase, with comma).",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 6,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module26],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module26, module27],
 };

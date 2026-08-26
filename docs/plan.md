@@ -318,3 +318,12 @@ Instructor answers: m26.l1 = 0x7749e2a0 / 8 / kf-etw-restored;
 m26.l2 = 0x10 / blinded / kf-etw-blinded;
 m26.l3 = 0xff / ckcl / kf-sentinel-v7-ok.
 Fixtures: kfetwtamper.obj, kfsentinel_v7.obj.
+
+### M27 — Userland Deep Cuts: VTable / Hot-Patch / DRx (shipped)
+
+Worlds (sogen-runtime uchooks.mjs, one model three modes):
+`vtable-hook` / `hotpatch-hook` / `drx-hook`; console gains
+!callview / !spreadtest / !drset / !drclear / !frametest / !drxaudit.
+Instructor answers: m27.l1 = 0x02100800 / 0x0046f020 /
+kf-vtable-restored / 0x00452060 / 5 / kf-hotpatch-restored / 16 /
+flagged / kf-drx-clean; m27.l2 quiz = vmt / mov edi,edi.

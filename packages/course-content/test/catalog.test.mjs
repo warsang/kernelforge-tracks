@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v6 has twenty-five modules / thirty-nine lessons / one-hundred-sixteen flags", () => {
+test("catalog v6 has twenty-six modules / forty-one lessons / one-hundred-twenty-seven flags", () => {
   assert.equal(catalog.version, 6);
-  assert.equal(catalog.modules.length, 25);
+  assert.equal(catalog.modules.length, 26);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 39);
+  assert.equal(lessons.length, 41);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 116);
+  assert.equal(flags.length, 127);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -168,6 +168,18 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m26.l3.f1": "0xff",
     "m26.l3.f2": "ckcl",
     "m26.l3.f3": "kf-sentinel-v7-ok",
+    // m27 userland deep cuts: vtable / hot-patch / DRx
+    "m27.l1.f1": "0x02100800",
+    "m27.l1.f2": "0x0046f020",
+    "m27.l1.f3": "kf-vtable-restored",
+    "m27.l1.f4": "0x00452060",
+    "m27.l1.f5": "5",
+    "m27.l1.f6": "kf-hotpatch-restored",
+    "m27.l1.f7": "16",
+    "m27.l1.f8": "flagged",
+    "m27.l1.f9": "kf-drx-clean",
+    "m27.l2.f1": "vmt",
+    "m27.l2.f2": "mov edi,edi",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

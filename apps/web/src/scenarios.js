@@ -1167,6 +1167,48 @@ scenarios["etw-blind"] = {
   },
 };
 
+/** m27 userland hooking deep cuts: three modes over one shared model. */
+function ucHooksScenario(id, title, description) {
+  return {
+    title,
+    description,
+    boot: async () => {
+      const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+      const { world } = createSogenSession(id);
+      return {
+        kind: id,
+        sogen: true,
+        world,
+        consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+      };
+    },
+  };
+}
+
+scenarios["vtable-hook"] = ucHooksScenario(
+  "vtable-hook",
+  "vtable-hook — VTable swap target",
+  "An entity-shaped object's vtable pointer already aims at a cheat-owned " +
+  "fake table. Prove the hijack with !callview, trace slot0 to the cheat " +
+  "stub, re-point at the honest table and restore integrity.",
+);
+
+scenarios["hotpatch-hook"] = ucHooksScenario(
+  "hotpatch-hook",
+  "hotpatch-hook — MS hot-patch slot target",
+  "cl_calcspread ships with Microsoft's hot-patchable prologue: five NOPs " +
+  "and MOV EDI,EDI. Install an atomic E9 into the sled, prove the spread " +
+  "rewrite with !spreadtest, then restore.",
+);
+
+scenarios["drx-hook"] = ucHooksScenario(
+  "drx-hook",
+  "drx-hook — hardware-breakpoint hooks vs the DR audit",
+  "Arm DR0 as an execute breakpoint over cl_sendinput, trip it across a " +
+  "frame batch without touching .text — then meet the anticheat's " +
+  "GetThreadContext counter-move (!drxaudit) and clear yourself clean.",
+);
+
 /**
  * m23 DKOM field labs. Both worlds are the standard 22H2 machine; the labs
  * are edits the STUDENT makes with eb, verified via !openprocess / !process.

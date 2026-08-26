@@ -9,10 +9,12 @@
 import { buildSauerWorld } from "./world.mjs";
 import { buildTbmWorld, TBM_CONSTANTS } from "./ac.mjs";
 import { buildEtwUserWorld, ETW_USER_CONSTANTS } from "./etw.mjs";
+import { buildUcHooksWorld, UCHOOKS_CONSTANTS } from "./uchooks.mjs";
 
 export { SAUER_CONSTANTS, SENDINPUT_PROLOGUE, buildSauerWorld } from "./world.mjs";
 export { TBM_CONSTANTS } from "./ac.mjs";
 export { ETW_USER_CONSTANTS, buildEtwUserWorld } from "./etw.mjs";
+export { UCHOOKS_CONSTANTS, buildUcHooksWorld } from "./uchooks.mjs";
 export { SogenConsole, parseNum } from "./console.mjs";
 export { createStaticDebugSession } from "./backend-static.mjs";
 export {
@@ -22,7 +24,8 @@ export {
 
 /**
  * Boot a userland lab session by scenario world id.
- * @param {"sauer-recon"|"sauer-hook"|"tbm-ac"|"etw-blind"} worldId
+ * @param {"sauer-recon"|"sauer-hook"|"tbm-ac"|"etw-blind"|
+ *         "vtable-hook"|"hotpatch-hook"|"drx-hook"} worldId
  */
 export function createSogenSession(worldId) {
   switch (worldId) {
@@ -34,6 +37,10 @@ export function createSogenSession(worldId) {
       return { world: buildTbmWorld(), engine: null };
     case "etw-blind":
       return { world: buildEtwUserWorld(), engine: null };
+    case "vtable-hook":
+    case "hotpatch-hook":
+    case "drx-hook":
+      return { world: buildUcHooksWorld(worldId.replace("-hook", "")), engine: null };
     default:
       throw new Error(`unknown sogen world "${worldId}"`);
   }
