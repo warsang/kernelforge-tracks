@@ -15,6 +15,8 @@
  * plain JSON.
  */
 
+import { isVoidApi } from "./winapi-meta.mjs";
+
 const U64MASK = (1n << 64n) - 1n;
 
 /* ------------------------------------------------------------ value decoding */
@@ -232,17 +234,23 @@ export function finalizeTrace(kernel, modules = []) {
         decodedArgs.push({ name: argName, raw: hex(v), decoded: text });
         parts.push(`${argName}=${text}`);
       });
-      const statusName = ntstatusName(e.ret);
-      const retText =
-        sigHasStatus(e.name) && statusName
-          ? `${hex(e.ret)} (${statusName})`
-          : hex(e.ret);
+      const isVoid = e.ret === undefined || isVoidApi(e.name);
+      let retText = null;
+      if (!isVoid) {
+        const statusName = ntstatusName(e.ret);
+        retText =
+          sigHasStatus(e.name) && statusName
+            ? `${hex(e.ret)} (${statusName})`
+            : hex(e.ret);
+      }
       rec.name = e.name;
       rec.args = decodedArgs;
       rec.ret = retText;
       rec.irql = e.irql;
       rec.caller = resolveModule(modules, e.retAddr) ?? hex(e.retAddr);
-      rec.text = `${e.name}(${parts.join(", ")}) -> ${retText}`;
+      rec.text = isVoid
+        ? `${e.name}(${parts.join(", ")})`
+        : `${e.name}(${parts.join(", ")}) -> ${retText}`;
     } else if (e.kind === "dbgprint") {
       rec.text = `DbgPrint: ${e.text.replace(/\n$/, "")}`;
     } else if (e.kind === "exception") {

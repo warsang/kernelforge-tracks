@@ -34,6 +34,11 @@
  * @property {Error|null} fault last fault captured by run().
  * @property {() => bigint} popVal stack pop (used by NtKernel thunk ret emulation).
  * @property {(v: bigint) => void} [pushVal] stack push.
+ * @property {boolean} tf trap flag (EFLAGS bit 8) — hardware single-step arm.
+ * @property {(info: {code: string, rip: bigint}) => boolean} [onDebugException]
+ *   #DB / EXCEPTION_SINGLE_STEP sink invoked by run() after an instruction
+ *   executes with TF armed. Return true = handled (execution continues
+ *   seamlessly); false/absent = run() stops with "breakpoint" at the trap.
  */
 
 const R64 = [
@@ -68,6 +73,19 @@ export class JsInterpreter {
     for (const r of R64) this.regs[r] = 0n;
     this.rip = 0n;
     this.cf = this.zf = this.sf = this.of = false;
+    this.df = false;
+    /** trap flag (RFLAGS.TF, bit 8): arms hardware single-step */
+    this.tf = false;
+    /** interrupt-enable flag (RFLAGS.IF, bit 9) — cosmetic, kept for pushfq fidelity */
+    this.iflag = true;
+    /**
+     * Interrupt/debug-inhibit window (Intel SDM Vol.3 §7.4): loading a segment
+     * register — notably MOV SS — suppresses interrupts, traps and debug
+     * exceptions until the FOLLOWING instruction retires. Packers exploit the
+     * window to read TF unmasked via PUSHFQ before a tracer can intervene.
+     * Counted in remaining post-instruction checks.
+     */
+    this.inhibitWindow = 0;
     this.halted = false;
     /** @type {(addr: bigint)=>boolean|null} hook returning true to stop */
     this.onCodeHook = null;
@@ -102,6 +120,8 @@ export class JsInterpreter {
     this.cr3 = 0n;
     this.cr4 = 0x0000000000370678n;
     this.efer = 0x0000000000000500n;
+    this.onDebugException = null;
+    this.lastDebugStop = null;
   }
 
   reset(rip) {
@@ -110,6 +130,39 @@ export class JsInterpreter {
     this.halted = false;
     this.steps = 0;
     this.fault = null;
+    this.tf = false;
+    this.iflag = true;
+    this.inhibitWindow = 0;
+    this.lastDebugStop = null;
+  }
+
+  /**
+   * Compose the software-visible RFLAGS image from modeled bits. Layout:
+   * CF=0, PF=2, AF=4, ZF=6, SF=7, TF=8, IF=9, DF=10, OF=11; bit 1 and the
+   * high bits read as on a real 22h2 machine (bit1 always set, IF set).
+   */
+  composeFlags() {
+    let f = 0x2n | 0x200n; // reserved bit1 + IF
+    if (this.cf) f |= 0x1n;
+    if (this.zf) f |= 0x40n;
+    if (this.sf) f |= 0x80n;
+    if (this.tf) f |= 0x100n;
+    if (this.iflag) f |= 0x200n;
+    if (this.df) f |= 0x400n;
+    if (this.of) f |= 0x800n;
+    return f;
+  }
+
+  /** Load modeled flags from a popped RFLAGS image (POPFQ semantics). */
+  loadFlags(v) {
+    v = BigInt(v);
+    this.cf = (v & 0x1n) !== 0n;
+    this.zf = (v & 0x40n) !== 0n;
+    this.sf = (v & 0x80n) !== 0n;
+    this.tf = (v & 0x100n) !== 0n;
+    this.iflag = (v & 0x200n) !== 0n;
+    this.df = (v & 0x400n) !== 0n;
+    this.of = (v & 0x800n) !== 0n;
   }
 
   /** Late memory binding (CpuBackend contract, see typedef). */
@@ -399,6 +452,17 @@ export class JsInterpreter {
         this.regs[R64[r]] = this.popVal();
         return;
       }
+      case p === 0x9c: { // PUSHF/PUSHFQ — pushes the LIVE flag image
+        const f = this.composeFlags();
+        // default operand size in 64-bit mode is 8; a 66 prefix narrows the
+        // stored image (stack slot stays 8 wide in our flat model)
+        this.pushVal(opsize === 2 ? f & 0xffffn : f);
+        return;
+      }
+      case p === 0x9d: { // POPF/POPFQ — reloads modeled flags, TF included
+        this.loadFlags(this.popVal());
+        return;
+      }
       case p === 0x98: { // cdqe/cwde
         if (opsize === 8) this.regs.rax = sx(this.regs.rax & 0xffffffffn, 32) & M64;
         else this.writeReg(0, 4, sx(this.regs.rax & 0xffffn, 16));
@@ -650,6 +714,14 @@ export class JsInterpreter {
       this.writeReg(reg, opsize, rm.kind === "mem" ? rm.addr : this.readReg(reg, opsize));
       return;
     }
+    // 8e: mov sreg, r/m16 — modeled only for its debug-inhibit side effect.
+    // reg field encodes ES=0 CS=1 SS=2 DS=3 FS=4 GS=5; MOV to SS opens the
+    // one-instruction interrupt/debug-exception suppression window.
+    if (p === 0x8e) {
+      const { reg } = this.decodeModrm(2);
+      if (reg === 2) this.inhibitWindow = 2;
+      return;
+    }
     if (p === 0xc6 || p === 0xc7) { // mov r/m, imm
       const size = p === 0xc6 ? 1 : opsize;
       const { rm } = this.decodeModrm(size);
@@ -897,16 +969,40 @@ export class JsInterpreter {
     this.regs.rbp = this.popVal();
   }
 
-  /** Run until halted, error, breakpoint, sentinel RIP, or step budget. */
+  /** Run until halted, error, breakpoint, sentinel RIP, or step budget.
+   *
+   * Hardware single-step semantics: when TF was armed before an instruction,
+   * the CPU raises #DB (EXCEPTION_SINGLE_STEP) at the NEXT instruction
+   * boundary and auto-clears TF. A MOV SS/POP SS inhibit window defers that
+   * delivery past one extra instruction — the gap anti-tracing exploits to
+   * snapshot TF via PUSHFQ before a tracer can intervene. Delivery goes to
+   * onDebugException first (kernel VEH / tracer layer); only an unhandled
+   * event stops the run.
+   */
   run(maxSteps = 10_000_000) {
     while (!this.halted && this.steps < maxSteps) {
       if (this.stopOnRip !== null && this.rip === this.stopOnRip) {
         return "returned";
       }
       try {
+        const armedTf = this.tf;
         this.step();
         if (this.pendingBreak) {
           this.pendingBreak = false;
+          return "breakpoint";
+        }
+        if (this.inhibitWindow > 0) {
+          this.inhibitWindow--;
+          if (this.inhibitWindow > 0 || !armedTf || this.halted) continue;
+        } else if (!armedTf || this.halted) {
+          continue;
+        }
+        // debug exception fires here: TF auto-clears, sink decides fate
+        this.tf = false;
+        if (this.onDebugException?.({ code: "EXCEPTION_SINGLE_STEP", rip: this.rip }) !== true) {
+          // unhandled #DB: remember why so callFunction can surface it
+          // instead of treating it like an INT3 breakpoint hop
+          this.lastDebugStop = { code: "EXCEPTION_SINGLE_STEP", rip: this.rip };
           return "breakpoint";
         }
       } catch (e) {
@@ -937,6 +1033,14 @@ export class JsInterpreter {
       const reason = this.run();
       if (reason === "returned") break;
       if (reason === "breakpoint") {
+        // INT3 vs #DB: unhandled debug exception surfaces as debug-stop,
+        // not as a normal int3 hop. Check lastDebugStop first (anti-trace).
+        const dbg = this.lastDebugStop;
+        this.lastDebugStop = null;
+        if (dbg) {
+          this.stopOnRip = savedStop;
+          return { status: "debug-stop", code: dbg.code, rip: dbg.rip };
+        }
         // Debugger integration: "continue" keeps the legacy int3-padding
         // tolerance (module extents are CC-filled); "pause" hands control to
         // an attached debugger instead of resuming through the hit.
@@ -962,6 +1066,7 @@ export class JsInterpreter {
       return { status: reason, rip: this.rip }; // halted / wild-return
     }
     this.stopOnRip = savedStop;
+    this.lastDebugStop = null;
     return { status: "ok", retval: this.regs.rax };
   }
 }

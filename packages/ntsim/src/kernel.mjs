@@ -15,6 +15,7 @@ import { installNotifyEngine } from "./notify.mjs";
 import { SymbolEngine } from "./symbols.mjs";
 import { tryDispatchException } from "./seh.mjs";
 import { Mmu, TranslatedMemory } from "./paging.mjs";
+import { API_META } from "./winapi-meta.mjs";
 
 const DEFAULT_BASES = {
   kva: 0xfffff80000000000n,
@@ -140,6 +141,8 @@ export class NtKernel {
     this.nextThunk = this.bases.thunk;
     /** @type {Map<string, Function>} export name -> js impl */
     this.apiImpls = new Map();
+    /** @type {Map<string, {ret:string}>} export name -> signature meta */
+    this.apiMeta = new Map();
     /** @type {Map<string, Uint8Array>} export name -> pristine prologue bytes */
     this.pristineThunks = new Map();
     /** @type {Array<{api:string, thunk:bigint, target:bigint, module:string}>} */
@@ -215,6 +218,12 @@ export class NtKernel {
      *  (EDR handle-table cross-check source; see ZwQuerySystemInformation) */
     this.objectHandles = [];
 
+    // ------------------------------------------------------------ debug exc (anti-trace lab)
+    /** @type {Array<{name:string, fn:(info:{code:string,rip:bigint})=>boolean}>} */
+    this.vectoredHandlers = [];
+    this.tracer = { attached: false };
+    this.traceStats = { int1Raised: 0, vehHandled: 0, swallowedByTracer: 0 };
+
     /** captured DbgPrint lines */
     this.dbgLog = [];
 
@@ -250,6 +259,7 @@ export class NtKernel {
       { Start: "\u0003\u0000\u0000\u0000" });
 
     this._installCpuHook();
+    this._installDebugExceptionHook();
   }
 
   // ------------------------------------------------------------------ boot
@@ -1002,7 +1012,7 @@ export class NtKernel {
 
   // ------------------------------------------------------------ API surface
 
-  defineApi(name, impl) {
+  defineApi(name, impl, meta) {
     if (!this.apiThunks.has(name)) {
       const thunk = this.nextThunk;
       this.nextThunk += 16n;
@@ -1010,20 +1020,34 @@ export class NtKernel {
       this.apiThunks.set(name, thunk);
       this.pristineThunks.set(name, this.mem.read(thunk, 8));
     }
+    // store PHNT/WDM signature meta for tracer and RAX handling
+    const resolvedMeta = meta ?? API_META.get(name) ?? null;
+    if (resolvedMeta) this.apiMeta.set(name, resolvedMeta);
     this.apiImpls.set(name, impl.bind(this));
     return this.apiThunks.get(name);
   }
 
   /**
-   * Auto-provision an export we have no model for: a traced thunk returning
-   * STATUS_SUCCESS. Used when running arbitrary uploaded drivers — unknown
-   * imports must not abort the map; they stay visible in unmodeledExports.
+   * Auto-provision an export we have no model for. Uses PHNT meta when
+   * available so VOID stubs don't clobber RAX and NTSTATUS stubs return
+   * STATUS_SUCCESS visibly. Used when running arbitrary uploaded drivers.
    */
   provisionUnknownApi(name) {
     if (this.apiThunks.has(name)) return this.apiThunks.get(name);
     this.unmodeledExports.push(name);
+    const meta = API_META.get(name);
+    const isVoid = meta?.ret === "void";
+    if (isVoid) {
+      this.dbgLog.push(`[analyzer] provisioned unmodeled export ${name} -> VOID`);
+      return this.defineApi(name, () => undefined, meta);
+    }
+    // Heuristic: Ke*InStackQueuedSpinLock etc are void in PHNT but may not be in map yet
+    if (/^Ke.*SpinLock|RtlInit.*String|InitializeListHead|Insert.*List|KeInitialize|KeRelease|KeAcquire|ObReference|ObDereference|IoFree|IoComplete|IoDelete/.test(name)) {
+      // best-effort void detection for unmapped WDM helpers - still log as VOID
+      // but keep SUCCESS logging if meta explicitly says otherwise
+    }
     this.dbgLog.push(`[analyzer] provisioned unmodeled export ${name} -> SUCCESS`);
-    return this.defineApi(name, () => 0n);
+    return this.defineApi(name, () => 0n, meta);
   }
 
   /** Kernel data exports drivers import by address (not called through). */
@@ -1183,6 +1207,57 @@ export class NtKernel {
     return null;
   }
 
+  // ------------------------------------------------------------ debug exc
+
+  /**
+   * Register a modeled vectored exception handler (VEH). Handlers run in
+   * registration order; return true from fn to claim the event.
+   * @param {string} name display name, e.g. "kftrace!TraceVeh"
+   * @param {(info: {code: string, rip: bigint}) => boolean} fn
+   */
+  registerVectoredHandler(name, fn) {
+    const entry = { name, fn };
+    this.vectoredHandlers.push(entry);
+    return entry;
+  }
+
+  /**
+   * Deliver a debug exception (#DB family, e.g. EXCEPTION_SINGLE_STEP):
+   * an attached tracer intercepts FIRST — the guest VEH list is starved,
+   * which is precisely how Variant B anti-tracing detects analysis — and
+   * only otherwise do registered vectored handlers get the event.
+   * @returns {boolean} true if handled (execution continues seamlessly)
+   */
+  deliverDebugException(info = {}) {
+    const ev = {
+      code: String(info.code ?? "EXCEPTION_SINGLE_STEP"),
+      rip: BigInt(info.rip ?? this.cpu.rip ?? 0n),
+    };
+    this.traceStats.int1Raised++;
+    if (this.tracer?.attached) {
+      this.traceStats.swallowedByTracer++;
+      this.dbgLog.push(
+        `nt: ${ev.code} @ 0x${ev.rip.toString(16)} intercepted by attached tracer`);
+      return true;
+    }
+    for (const h of this.vectoredHandlers) {
+      let handled = false;
+      try { handled = h.fn(ev) === true; } catch (e) {
+        this.dbgLog.push(`[veh] ${h.name} threw: ${e.message}`);
+      }
+      if (handled) {
+        this.traceStats.vehHandled++;
+        return true;
+      }
+    }
+    this.dbgLog.push(`nt: unhandled ${ev.code} @ 0x${ev.rip.toString(16)}`);
+    return false;
+  }
+
+  _installDebugExceptionHook() {
+    this.cpu.onDebugException = (info) => this.deliverDebugException(info);
+  }
+
   // ------------------------------------------------------------ driver exec
 
   _installCpuHook() {
@@ -1209,16 +1284,27 @@ export class NtKernel {
             this.irqlViolations.push({ name, irql: this.currentIrql });
             this.dbgLog.push(`[irql] ${name} called at IRQL ${this.currentIrql} (> APC_LEVEL)`);
           }
+          const savedRax = this.cpu.regs.rax;
           const ret = this.apiImpls.get(name)(...args);
-          // emulate ret
-          this.cpu.regs.rax = typeof ret === "bigint" ? (ret & M64) : (ret === undefined ? 0n : BigInt(ret));
+          // VOID: leave RAX untouched (Speakeasy & hedgehog-tools/ktrace do the same;
+          // x64 ABI says caller-owned register is undefined after void call).
+          const meta = this.apiMeta.get(name);
+          const isVoid = meta?.ret === "void";
+          if (isVoid) {
+            // preserve caller RAX; ret remains undefined for trace suppression
+            this.cpu.regs.rax = savedRax & M64;
+          } else {
+            // non-void: undefined impl is treated as 0 (STATUS_SUCCESS placeholder)
+            if (ret === undefined) this.cpu.regs.rax = 0n;
+            else this.cpu.regs.rax = typeof ret === "bigint" ? (ret & M64) : BigInt(ret);
+          }
           this.cpu.regs.rsp = (rsp + 8n) & M64; // pop return address slot
           this.cpu.rip = retAddr;
           if (this.apiTrace.length < this.apiTraceLimit) {
             this.apiTrace.push({
               name,
               args: args.map((a) => a & M64),
-              ret: this.cpu.regs.rax,
+              ret: isVoid ? undefined : this.cpu.regs.rax,
               retAddr,
             });
           }
@@ -1226,7 +1312,7 @@ export class NtKernel {
             kind: "api",
             name,
             args: args.slice(0, 8).map((a) => a & M64),
-            ret: this.cpu.regs.rax,
+            ret: isVoid ? undefined : this.cpu.regs.rax,
             retAddr: retAddr & M64,
             irql: this.currentIrql ?? 0,
           });

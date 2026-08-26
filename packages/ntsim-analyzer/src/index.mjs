@@ -346,7 +346,7 @@ function summarizeApiTrace(trace) {
     if (rec.args.length < 3) {
       rec.args.push({
         args: e.args.slice(0, 4).map((a) => `0x${a.toString(16)}`),
-        ret: `0x${e.ret.toString(16)}`,
+        ret: e.ret === undefined ? null : `0x${e.ret.toString(16)}`,
       });
     }
     byName.set(e.name, rec);

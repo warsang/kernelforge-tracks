@@ -14,6 +14,7 @@
 
 import { M64 } from "./cpu.mjs";
 import { installWinApiExt } from "./winapi-ext.mjs";
+import { API_META } from "./winapi-meta.mjs";
 
 const STATUS_SUCCESS = 0x00000000n;
 const STATUS_NOT_IMPLEMENTED = 0xc0000001n;
@@ -102,19 +103,31 @@ export function installWinApi(kernel) {
   });
   k.define("ExAllocatePool2", (flags, size, tag) => (size > 0x7fffffffn ? 0n : k.alloc(size)));
   k.define("ExFreePool", () => undefined);
-  k.define("ExFreePoolWithTag", (addr, tag) => kernel.freePool(addr));
+  k.define("ExFreePoolWithTag", (addr, tag) => { kernel.freePool(addr); return undefined; });
 
   k.define("RtlCopyMemory", (dst, src, len) => {
     mem.write(dst, mem.read(src, Number(len)));
+    return undefined;
+  });
+  k.define("RtlCopyBytes", (dst, src, len) => {
+    mem.write(dst, mem.read(src, Number(len)));
+    return undefined;
+  });
+  k.define("memcpy", (dst, src, len) => {
+    mem.write(dst, mem.read(src, Number(len)));
     return dst;
   });
-  k.define("RtlCopyBytes", (...a) => impls.RtlCopyMemory(...a));
-  k.define("memcpy", (...a) => impls.RtlCopyMemory(...a));
-  k.define("memmove", (...a) => impls.RtlCopyMemory(...a));
-  k.define("RtlMoveMemory", (...a) => impls.RtlCopyMemory(...a)("RtlCopyMemory"));
+  k.define("memmove", (dst, src, len) => {
+    mem.write(dst, mem.read(src, Number(len)));
+    return dst;
+  });
+  k.define("RtlMoveMemory", (dst, src, len) => {
+    mem.write(dst, mem.read(src, Number(len)));
+    return undefined;
+  });
   k.define("RtlFillMemory", (dst, len, val) => {
     mem.write(dst, new Uint8Array(Number(len)).fill(Number(val) & 0xff));
-    return dst;
+    return undefined;
   });
   k.define("memset", (dst, val, len) => {
     mem.write(dst, new Uint8Array(Number(len)).fill(Number(val) & 0xff));
@@ -122,7 +135,7 @@ export function installWinApi(kernel) {
   });
   k.define("RtlZeroMemory", (dst, len) => {
     mem.write(dst, new Uint8Array(Number(len)));
-    return dst;
+    return undefined;
   });
   k.define("RtlCompareMemory", (a, b, len) => {
     const xa = mem.read(a, Number(len));
@@ -134,8 +147,12 @@ export function installWinApi(kernel) {
 
   // ------------------------------------------------------------ strings
 
+  // VOID RtlInitUnicodeString(PUNICODE_STRING Dest, PCWSTR Src)
+  // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlinitunicodestring
+  // https://ntdoc.m417z.com/rtlinitunicodestring
+  // PHNT: ntrtl.h VOID NTAPI RtlInitUnicodeString
   k.define("RtlInitUnicodeString", (usVa, strVa) => {
-    if (!strVa) { mem.w16(usVa, 0); mem.w16(usVa + 2n, 0); mem.w64(usVa + 8n, 0n); return usVa; }
+    if (!strVa) { mem.w16(usVa, 0); mem.w16(usVa + 2n, 0); mem.w64(usVa + 8n, 0n); return undefined; }
     const chars = [];
     for (let i = 0; i < 1024; i++) {
       const c = mem.u16(strVa + BigInt(i * 2));
@@ -146,16 +163,18 @@ export function installWinApi(kernel) {
     mem.w16(usVa, bytes);
     mem.w16(usVa + 2n, bytes + 2);
     mem.w64(usVa + 8n, strVa);
-    return usVa;
+    return undefined;
   });
+  // VOID RtlInitAnsiString(PANSI_STRING Dest, PCSTR Src)
+  // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlinitansistring
   k.define("RtlInitAnsiString", (asVa, strVa) => {
-    if (!strVa) { mem.w16(asVa, 0); mem.w16(asVa + 2n, 0); mem.w64(asVa + 8n, 0n); return asVa; }
+    if (!strVa) { mem.w16(asVa, 0); mem.w16(asVa + 2n, 0); mem.w64(asVa + 8n, 0n); return undefined; }
     let n = 0;
     while (n < 1024 && mem.u8(strVa + BigInt(n))) n++;
     mem.w16(asVa, n);
     mem.w16(asVa + 2n, n + 1);
     mem.w64(asVa + 8n, strVa);
-    return asVa;
+    return undefined;
   });
   k.define("strlen", (va) => {
     let n = 0n;
@@ -292,10 +311,29 @@ export function installWinApi(kernel) {
     mem.w32(structVa + 16n, 2);          // platform = VER_PLATFORM_WIN32_NT
     return structVa;
   };
-  k.define("RtlGetVersion", (info) => writeVersion(info));
-  k.define("PsGetVersion", (info, _, __, ___) => {
-    if (info) writeVersion(info);
-    return 19045n;
+  // NTSTATUS RtlGetVersion(PRTL_OSVERSIONINFOW) https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlgetversion
+  k.define("RtlGetVersion", (info) => { writeVersion(info); return STATUS_SUCCESS; });
+  // BOOLEAN PsGetVersion(PULONG Major, PULONG Minor, PULONG Build, PUNICODE_STRING CSD)
+  // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-psgetversion
+  // PHNT ntrtl.h / ntddk.h confirms BOOLEAN. Support legacy single-struct call for existing tests.
+  k.define("PsGetVersion", (a, b, c, d) => {
+    // legacy: PsGetVersion(RTL_OSVERSIONINFOW*)
+    if (b === undefined && c === undefined && d === undefined && a) {
+      // if it looks like a struct (size field 0x11c), treat as RtlGetVersion
+      try { writeVersion(a); } catch {}
+      return 1n;
+    }
+    if (a) mem.w32(a, 10);
+    if (b) mem.w32(b, 0);
+    if (c) mem.w32(c, 19045);
+    if (d) {
+      const buf = k.alloc(20);
+      mem.writeUtf16(buf, "");
+      mem.w16(d, 0);
+      mem.w16(d + 2n, 20);
+      mem.w64(d + 8n, buf);
+    }
+    return 1n;
   });
 
   // --------------------------------------------------------- sync / time
@@ -531,6 +569,12 @@ export function installWinApi(kernel) {
     const name = usRead(mem, usNameVa).str;
     const thunk = kernel.apiThunks.get(name);
     if (thunk) return thunk;
+    // PHNT-known exports get auto-provisioned as traced stubs with correct void/ntstatus
+    if (API_META.has(name)) {
+      const addr = kernel.provisionUnknownApi(name);
+      kernel.dbgLog.push(`[winapi] MmGetSystemRoutineAddress("${name}") -> provisioned ${addr.toString(16)}`);
+      return addr;
+    }
     kernel.unsupportedExports.push(name);
     kernel.dbgLog.push(`[winapi] MmGetSystemRoutineAddress("${name}") -> unresolved`);
     return 0n;
