@@ -340,6 +340,50 @@ floor), EPT-shadow hooks that split instruction fetches from data reads,
 and the detection stack — dual-view hashing (`!eptview`/`!eptverify`),
 A/D-bit timing counters, CPUID quirks and RDTSC drift.
 
+**Module 23 — DKOM Field Labs** (`dkom-ppl`, `dkom-pid`)
+Six edits that matter: strip lsass's PPL byte and open it for real, spoof
+kftarget's Cid to 4 — plus the field guide to handle-pointer swaps, SMEP
+toggles, CR0.WP page work and the Van1338 notify race.
+
+**Track: linux-internals (tmp.0ut)**
+
+Five modules distilled from all five volumes of the tmp.0ut zine
+(https://tmpout.sh) — Linux/ELF internals research by xcellerator, sblip,
+d3npa, manizzle, s01den, netspooky, ulexec, vrzh, deluks, g1inko, TMZ,
+isra, dominikr, wintermute, lil.skelly, bah, PinkNoize, elfmaster,
+FridayOrtiz, Matheuzsec & Humzak711, qkumba, patate, febnug, ti3f, h4x.cz
+and others. Static ELF64 fixtures live in `apps/web/public/fixtures/elf/`
+(regenerate via `node tools/gen-elf-fixtures.mjs`); the readelf-style
+inspector console is `apps/web/src/elf/elfinspector.js` over the lenient
+parser in `apps/web/src/elf/parse.mjs`. Article cache (gitignored):
+`node tools/scrape-tmpout.mjs`.
+
+**Module 24 — ELF Anatomy & Forensics** (`elf-hello`)
+Dissect a real x86-64 static executable in-browser: ehdr/phdr/shdr/symbols,
+what `fs/binfmt_elf.c` actually validates vs ignores, extended section
+numbering, and how 57-byte degenerate headers still sail through.
+
+**Module 25 — ELF Parasites: Infection & Repair** (`elf-infected`)
+The PT_NOTE infection method end-to-end on a fixture infected with a real
+parasite (far-VA PT_LOAD, movabs/jmp rax OEP stub): recover the original
+entry point as the analyst, then quiz the zine's constants — disinfection
+invariants, `.fini_array` EPO, `__cxa_finalize` GOT hijack.
+
+**Module 26 — Fileless & Memory-Resident Execution** (`elf-tiny`)
+memfd_create/finit_module LKM loading, SHELF reflective payloads and TMZ's
+halfexec/halfshelf/phork trilogy, fd-less Perl execution — hands-on on the
+57-byte header where the Phdr aliases the Ehdr itself.
+
+**Module 27 — Linux Kernel Offense & Defense Survey**
+ftrace/kprobe/eBPF rootkit taxonomy, procfs C2 channels, arm64 svc-handler
+patching, boot-time bzImage patching; detection via tracefs walking, taint
+forensics, GhostCache L1i side-channels and gASLR hardening.
+
+**Module 28 — Obfuscation, Polymorphism & Weird Machines**
+False disassembly with polymorphic junk bytes, M4rx's custom VM ISA and its
+RE, code virtualization survey, XLAT table decoding, stateless control flow,
+Brainfuck-compiled ROP chains and a metamorphic virus in 440 bytes.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +
