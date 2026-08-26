@@ -1311,6 +1311,15 @@ function setupPagingWalk(kernel) {
   pts.mapPage(target, C.STACK_VA, {});
   pts.mapPage(target, C.LARGE_VA, { size: 0x200000 });
 
+  // m14: kfmm.sys rides in kftarget's address space — seed real page tables
+  // (identity frames) + code content so hand walks, !vtop and the self-map
+  // alias windows over its VAs actually resolve (issue #27)
+  const KFMM_BASE = LOW_BASES.driver + 0x100000n;
+  writeFunctionGrid(kernel.mem, KFMM_BASE, 0x8000);
+  for (let off = 0; off < 0x8000; off += 0x1000) {
+    pts.mapPage(target, KFMM_BASE + BigInt(off), { writable: true, pa: KFMM_BASE + BigInt(off) });
+  }
+
   // corrupt the code page's PTE with NX through the alias window
   // (poke keeps physical frame + alias in sync)
   const pteRow = pts.translate(C.CODE_VA, target).rows.at(-1);
