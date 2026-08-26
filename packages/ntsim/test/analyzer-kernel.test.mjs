@@ -57,7 +57,7 @@ test("DPC / work item / APC queues drain through the CPU", async () => {
   k.pendingApcs.push({ normalRoutine: 0x501000n, normalContext: 0n });
 
   const counts = k.drainDeferred();
-  assert.deepEqual(counts, { dpcs: 1, workItems: 1, apcs: 1 });
+  assert.deepEqual(counts, { dpcs: 1, workItems: 1, apcs: 1, threads: 0 });
 });
 
 test("device object model: IoCreateDevice chains devices, IOCTL dispatches to MJ slot", async () => {

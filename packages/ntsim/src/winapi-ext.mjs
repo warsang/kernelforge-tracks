@@ -170,6 +170,8 @@ export function installWinApiExt(kernel, ctx) {
     }
     return undefined;
   });
+  // IofCompleteRequest is the fastcall export drivers actually link against.
+  k.define("IofCompleteRequest", (...a) => impls.IoCompleteRequest(...a));
 
   k.define("IoAllocateMdl", (virtAddr, len, secondary, chargeQuota, irp) => {
     void chargeQuota;
@@ -310,6 +312,134 @@ export function installWinApiExt(kernel, ctx) {
       `[attach] thread ${thr.toString(16)}: detached -> ApcState.Process ` +
       `${eprocName(savedProc)} (ApcStateIndex=${savedIdx & ~1})`);
     return undefined;
+  });
+
+  // --------------------------------------------- process / thread / callbacks
+
+  // Process handles live in the shared kernel.handles map as typed records.
+  let nextProcHandle = 0x3100n;
+  const procHandle = (eproc, pid) => {
+    const h = nextProcHandle++;
+    kernel.handles.set(h, { type: "process", eproc, pid });
+    return h;
+  };
+  let nextThreadId = 0x4n;
+
+  k.define("ZwOpenProcess", (phOut, desiredAccess, objAttr, clientId) => {
+    void desiredAccess; void objAttr;
+    // CLIENT_ID.UniqueProcess @ +0x00
+    const pid = clientId ? mem.u64(clientId) : 0n;
+    const eproc = kernel.findEprocessByPid?.(pid);
+    if (!eproc) {
+      kernel.dbgLog.push(`[ps] ZwOpenProcess(pid=${pid}) -> not found`);
+      return STATUS_INVALID_PARAMETER;
+    }
+    const h = procHandle(eproc, pid);
+    if (phOut) mem.w64(phOut, h);
+    kernel.dbgLog.push(`[ps] ZwOpenProcess(pid=${pid}) -> handle 0x${h.toString(16)}`);
+    return STATUS_SUCCESS;
+  });
+
+  k.define("ZwTerminateProcess", (h, exitStatus) => {
+    const rec = kernel.handles.get(ptrSizeMask(h));
+    const pid = rec && typeof rec === "object" ? rec.pid : ptrSizeMask(h);
+    kernel.dbgLog.push(`[ps] ZwTerminateProcess(handle=0x${ptrSizeMask(h).toString(16)} pid=${pid} status=0x${ptrSizeMask(exitStatus).toString(16)})`);
+    return STATUS_SUCCESS;
+  });
+
+  // Real semantics read Irp->Tail/creator process; in the virtual world IRPs
+  // originate from System, so the honest answer is its pid.
+  k.define("IoGetRequestorProcessId", () => 4n);
+
+  k.define("PsCreateSystemThread", (
+    threadHandleOut, desiredAccess, objAttr, processHandle, clientId,
+    startRoutine, startContext,
+  ) => {
+    void desiredAccess; void objAttr; void processHandle;
+    const h = nextProcHandle++ | 0x8000000000000000n; // kernel-handle flavor
+    if (threadHandleOut) mem.w64(threadHandleOut, h);
+    if (clientId) { // CLIENT_ID { UniqueProcess=System(4), UniqueThread }
+      mem.w64(clientId, 4n);
+      mem.w64(clientId + 8n, nextThreadId++);
+    }
+    kernel.pendingThreads.push({
+      handle: ptrSizeMask(h),
+      startRoutine: ptrSizeMask(startRoutine),
+      startContext: ptrSizeMask(startContext),
+    });
+    kernel.dbgLog.push(`[thread] PsCreateSystemThread -> handle 0x${ptrSizeMask(h).toString(16)} start 0x${ptrSizeMask(startRoutine).toString(16)} ctx 0x${ptrSizeMask(startContext).toString(16)}`);
+    return STATUS_SUCCESS;
+  });
+
+  k.define("PsTerminateSystemThread", (status) => {
+    const s = ptrSizeMask(status);
+    kernel.dbgLog.push(`[thread] PsTerminateSystemThread(status=0x${s.toString(16)})`);
+    return s === 0n ? STATUS_SUCCESS : s;
+  });
+
+  // The interpreter resolves table-SEH itself (seh.mjs); drivers still import
+  // the routine to satisfy the linker. Keep it callable and harmless.
+  k.define("__C_specific_handler", () => 0n);
+
+  // OB_CALLBACK_REGISTRATION:
+  //   +0x00 u16 Version, +0x02 u16 OperationRegistrationCount, +pad
+  //   +0x08 UNICODE_STRING Altitude, +0x18 pad, +0x20 void* RegistrationContext,
+  //   +0x28 OB_OPERATION_REGISTRATION* (ObjectType, PreOp, PostOp triplets)
+  kernel.obCallbacks = kernel.obCallbacks ?? [];
+  k.define("ObRegisterCallbacks", (cbReg) => {
+    cbReg = ptrSizeMask(cbReg);
+    if (!cbReg) return STATUS_INVALID_PARAMETER;
+    const count = mem.u16(cbReg + 2n);
+    const altitude = usRead(mem, cbReg + 8n).str;
+    const opsBase = mem.u64(cbReg + 0x28n);
+    const entries = [];
+    for (let i = 0; i < Math.min(count, 8); i++) {
+      entries.push({
+        objectType: mem.u64(opsBase + BigInt(i * 24)),
+        preOp: mem.u64(opsBase + BigInt(i * 24 + 8)),
+        postOp: mem.u64(opsBase + BigInt(i * 24 + 16)),
+      });
+    }
+    kernel.obCallbacks.push({ registration: cbReg, altitude, entries });
+    kernel.dbgLog.push(`[ob] ObRegisterCallbacks altitude "${altitude}" ops=${count} pre=[${entries.map((e) => "0x" + e.preOp.toString(16)).join(", ")}]`);
+    return STATUS_SUCCESS;
+  });
+  k.define("ObUnRegisterCallbacks", (registration) => {
+    registration = ptrSizeMask(registration);
+    const idx = kernel.obCallbacks.findIndex((r) => r.registration === registration);
+    if (idx >= 0) kernel.obCallbacks.splice(idx, 1);
+    kernel.dbgLog.push(`[ob] ObUnRegisterCallbacks(reg=0x${registration.toString(16)})`);
+    return undefined;
+  });
+
+  // ------------------------------------------------------------ KMDF loader
+
+  // WDF drivers gate init on these succeeding; record bindings for reports.
+  kernel.wdfBindings = kernel.wdfBindings ?? [];
+  k.define("WdfVersionBind", (driverObject, registryPath, bindParams, bindInfo) => {
+    void driverObject;
+    const ver = bindParams ? mem.u64(ptrSizeMask(bindParams) + 0x10n) : 0n; // WDF_VERSION
+    kernel.wdfBindings.push({ kind: "bind", version: ver, bindInfo: ptrSizeMask(bindInfo) });
+    kernel.dbgLog.push(`[wdf] WdfVersionBind version=0x${ver.toString(16)} -> SUCCESS`);
+    return STATUS_SUCCESS;
+  });
+  k.define("WdfVersionUnbind", () => {
+    kernel.dbgLog.push("[wdf] WdfVersionUnbind");
+    return STATUS_SUCCESS;
+  });
+  k.define("WdfVersionBindClass", (bindParams) => {
+    const ver = bindParams ? mem.u64(ptrSizeMask(bindParams) + 0x10n) : 0n;
+    kernel.wdfBindings.push({ kind: "bindClass", version: ver });
+    kernel.dbgLog.push(`[wdf] WdfVersionBindClass version=0x${ver.toString(16)} -> SUCCESS`);
+    return STATUS_SUCCESS;
+  });
+  k.define("WdfVersionUnbindClass", () => {
+    kernel.dbgLog.push("[wdf] WdfVersionUnbindClass");
+    return STATUS_SUCCESS;
+  });
+  k.define("WdfLdrQueryInterface", (queryParams) => {
+    kernel.dbgLog.push(`[wdf] WdfLdrQueryInterface(params=0x${ptrSizeMask(queryParams).toString(16)}) -> SUCCESS`);
+    return STATUS_SUCCESS;
   });
 
   // KeRemoveQueueDpc lives in winapi.mjs (drained-flag model on kernel.queueDpc

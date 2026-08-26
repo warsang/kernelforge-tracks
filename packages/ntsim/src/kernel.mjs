@@ -147,6 +147,10 @@ export class NtKernel {
     this.pendingDpcs = [];
     this.pendingWorkItems = [];
     this.pendingApcs = [];
+    /** queued PsCreateSystemThread start routines awaiting drainDeferred() */
+    this.pendingThreads = [];
+    /** modeled data exports (PsProcessType & co): name -> slot VA holding ptr */
+    this.dataExports = new Map();
 
     // pool
     this.nextPool = this.bases.pool;
@@ -459,6 +463,14 @@ export class NtKernel {
     this.nextPool += BigInt(aligned) + 32n; // header(16) + guard(16) + payload
     this.mem.w64(hdr, POOL_MAGIC);
     this._writeGuard(addr, size);
+    // Backing discipline: an allocation implies its whole span exists.
+    // SparseMemory would auto-fill on access, but CPU backends with explicit
+    // page maps (Unicorn) need the pages present BEFORE guest writes race
+    // through a memset-style loop over the buffer.
+    const spanEnd = addr + BigInt(aligned) + 32n;
+    for (let p = hdr & ~0xfffn; p < spanEnd; p += 0x1000n) {
+      if (!this.mem.hasPage(p)) this.mem.write(p, new Uint8Array(0x1000));
+    }
     this.poolAllocs.push({ addr, size, tag, freed: false });
     return addr;
   }
@@ -586,13 +598,42 @@ export class NtKernel {
     return this.defineApi(name, () => 0n);
   }
 
-  /** Resolve "ntdll!Name"-style import; provisions when unknown. */
+  /** Kernel data exports drivers import by address (not called through). */
+  static DATA_EXPORTS = new Set(["PsProcessType", "PsThreadType", "PsInitialSystemProcess"]);
+
+  /**
+   * Resolve "ntdll!Name"-style import; provisions when unknown.
+   *
+   * Data exports (PsProcessType & co) need real memory, not call thunks:
+   * drivers load them with `mov rax, [iatSlot]` and dereference the result,
+   * so each gets a qword slot holding a pointer to a small backing struct.
+   */
   resolveImportProvisioned(qualified) {
     const name = qualified.includes("!") ? qualified.split("!").pop() : qualified;
     const known = this.apiThunks.get(name);
     if (known) return known;
+    if (NtKernel.DATA_EXPORTS.has(name)) return this.#dataExportSlot(name);
     // WDF/FLTMGR/ndis-style prefixed names still get generic stubs
     return this.provisionUnknownApi(name);
+  }
+
+  #dataExportSlot(name) {
+    if (this.dataExports.has(name)) return this.dataExports.get(name);
+    let backing;
+    if (name === "PsInitialSystemProcess") {
+      const systemEproc = this.processesByName?.get("System") ?? this.findEprocessByPid(4n);
+      if (!systemEproc) throw new Error("System EPROCESS not present — bootstrap first");
+      backing = systemEproc;
+    } else {
+      // minimal OBJECT_TYPE stand-in: non-zero so "is it initialized" checks pass
+      backing = this.allocPool(0x40, "ObjT");
+      this.mem.write(backing, [0x4f, 0x62, 0x6a, 0x54]); // 'ObjT' marker
+    }
+    const slot = this.allocPool(8, "PtrS");
+    this.mem.w64(slot, backing & M64);
+    this.dataExports.set(name, slot);
+    this.dbgLog.push(`[analyzer] modeled data export ${name} @ 0x${slot.toString(16)} -> 0x${(backing & M64).toString(16)}`);
+    return slot;
   }
 
   /** Write an E9 rel32 detour over an export's prologue (hook modeling). */
@@ -785,13 +826,14 @@ export class NtKernel {
    * @returns {{dpcs:number, workItems:number, apcs:number}}
    */
   drainDeferred(maxPasses = 8) {
-    const counts = { dpcs: 0, workItems: 0, apcs: 0 };
+    const counts = { dpcs: 0, workItems: 0, apcs: 0, threads: 0 };
     for (let pass = 0; pass < maxPasses; pass++) {
       const dpcs = this.pendingDpcs.filter((d) => !d.drained);
       this.pendingDpcs.forEach((d) => { d.drained = true; });
       const work = this.pendingWorkItems.splice(0);
       const apcs = this.pendingApcs.splice(0);
-      if (!dpcs.length && !work.length && !apcs.length) break;
+      const threads = this.pendingThreads.splice(0);
+      if (!dpcs.length && !work.length && !apcs.length && !threads.length) break;
 
       for (const d of dpcs) {
         counts.dpcs++;
@@ -813,6 +855,13 @@ export class NtKernel {
         const r = this.cpu.callFunction(a.normalRoutine, [a.normalContext ?? 0n, a.systemArgument1 ?? 0n, a.systemArgument2 ?? 0n]);
         this.dbgLog.push(`[apc] normalRoutine 0x${a.normalRoutine.toString(16)} -> ${r.status}`);
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "apc", detail: r.status });
+      }
+      for (const t of threads) {
+        counts.threads++;
+        this.dbgLog.push(`[thread] system thread 0x${t.handle.toString(16)} start routine 0x${t.startRoutine.toString(16)}`);
+        const r = this.cpu.callFunction(t.startRoutine, [t.startContext ?? 0n]);
+        this.dbgLog.push(`[thread] start routine 0x${t.startRoutine.toString(16)} -> ${r.status}`);
+        if (r.status !== "ok") this.exceptionTrace.push({ kind: "thread", detail: r.status });
       }
     }
     this.deferredDrain = counts;

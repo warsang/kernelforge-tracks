@@ -43,6 +43,7 @@ export function parsePe(bytes) {
   if (magic !== 0x20b) throw new PeError("not PE32+ (64-bit)");
 
   const entryRva = u32(bytes, optHeaderOff + 16);
+  const sizeOfHeaders = u32(bytes, optHeaderOff + 60);
   const imageBase =
     BigInt(u32(bytes, optHeaderOff + 24)) |
     (BigInt(u32(bytes, optHeaderOff + 28)) << 32n);
@@ -70,7 +71,7 @@ export function parsePe(bytes) {
     });
   }
 
-  return { entryRva, imageBase, sizeOfImage, sections, dirs };
+  return { entryRva, imageBase, sizeOfImage, sizeOfHeaders, sections, dirs };
 }
 
 export function rvaToOffset(pe, rva) {
@@ -100,6 +101,13 @@ export function mapPe(bytes, mem, baseAddr, resolveImport) {
   for (const s of pe.sections) {
     if (s.rawSize === 0) continue;
     mem.write(base + BigInt(s.rva), bytes.subarray(s.rawPtr, s.rawPtr + s.rawSize));
+  }
+
+  // 1b. map the PE headers like a real loader: drivers legitimately read their
+  // own DOS/NT headers (self-base scans for 'MZ', checksum verification,
+  // export walking) and fault on unmapped header pages otherwise.
+  if (pe.sizeOfHeaders > 0) {
+    mem.write(base, bytes.subarray(0, Math.min(pe.sizeOfHeaders, bytes.length)));
   }
 
   // 2. process relocations (DIR[5])

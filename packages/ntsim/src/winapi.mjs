@@ -304,6 +304,14 @@ export function installWinApi(kernel) {
     kernel.lowerIrql(Number(newIrql) & 0xff);
     return undefined;
   });
+  // KIRQL KeAcquireSpinLockRaiseToDpc(PKSPIN_LOCK) — raises to DISPATCH_LEVEL,
+  // returns the PREVIOUS level in rax (no out-param on this variant).
+  k.define("KeAcquireSpinLockRaiseToDpc", (sl) => {
+    void sl;
+    const old = kernel.currentIrql ?? 0;
+    kernel.currentIrql = Math.max(old, 2);
+    return BigInt(old);
+  });
   // KIRQL params are 8-bit: clang targets may write only the low byte of the
   // argument register (stale high bits are legal garbage under the Win x64
   // ABI). Mask via BigInt BEFORE Number() — huge register-sized values lose
@@ -385,6 +393,18 @@ export function installWinApi(kernel) {
   });
   k.define("PsSetLoadImageNotifyRoutine", (cb) => {
     kernel.notifyRoutines.image.push(ptrSizeMask(cb));
+    return STATUS_SUCCESS;
+  });
+  k.define("PsRemoveCreateThreadNotifyRoutine", (cb) => {
+    const arr = kernel.notifyRoutines.thread;
+    const idx = arr.indexOf(ptrSizeMask(cb));
+    if (idx >= 0) arr.splice(idx, 1);
+    return STATUS_SUCCESS;
+  });
+  k.define("PsRemoveLoadImageNotifyRoutine", (cb) => {
+    const arr = kernel.notifyRoutines.image;
+    const idx = arr.indexOf(ptrSizeMask(cb));
+    if (idx >= 0) arr.splice(idx, 1);
     return STATUS_SUCCESS;
   });
 

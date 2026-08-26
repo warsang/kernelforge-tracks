@@ -40,6 +40,39 @@ function hexToBytes(hex) {
   return new Uint8Array(pairs.map((x) => parseInt(x, 16)));
 }
 
+/** MSVC link-time __security_cookie value ("cookie not initialized yet"). */
+const GS_COOKIE_SENTINEL = 0x00002b992ddfa232n;
+const U64 = (1n << 64n) - 1n;
+
+/**
+ * Re-key any MSVC GS-cookie sentinel left in the mapped image.
+ *
+ * On a real boot CRT init always replaces the link-time sentinel before any
+ * /GS check executes, and loaders that map drivers manually (packers, cheat
+ * mappers, legit installers) are expected to have done the same — several
+ * treat "sentinel still present" as tampering and hit
+ * __fastfail(FAST_FAIL_GS_COOKIE_INIT). TBMKD.sys does exactly this. Since a
+ * genuine kernel never observes the sentinel, emulating the loader step here
+ * is faithful, not permissive.
+ */
+function rekeySecurityCookie(kernel, mapped) {
+  const mem = kernel.mem;
+  const patched = [];
+  for (let off = 0; off + 8 <= mapped.imageSize; off += 8) {
+    const addr = mapped.base + BigInt(off);
+    if (mem.u64(addr) !== GS_COOKIE_SENTINEL) continue;
+    const fresh = (0x0000f1e2d3c4b5a6n ^ BigInt(off)) | 1n; // non-zero, non-sentinel, deterministic
+    mem.w64(addr, fresh);
+    if (off + 16 <= mapped.imageSize && mem.u64(addr + 8n) === (~GS_COOKIE_SENTINEL & U64)) {
+      mem.w64(addr + 8n, ~fresh & U64); // keep __security_cookie_complement consistent
+    }
+    patched.push(`0x${off.toString(16)}`);
+  }
+  if (patched.length) {
+    kernel.dbgLog.push(`[loader] re-keyed __security_cookie sentinel @ rva ${patched.join(", ")}`);
+  }
+}
+
 /**
  * @param {Uint8Array} imageBytes raw PE32+ (.sys) file content
  * @param {object} [opts]
@@ -136,6 +169,8 @@ export async function analyzeDriver(imageBytes, opts = {}) {
   const regPath = `\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\${serviceKeyOf(driverName)}`;
   report.load.registryPath = regPath;
   report.load.driverName = driverName;
+
+  if (opts.rekeySecurityCookie !== false) rekeySecurityCookie(kernel, mapped);
 
   const regPathBuf = kernel.allocPool(0x100);
   mem.writeUtf16(regPathBuf, regPath);

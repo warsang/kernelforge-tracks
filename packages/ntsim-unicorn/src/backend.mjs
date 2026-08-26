@@ -74,6 +74,8 @@ const PHYS_MASK52 = (1n << 52n) - 1n;
 // must stay below 2^31: wrapper marshals hook ranges through signed i32
 const RET_MARKER = 0x0badf00dn;
 const CHUNK_INSTRUCTIONS = 200_000;
+/** Step charge for chunks that ended on a guest-facing hook stop. */
+const HOOK_STOP_STEP_COST = 256;
 
 /** u64 <-> signed i64 helpers for the wasm ABI. */
 const toI64 = (v) => BigInt.asIntN(64, BigInt(v));
@@ -302,7 +304,12 @@ export class UnicornCpuBackend {
   #syncOut() {
     for (const key of this.#dirty) {
       const base = BigInt("0x" + key);
-      this.mem.write(base, this.#rawRead(this.#ucAddrFor(base), this.PAGE));
+      try {
+        this.mem.write(base, this.#rawRead(this.#ucAddrFor(base), this.PAGE));
+      } catch {
+        // Dirtied but not resident unicorn-side (e.g. the write raced a
+        // mid-run sparse mutation). SparseMemory already holds the truth.
+      }
     }
     this.#dirty.clear();
   }
@@ -423,17 +430,57 @@ export class UnicornCpuBackend {
     while (!isDone() && this.steps < maxSteps && !this.fault) {
       const chunk = Math.min(CHUNK_INSTRUCTIONS, maxSteps - this.steps);
       const pending = this.#takePendingRip();
+      if (pending !== null) {
+        // Resuming from a guest-facing code-hook stop (API thunks, tracer,
+        // breakpoints): the JS side may have mutated SparseMemory inside the
+        // handler — pool allocations, IRP writes, model bookkeeping. Push
+        // those pages into unicorn BEFORE execution continues, or the guest
+        // reads stale/unmapped views.
+        this.#syncIn();
+      }
       const begin = pending ?? toU64(this.regs.rip);
+      const resumedFromHook = pending !== null;
       const rc = this.#rawStart(begin, chunk);
       if (process.env.KF_DEBUG_PUMP) console.error(`[pump] iter rip=${toU64(this.regs.rip).toString(16)} rc=${rc} steps=${this.steps}`);
       // hook-stopped runs exit early: charge nothing (count is a cap, not actual)
       const stoppedByHook = rc === 0 && isDone();
-      if (!stoppedByHook) this.steps += chunk;
+      if (!stoppedByHook) {
+        // A chunk that ended because ANOTHER guest-facing hook fired executed
+        // an unknown (usually tiny) number of instructions — charging the
+        // full 200k chunk made hook-heavy drivers (every modeled API call!)
+        // blow the step budget after a few dozen calls. Natural completions
+        // keep full-charge semantics for runaway-loop protection.
+        this.steps += resumedFromHook ? HOOK_STOP_STEP_COST : chunk;
+      }
       if (rc === 0) continue;
+      // Resumable debugger breakpoints: JsInterpreter continues past
+      // int3/int-2d, so Unicorn must too (engine parity).
+      const resume = this.#resumePastBreak(rc);
+      if (resume !== null) {
+        this.regs.rip = resume;
+        continue;
+      }
       this.fault = this.#classify(rc);
       return this.fault ? "fault" : "ok";
     }
     return !isDone() && this.steps >= maxSteps ? "timeout" : "ok";
+  }
+
+  /**
+   * On an "unhandled CPU exception", check whether RIP sits on a debugger
+   * breakpoint (0xCC / 0xCD 03 / 0xCD 2D). If so, return the address AFTER
+   * the instruction so the pump can resume — matching JsInterpreter, which
+   * treats those as resumable pendingBreak stops. Otherwise null.
+   */
+  #resumePastBreak(rc) {
+    if (rc !== 21 || !this.mem?.read) return null;
+    const rip = toU64(this.regs.rip);
+    try {
+      const b = this.mem.read(rip, 2);
+      if (b?.[0] === 0xcc) return rip + 1n;
+      if (b?.[0] === 0xcd && (b[1] === 0x03 || b[1] === 0x2d)) return rip + 2n;
+    } catch { /* unmapped — genuine fault */ }
+    return null;
   }
 
   #classify(rc) {
@@ -579,6 +626,11 @@ export class UnicornCpuBackend {
     this.#rawWrite(this.#va2pa(markerPageBase), new Uint8Array(this.PAGE).fill(0xf4));
 
     this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn
+
+    // A fault left over from a previous guest call must not short-circuit
+    // this one: #pump treats a set fault as an immediate stop and callFunction
+    // would report a bogus "halted" for every later IRP.
+    this.fault = null;
 
     this.rip = funcAddr & M64;
     const outcome = this.#pump(10_000_000, () => returned);
