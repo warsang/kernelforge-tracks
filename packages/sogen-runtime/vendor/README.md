@@ -15,13 +15,15 @@ Both pulled from the sogen.dev production deploy:
 github.com/momo5502/sogen @ main (GPL-2.0) — obligations identical to the
 Unicorn vendor row in docs/legal.md (source offer + rebuild recipe below).
 
-## Boot-time payload (NOT committed)
+## Wasm payload — git LFS (2026-08-26)
 
-| file | fetched by | size |
+| file | size | sha256 |
 |---|---|---|
-| `apps/web/public/sogen/32/analyzer.wasm` | `npm run vendor:sogen` (tools/fetch-sogen-wasm.mjs) | ~90 MB |
+| `apps/web/public/sogen/32/analyzer.wasm` | 90,132,854 bytes | `883249f7d2c6b92656198daf08683ea865b1094fcab24e8719aa4a52b2f8be3c` |
 
-Pin via env: `SOGEN_WASM_SHA256=<hash> npm run vendor:sogen`.
+Tracked via git LFS (`.gitattributes`) — plain clones pull it automatically.
+Environments without LFS can still boot-fetch: `npm run vendor:sogen`
+(tools/fetch-sogen-wasm.mjs, pinned sha256; override via `SOGEN_WASM_URL`).
 
 ## Rebuild from source (upstream recipe)
 

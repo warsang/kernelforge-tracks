@@ -23,7 +23,8 @@ const OUT = path.join(OUT_DIR, "analyzer.wasm");
 // Rebuild-from-source recipe: packages/sogen-runtime/vendor/README.md.
 const URL_ =
   process.env.SOGEN_WASM_URL ?? "https://sogen.dev/32/analyzer.wasm";
-const KNOWN_SHA256 = process.env.SOGEN_WASM_SHA256 ?? ""; // optional pin
+const KNOWN_SHA256 = process.env.SOGEN_WASM_SHA256 ??
+  "883249f7d2c6b92656198daf08683ea865b1094fcab24e8719aa4a52b2f8be3c"; // pinned deploy
 
 const check = process.argv.includes("--check");
 
