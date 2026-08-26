@@ -12,6 +12,10 @@
  *   - kftarget.exe _EPROCESS fixed by populateFromDump() at 0xffffc80000001000,
  *     ActiveProcessLinks +0x448 => answer 0xffffc80000001448   (m1.l2.f1)
  *   - irql-dpc world: DeferredRoutine at 0xfffff8055a401400    (m2.l1.f2)
+ *   - irql-attackers world (m2.l3/m2.l4): kvmdrv.sys base
+ *     0xfffff8055a700000 — victim KDPC 0xfffff8055a701000, heartbeat routine
+ *     0xfffff8055a701400, canary page 0xfffff8055a702000   (KFWARZ_* in
+ *     apps/web/src/scenarios.js)
  *   - pool-corrupt world: second KfPb block at 0xfffff90000001200 (m4.l1.f1)
  * Userland worlds (packages/sogen-runtime reference backend):
  *   - sauer-recon: sauerbraten.exe base 0x00400000, entity array at
@@ -25,6 +29,8 @@ import m1l3Body from "./lessons/m1-l3.mjs";
 import m1l4Body from "./lessons/m1-l4.mjs";
 import m2l1Body from "./lessons/m2-l1.mjs";
 import m2l2Body from "./lessons/m2-l2.mjs";
+import m2l3Body from "./lessons/m2-l3.mjs";
+import m2l4Body from "./lessons/m2-l4.mjs";
 import m3l1Body from "./lessons/m3-l1.mjs";
 import m3l2Body from "./lessons/m3-l2.mjs";
 import m4l1Body from "./lessons/m4-l1.mjs";
@@ -38,6 +44,8 @@ import m10l1Body from "./lessons/m10-l1.mjs";
 import {
   SENTINEL_V1_STARTER, SENTINEL_V2_STARTER, SENTINEL_V3_STARTER,
   SENTINEL_V4_STARTER,
+  ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
+  ATTACK_HIJACK_STARTER, SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -72,6 +80,24 @@ const F = {
   m1l4f3: "355cbb85edcf7eac7e437a0a597c733c2f41b78e98f5f2370e83e50a8c21e2ca", // sentinel v1 secret
   m2l2f1: "e629fa6598d732768f7c726b4b621285f9c3b85303900aa912017db7617d8bdb", // sampled IRQL
   m2l2f2: "06d1b91d683d670a69c021df6469f85c679de4752c44f5cc78a6e774dc64c2b9", // watchdog secret
+  // --- m2.l3 attack workshop (irql-attackers world; KFWARZ_* anchors) ---
+  m2l3f1: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // IRQL inside WPOFF window (2)
+  m2l3f2: "b55aac633d4b14777545bf523d087015367c638adc53f00b814fd68bd701e36c", // restored CR0 (0x80010031)
+  m2l3f3: "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce", // pinned secondary cores (3)
+  m2l3f4: "d2f483672c0239f6d7dd3c9ecee6deacbcd59185855625902a8b1c1a3bd67440", // watchdog bugcheck while pinned (133)
+  m2l3f5: "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce", // payload runs after !dpcpump 13 (3)
+  m2l3f6: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // payload IRQL (2)
+  m2l3f7: "50bdd9362f71492177d1a4cab90d161d6e8a374f953045f8d2879d1a201d2f89", // victim DPC VA (0xfffff8055a701000)
+  m2l3f8: "c2ba879ab429219180fd28a7ea4f2c93ad6c7640d6528c7d042f4bc7ffedaade", // hijack payoff secret
+  // --- m2.l4 defense workshop ---
+  m2l4f1: "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b", // telemetry queue depth (1)
+  m2l4f2: "06d1b91d683d670a69c021df6469f85c679de4752c44f5cc78a6e774dc64c2b9", // telemetry secret (=watchdog secret)
+  m2l4f3: "1c33629a937098eaef1dc6e2ce9a6348aac6b541f4e515cc62c0d39690402acb", // deadline verdict (missed)
+  m2l4f4: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // core 1 IRQL while pinned (2)
+  m2l4f5: "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d", // heartbeat timer period (5)
+  m2l4f6: "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b", // queued DPCs at boot (1)
+  m2l4f7: "0fd42b3f73c448b34940b339f87d07adf116b05c0227aad72e8f0ee90533e699", // HVCI bugcheck code (109)
+  m2l4f8: "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", // WP bit the attack cleared (0)
   m3l2f1: "cf7e5768f7f48553d460e0ae0e18158f0342c3f3f1e7674eac0e8fda3c82fab6", // attested export
   m3l2f2: "c7b4da3905c06e32b6aed4c17aba7c7ba3e49735081651cc8612d15a992ddec6", // attest secret
   m4l2f1: "50bac58f006cecfdbf8bc09893ee32e2bc3eaae6d5b92a6799645cc1463bf031", // convicted block VA
@@ -445,6 +471,267 @@ export const module2 = {
         },
       ],
     },
+    {
+      id: "m2.l3",
+      title: "Attack workshop: four IRQL/DPC techniques",
+      body: m2l3Body,
+      requires: ["m2.l2"],
+      labs: [
+        {
+          id: "m2.l3.lab1",
+          kind: "compiler",
+          title: "WPOFFx64 — patch read-only memory inside a raised window",
+          brief:
+            "Compile the classic cheat-loader primitive: KeRaiseIrqlToDpcLevel, clear CR0.WP, " +
+            "copy a detour over kvmdrv.sys's protected canary, restore. Prove it with !pgscan.",
+          scenario: "irql-attackers",
+          compileTask: "attack-wpoff",
+          starterFiles: [
+            { path: "driver/kfwpoff.c", content: ATTACK_WPOFF_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l3.f1",
+              sha256: F.m2l3f1,
+              prompt:
+                "Inside the tamper window the driver DbgPrints the IRQL it is executing at. " +
+                "Submit that level as a decimal number.",
+              points: 100,
+            },
+            {
+              id: "m2.l3.f2",
+              sha256: F.m2l3f2,
+              prompt:
+                "After WPON runs, !pgscan shows the CR0 value the attack restored. Submit it " +
+                "as full hex with 0x prefix.",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m2.l3.lab2",
+          kind: "compiler",
+          title: "Directed-DPC CPU lockdown",
+          brief:
+            "Park every other core at DISPATCH_LEVEL with spinning directed DPCs (the OffSec " +
+            "rootkit pattern), inspect with !irql -a, then keep the pins and meet 0x133.",
+          scenario: "irql-attackers",
+          compileTask: "attack-lockdown",
+          starterFiles: [
+            { path: "driver/kflockdown.c", content: ATTACK_LOCKDOWN_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l3.f3",
+              sha256: F.m2l3f3,
+              prompt:
+                "With your lockdown loaded (release line commented out), '!irql -a' shows the " +
+                "secondary cores parked at DISPATCH. How many cores are pinned? Decimal.",
+              points: 100,
+            },
+            {
+              id: "m2.l3.f4",
+              sha256: F.m2l3f4,
+              prompt:
+                "While the cores are pinned, run !dpcwatchdog. Which bugcheck code fires? " +
+                "Submit as decimal (no 0x).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m2.l3.lab3",
+          kind: "compiler",
+          title: "Timer-DPC persistence",
+          brief:
+            "Arm a periodic KTIMER whose DPC runs payload code — due in 3 ticks, period 5. " +
+            "Make time pass with !dpcpump and count the executions in !dpcstat.",
+          scenario: "irql-attackers",
+          compileTask: "attack-timerdpc",
+          starterFiles: [
+            { path: "driver/kftimerdpc.c", content: ATTACK_TIMERDPC_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l3.f5",
+              sha256: F.m2l3f5,
+              prompt:
+                "After loading your driver and running '!dpcpump 13', how many times did the " +
+                "payload routine run? Decimal.",
+              points: 100,
+            },
+            {
+              id: "m2.l3.f6",
+              sha256: F.m2l3f6,
+              prompt:
+                "The payload DbgPrints the IRQL it executes at on every run. Submit that " +
+                "level as a decimal number.",
+              points: 100,
+            },
+          ],
+        },
+        {
+          id: "m2.l3.lab4",
+          kind: "compiler",
+          title: "KDPC.DeferredRoutine hijack",
+          brief:
+            "kvmdrv.sys already queued its heartbeat DPC. Rewrite DeferredRoutine in place, " +
+            "drain, and watch the retire path execute YOUR function inside the victim slot.",
+          scenario: "irql-attackers",
+          compileTask: "attack-hijack",
+          starterFiles: [
+            { path: "driver/kfhijack.c", content: ATTACK_HIJACK_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l3.f7",
+              sha256: F.m2l3f7,
+              prompt:
+                "!dpcs shows kvmdrv's queued victim DPC. Submit its struct address as full " +
+                "16-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m2.l3.f8",
+              sha256: F.m2l3f8,
+              prompt:
+                "After the hijacked drain, kvmdrv's payoff hook prints a secret confirming " +
+                "the redirection (!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m2.l4",
+      title: "Defense workshop: watchdogs, telemetry & ceilings",
+      body: m2l4Body,
+      requires: ["m2.l3"],
+      labs: [
+        {
+          id: "m2.l4.lab1",
+          kind: "compiler",
+          title: "Telemetry sensor on the pinned world",
+          brief:
+            "Defense #1: sample IRQL plus pending-DPC depth on m2.l1's crime scene, restore " +
+            "the ladder and drain. Behavior over time beats structure snapshots.",
+          scenario: "irql-dpc",
+          compileTask: "sentinel-telemetry",
+          starterFiles: [
+            { path: "driver/kfsentinel_telemetry.c", content: SENSOR_TELEMETRY_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l4.f1",
+              sha256: F.m2l4f1,
+              prompt:
+                "Your telemetry sensor reports the pending-DPC queue depth on boot. Decimal.",
+              points: 100,
+            },
+            {
+              id: "m2.l4.f2",
+              sha256: F.m2l4f2,
+              prompt:
+                "After the sensor restores the ladder and you drain with !dpcdrain, the " +
+                "acknowledgement secret appears in the DbgPrint buffer. Submit it exactly.",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m2.l4.lab2",
+          kind: "compiler",
+          title: "Self-watchdog deadline alarm",
+          brief:
+            "Defense #2: arm a periodic watchdog DPC on core 1, then perform the Attack-2 " +
+            "lockdown against yourself. The missed deadline you observe is exactly what " +
+            "BattlEye/EAC-class products alarm on.",
+          scenario: "irql-attackers",
+          compileTask: "sensor-deadline",
+          starterFiles: [
+            { path: "driver/kfdeadline.c", content: SENSOR_DEADLINE_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l4.f3",
+              sha256: F.m2l4f3,
+              prompt:
+                "With core 1 pinned, the watchdog DPC cannot retire. What one-word verdict " +
+                "does the sensor print?",
+              points: 100,
+            },
+            {
+              id: "m2.l4.f4",
+              sha256: F.m2l4f4,
+              prompt:
+                "The sensor DbgPrints core 1's IRQL right after pinning. Submit it as a " +
+                "decimal number.",
+              points: 100,
+            },
+          ],
+        },
+        {
+          id: "m2.l4.lab3",
+          kind: "windbg",
+          title: "Baseline forensics sweep",
+          brief:
+            "Memorize the clean world: !dpcstat shows the heartbeat timer's cadence, !irql -a " +
+            "shows every core idle, !pgscan reports zero anomalies. Every attack in m2.l3 " +
+            "breaks exactly one line of this baseline.",
+          scenario: "irql-attackers",
+          flags: [
+            {
+              id: "m2.l4.f5",
+              sha256: F.m2l4f5,
+              prompt:
+                "!dpcstat shows kvmdrv's armed heartbeat timer. What is its re-arm period in " +
+                "ticks? Decimal.",
+              points: 100,
+            },
+            {
+              id: "m2.l4.f6",
+              sha256: F.m2l4f6,
+              prompt:
+                "!dpcs / !dpcstat at boot: how many DPCs are queued in the healthy world? " +
+                "Decimal.",
+              points: 100,
+            },
+          ],
+        },
+        {
+          id: "m2.l4.lab4",
+          kind: "compiler",
+          title: "The HVCI ceiling — WPOFFx64 meets VBS",
+          brief:
+            "Same WPOFFx64 source, hardened world: the WP-clearing mov cr0 is intercepted " +
+            "with CRITICAL_STRUCTURE_CORRUPTION. Confirm via !analyze -v and !pgscan.",
+          scenario: "irql-hardened",
+          compileTask: "attack-wpoff-hvci",
+          starterFiles: [
+            { path: "driver/kfwpoff_hardened.c", content: ATTACK_WPOFF_STARTER },
+          ],
+          flags: [
+            {
+              id: "m2.l4.f7",
+              sha256: F.m2l4f7,
+              prompt:
+                "On the hardened world the WP-clear never lands. Which bugcheck code does the " +
+                "model raise? Decimal (no 0x).",
+              points: 150,
+            },
+            {
+              id: "m2.l4.f8",
+              sha256: F.m2l4f8,
+              prompt:
+                "The interception fired because the write cleared one specific control bit to " +
+                "a new value. Which value did the attack set that bit to? Decimal.",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
   ],
 };
 
@@ -460,7 +747,7 @@ export const module3 = {
       id: "m3.l1",
       title: "Inline hooks & control flow",
       body: m3l1Body,
-      requires: ["m2.l2"],
+      requires: ["m2.l4"],
       labs: [
         {
           id: "m3.l1.lab1",

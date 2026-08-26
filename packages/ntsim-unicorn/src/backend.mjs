@@ -90,6 +90,10 @@ export class UnicornCpuBackend {
   #internal = new Set();
   #arenaEnd = null;
   #pendingRip = null;
+  /** debugger breakpoint gate: addr -> registered hook handle */
+  #debugBps = new Map();
+  /** set by the bp hook when a breakpoint gate fires (rip parked on addr) */
+  bpHit = null;
   /** alias base -> original base (execAliasTruncate collision detection) */
   #aliasOwner = new Map();
   /** low-52-bit truncation fallback for builds without working ctl() TLB switch */
@@ -393,6 +397,33 @@ export class UnicornCpuBackend {
     }
   }
 
+  // ------------------------------------------------- debugger breakpoints
+
+  /**
+   * Software-breakpoint gate (stop-before semantics; memory untouched, so no
+   * SMC/TLB invalidation concerns). Mirrors JsInterpreter.debugBps: a hit
+   * parks regs.rip on the address and makes run() report "breakpoint".
+   */
+  setDebugBp(addr) {
+    const a = toU64(addr);
+    if (this.#debugBps.has(a)) return;
+    const handle = this.addCodeHook(() => {
+      this.bpHit = a;
+      return true; // stop BEFORE executing; RIP stays parked on the address
+    }, a, a);
+    this.#debugBps.set(a, handle);
+  }
+
+  clearDebugBp(addr) {
+    const a = toU64(addr);
+    const h = this.#debugBps.get(a);
+    if (!h) return;
+    this.#debugBps.delete(a);
+    try { this.hook_del(h); } catch { /* wrapper handle absent */ }
+  }
+
+  get debugBps() { return [...this.#debugBps.keys()]; }
+
   reset() {
     for (const [name] of GPR_IDS) this.regs[name] = 0n;
     this.steps = 0;
@@ -451,11 +482,69 @@ export class UnicornCpuBackend {
   run(maxSteps = 10_000_000) {
     this.#ensureDefaultStack();
     this.#syncIn();
-    const outcome = this.#pump(maxSteps, () => this.halted);
+    this.bpHit = null; // fresh run: breakpoints report per-run
+    const outcome = this.#pump(maxSteps, () => this.halted || this.bpHit !== null);
     this.#syncOut();
+    if (this.bpHit !== null) {
+      const rip = this.bpHit;
+      this.bpHit = null;
+      return "breakpoint"; // regs.rip is parked ON the bp address
+    }
     if (outcome === "fault") return "error";
     if (outcome === "timeout") return "timeout";
     return this.halted ? "halted" : "ok";
+  }
+
+  /**
+   * Execute exactly ONE instruction (debugger single-step). The instruction
+   * count cap of emu_start makes this exact; throws CpuError on fault.
+   * @returns {bigint} the rip the step started at
+   */
+  stepInsn() {
+    this.#ensureDefaultStack();
+    const start = toU64(this.regs.rip);
+    this.#pendingRip = null;      // fresh start: drop any stale RIP latch
+    this.#syncIn();
+    const rc = this.#rawStart(start, 1);
+    this.#takePendingRip();       // syncIn may have re-latched; read live EIP
+    this.#syncOut();
+    if (rc !== 0 && rc !== undefined && rc !== null && !this.engine.emu_halted?.()) {
+      this.fault = this.#classify(rc);
+      throw this.fault;
+    }
+    this.halted = false;
+    return start;
+  }
+
+  /**
+   * Run until RIP reaches `stopAddr` (stop-before hook), a debugger
+   * breakpoint gate fires, a fault occurs, or the budget expires.
+   * Mirrors HybridCpuBackend.runUntilStop semantics.
+   * @returns {"stopped"|"breakpoint"|"error"|"timeout"|"halted"}
+   */
+  runUntilStop(stopAddr, maxSteps = 10_000_000) {
+    let stopped = false;
+    const handle = this.addCodeHook(() => {
+      stopped = true;
+      return true; // stop BEFORE executing the stop address
+    }, toU64(stopAddr), toU64(stopAddr));
+    try {
+      this.bpHit = null;
+      this.#ensureDefaultStack();
+      this.#syncIn();
+      const outcome = this.#pump(maxSteps, () => this.halted || this.bpHit !== null || stopped);
+      this.#syncOut();
+      if (this.bpHit !== null) {
+        this.bpHit = null;
+        return "breakpoint";
+      }
+      if (stopped) return "stopped";
+      if (outcome === "fault") return "error";
+      if (outcome === "timeout") return "timeout";
+      return this.halted ? "halted" : "timeout";
+    } finally {
+      try { this.hook_del(handle); } catch { /* wrapper handle absent */ }
+    }
   }
 
   /** JsInterpreter lets the stack wrap below address 0; unicorn needs real pages. */
@@ -532,6 +621,7 @@ export class UnicornCpuBackend {
    * equivalent to JsInterpreter.callFunction().
    */
   callFunction(funcAddr, args = [], shadowSpace = 32) {
+    this.pausedFrame = null;
     this.#ensureDefaultStack();
 
     this.regs.rsp = (this.regs.rsp & ~0xfn) - 8n;
@@ -557,11 +647,26 @@ export class UnicornCpuBackend {
     this.#syncIn(); // AFTER prologue so pushed frames exist inside unicorn
 
     this.rip = funcAddr & M64;
-    const outcome = this.#pump(10_000_000, () => returned);
+    this.bpHit = null;
+    const outcome = this.#pump(10_000_000, () => returned || this.bpHit !== null);
     this.hook_del(markerHook);
 
     this.#syncOut();
 
+    if (this.bpHit !== null) {
+      const parkedRip = toU64(this.regs.rip);
+      this.bpHit = null;
+      this.pausedFrame = {
+        rip: parkedRip,
+        ripAfterInt3: parkedRip,
+        retMarker: RET_MARKER,
+      };
+      return {
+        status: "breakpoint",
+        rip: parkedRip, // parked ON the bp address
+        retMarker: RET_MARKER,
+      };
+    }
     if (outcome === "fault") return { status: "fault", error: this.fault };
     if (outcome === "timeout") return { status: "timeout" };
     if (!returned) return { status: "halted", rip: this.regs.rip };
@@ -589,3 +694,6 @@ export async function createUnicornBackend(mem, opts = {}) {
   if (GPR_IDS.size === 0) bindRegisterIds(uc);
   return new UnicornCpuBackend(mem, uc, opts);
 }
+
+/** Low call-return sentinel used by callFunction (exposed for debuggers). */
+export { RET_MARKER };

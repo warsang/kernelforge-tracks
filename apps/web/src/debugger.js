@@ -17,7 +17,6 @@ import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs"
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
-import { RET_MARKER as UC_RET_MARKER } from "@kernelforge/ntsim-unicorn/src/backend.mjs";
 import { disassemble, liftAliasHex } from "./disasm.mjs";
 
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
@@ -329,6 +328,18 @@ export function createCommands(kernel) {
           note = `  Tid: ${tid}`;
         } catch { /* optional */ }
       }
+      if (apcOff !== null) {
+        try {
+          // KTHREAD.ApcState.Process — names the process this thread is
+          // attached to. Survives DKOM unlinking, which is exactly why EDRs
+          // cross-reference it against ActiveProcessLinks (lesson m1.l2).
+          const tgt = mem.u64(base + apcOff);
+          if (tgt) {
+            const nm = mem.readAnsi(tgt + tables.offsetOf("_EPROCESS", "ImageFileName"), 15);
+            note += `  ApcState->${nm}`;
+          }
+        } catch { /* optional */ }
+      }
       w(`    THREAD ${fmtAddr(base)}${note}`);
     }
     return threads.length;
@@ -426,6 +437,318 @@ export function createCommands(kernel) {
     w("   (single-frame model: no unwind metadata in emulated images)", "dim");
   };
 
+  // ---- live debugging: bp / bl / bc / bd / be / t / p / g / gu --------------
+  //
+  // Software breakpoints are EXECUTE GATES, not byte patches: each engine
+  // checks its breakpoint set BEFORE fetching an instruction. A hit parks
+  // RIP on the address (nothing executes) and reports "breakpoint" through
+  // the same channel an executed int3 would use:
+  //   JsInterpreter — debugBps Set gate in step(); pendingBreak fires.
+  //   Unicorn       — per-bp UC_HOOK_CODE stop-before hook; bpHit flag.
+  //   Hybrid        — gates registered on BOTH engines, handoff-proof.
+  // Memory is never modified: no SMC/TLB invalidation problems, and db/u
+  // always show the true bytes.
+  const bp = {
+    map: new Map(),          // BigInt addr -> {enabled: boolean, hits: number}
+    paused: null,            // {addr: BigInt|null, retMarker: BigInt|null}
+  };
+
+  const cpuOf = () => kernel.cpu;
+
+  function armPolicy() {
+    try { cpuOf().breakpointPolicy = "pause"; } catch { /* raw cpu */ }
+  }
+  function relaxPolicy() {
+    if (!bp.map.size && !bp.paused) {
+      try { cpuOf().breakpointPolicy = "continue"; } catch { /* raw cpu */ }
+    }
+  }
+
+  /** Register/unregister a gate on whatever engine shape this kernel has. */
+  function engineSetBp(addr2) {
+    const cpu = cpuOf();
+    if (typeof cpu.setDebugBp === "function") return cpu.setDebugBp(addr2);
+    cpu.debugBps?.add(addr2);
+  }
+  function engineClearBp(addr2) {
+    const cpu = cpuOf();
+    if (typeof cpu.clearDebugBp === "function") return cpu.clearDebugBp(addr2);
+    cpu.debugBps?.delete(addr2);
+  }
+
+  /**
+   * Record a confirmed hit: bump counters and enter paused state.
+   * RIP is already parked on the address by the engine gate.
+   */
+  function recordHit(hitAddr, retMarker) {
+    const rec = bp.map.get(hitAddr);
+    if (rec) rec.hits++;
+    else if (!bp.map.has(hitAddr)) return null; // not one of ours
+    bp.paused = { addr: hitAddr, retMarker: retMarker ?? null };
+    return hitAddr;
+  }
+
+  /**
+   * Convert a burst result into a paused-on-breakpoint state. With gates,
+   * both engines report rip parked ON the address; keep a legacy fallback
+   * for ripAfterInt3-shaped results just in case.
+   */
+  function normalizeHit(res) {
+    let hitAddr = null;
+    let retMarker = res?.retMarker ?? null;
+    if (res?.status === "breakpoint") {
+      hitAddr = bp.map.has(res.rip) ? res.rip
+        : (res.ripAfterInt3 != null && bp.map.has(res.ripAfterInt3 - 1n)
+          ? res.ripAfterInt3 - 1n : res.rip);
+      if (!bp.map.has(hitAddr)) {
+        // unregistered int3/padding: park before it so stepping is sane
+        bp.paused = { addr: null, retMarker };
+        cpuOf().regs.rip = hitAddr;
+        return null;
+      }
+    } else if (res?.status === "fault" &&
+               /unhandled CPU exception/i.test(String(res.error?.message ?? "")) &&
+               res.error?.rip != null && bp.map.has(res.error.rip)) {
+      hitAddr = res.error.rip;
+      cpuOf().regs.rip = hitAddr;
+      cpuOf().fault = null; // consumed: it was our gate, not a real fault
+    } else {
+      return null;
+    }
+    return recordHit(hitAddr, retMarker);
+  }
+
+  const fmtHit = (addr2) =>
+    `Breakpoint hit @ ${fmtAddr(addr2)}${sym(addr2) ? ` (${sym(addr2)})` : ""}`;
+
+  /**
+   * Adopt a pause that happened OUTSIDE this console (compile flow,
+   * !dpcdrain, ...): callFunction records cpu.pausedFrame when the policy
+   * pauses, and both engines now report identical shapes.
+   */
+  function syncPausedFromCpu() {
+    if (bp.paused) return;
+    const cpu = cpuOf();
+    if (!cpu.pausedFrame) return;
+    const pf = cpu.pausedFrame;
+    normalizeHit({
+      status: "breakpoint",
+      rip: pf.rip,
+      ripAfterInt3: pf.ripAfterInt3,
+      retMarker: pf.retMarker,
+    });
+  }
+
+  function requirePaused(w) {
+    syncPausedFromCpu();
+    if (bp.paused) return bp.paused;
+    w("not paused: set a breakpoint (bp <module!sym|addr>), re-run the driver " +
+      "action (compile+load, !dpcdrain, !notifytest...), then step with t/p/g.", "err");
+    return null;
+  }
+
+  /** One single-instruction step on whichever engine is active. */
+  function stepOnce() {
+    const cpu = cpuOf();
+    if (typeof cpu.stepInsn === "function") return cpu.stepInsn();
+    const start = cpu.opcodeStart ?? cpu.rip;
+    cpu.step();
+    return start;
+  }
+
+  /**
+   * When RIP sits on an armed gate, temporarily disable it and execute the
+   * single instruction underneath so a resume doesn't instantly re-hit.
+   * Callers re-arm afterwards (engineSetBp).
+   */
+  function resumePastOwnGate() {
+    const cpu = cpuOf();
+    if (bp.paused?.addr === null || cpu.regs.rip !== bp.paused.addr) return false;
+    engineClearBp(cpu.regs.rip);
+    try {
+      stepOnce();
+    } finally {
+      engineSetBp(bp.paused.addr);
+    }
+    return true;
+  }
+
+  function doStepInto(_args, w) {
+    if (!requirePaused(w)) return;
+    const cpu = cpuOf();
+    let startRip;
+    try {
+      startRip = resumePastOwnGate() ? cpu.regs.rip : stepOnce();
+    } catch (e) {
+      bp.paused = null;
+      relaxPolicy();
+      return w(`t: ${e.message}`, "err");
+    }
+    const to = cpu.regs.rip;
+    w(`${fmtAddr(startRip)} -> ${fmtAddr(to)}${sym(to) ? ` (${sym(to)})` : ""}`);
+  }
+
+  /** JsInterpreter-only stopOnRip runner (mirrors HybridCpuBackend.runUntilStop). */
+  function runUntilStopJs(stopAddr, maxSteps = 10_000_000) {
+    const cpu = cpuOf();
+    const saved = cpu.stopOnRip;
+    cpu.stopOnRip = stopAddr;
+    try {
+      const reason = cpu.run(maxSteps);
+      if (reason === "returned") return cpu.rip === stopAddr ? "stopped" : "exited";
+      return reason;
+    } finally {
+      cpu.stopOnRip = saved;
+    }
+  }
+
+  /** Shared stop-runner: hybrid/unicorn expose runUntilStop, JS falls back. */
+  function runUntil(stopAddr) {
+    const cpu = cpuOf();
+    return cpu.runUntilStop ? cpu.runUntilStop(stopAddr) : runUntilStopJs(stopAddr);
+  }
+
+  async function doStepOver(_args, w) {
+    if (!requirePaused(w)) return;
+    const cpu = cpuOf();
+    const at = cpu.regs.rip;
+    let next = null;
+    let isCall = false;
+    try {
+      const [insn] = await disassemble(mem, at, { count: 1 });
+      if (insn) {
+        next = insn.va + BigInt(insn.len);
+        isCall = /^call/i.test(insn.mnemonic);
+      }
+    } catch { /* unmapped: fall through to plain step */ }
+    if (!next || !isCall) return doStepInto(_args, w);
+    try {
+      resumePastOwnGate();
+      const r = runUntil(next);
+      if (r === "breakpoint") {
+        const hit = normalizeHit({
+          status: "breakpoint",
+          rip: cpu.regs.rip,
+          retMarker: bp.paused?.retMarker ?? null,
+        });
+        if (hit !== null) return w(fmtHit(hit));
+      }
+      if (r === "error") {
+        bp.paused = null; relaxPolicy();
+        return w(`p: fault @ ${fmtAddr(cpu.fault?.rip ?? cpu.rip)}: ${cpu.fault?.message ?? "?"}`, "err");
+      }
+      if (r === "exited" || r === "halted" || r === "timeout") {
+        bp.paused = null; relaxPolicy();
+        return w(`frame exited -> rip=${fmtAddr(cpu.regs.rip)} rax=${fmtAddr(cpu.regs.rax)}`);
+      }
+      w(`${fmtAddr(at)} -> ${fmtAddr(cpu.regs.rip)} (over call)`);
+    } catch (e) {
+      w(`p: ${e.message}`, "err");
+    }
+  }
+
+  function doStepOut(_args, w) {
+    if (!requirePaused(w)) return;
+    const marker = bp.paused.retMarker;
+    if (marker === null || marker === undefined) {
+      return w("gu: no active frame marker (pause came from outside a modeled call)", "err");
+    }
+    const cpu = cpuOf();
+    resumePastOwnGate();
+    const r = runUntil(marker);
+    if (r === "breakpoint") {
+      const hit = normalizeHit({
+        status: "breakpoint",
+        rip: cpu.regs.rip,
+        retMarker: marker,
+      });
+      if (hit !== null) return w(fmtHit(hit));
+    }
+    if (r === "error") {
+      bp.paused = null; relaxPolicy();
+      return w("gu: faulted before return — inspect with !analyze", "err");
+    }
+    if (r === "exited" || r === "halted" || r === "timeout") {
+      bp.paused = null; relaxPolicy();
+      return w(`returned -> rip=${fmtAddr(cpu.regs.rip)} rax=${fmtAddr(cpu.regs.rax)}`);
+    }
+    w(`returned -> ${fmtAddr(cpu.regs.rip)} rax=${fmtAddr(cpu.regs.rax)}`);
+  }
+
+  function doGo(_args, w) {
+    if (!requirePaused(w)) return;
+    const cpu = cpuOf();
+    // RIP sits ON a gate: execute its instruction once so the fresh run
+    // doesn't instantly re-hit the same breakpoint.
+    try {
+      resumePastOwnGate();
+    } catch (e) {
+      bp.paused = null; relaxPolicy();
+      return w(`g: ${e.message}`, "err");
+    }
+    const marker = bp.paused.retMarker;
+    if (marker !== null && marker !== undefined) {
+      // sentinel-aware run: stop cleanly at the frame's return marker
+      const r = runUntil(marker);
+      if (r === "breakpoint") {
+        const hit = normalizeHit({
+          status: "breakpoint",
+          rip: cpu.regs.rip,
+          retMarker: marker,
+        });
+        if (hit !== null) return w(fmtHit(hit));
+      }
+      if (r === "error") {
+        bp.paused = null; relaxPolicy();
+        return w(`g: fault @ ${fmtAddr(cpu.fault?.rip ?? cpu.rip)}: ${cpu.fault?.message ?? "?"} (see !analyze)`, "err");
+      }
+      const done = r === "stopped" || r === "exited" || r === "halted" || r === "timeout";
+      bp.paused = null; relaxPolicy();
+      if (done) {
+        return w(`run complete -> rip=${fmtAddr(cpu.rip)} rax=${fmtAddr(cpu.regs.rax)}`);
+      }
+      return w(`g: ${r}`, "warn");
+    }
+    const saved = cpu.stopOnRip;
+    try {
+      for (;;) {
+        let reason;
+        try { reason = cpu.run(10_000_000); }
+        catch (e) {
+          bp.paused = null; relaxPolicy();
+          return w(`g: ${e.message}`, "err");
+        }
+        if (reason === "breakpoint") {
+          const hit = normalizeHit({
+            status: "breakpoint",
+            rip: cpu.regs.rip,
+            retMarker: bp.paused.retMarker,
+          });
+          if (hit !== null) return w(fmtHit(hit));
+          continue; // unregistered int3 (module padding): legacy tolerance
+        }
+        if (reason === "returned") {
+          bp.paused = null; relaxPolicy();
+          return w(`run complete -> rip=${fmtAddr(cpu.rip)} rax=${fmtAddr(cpu.regs.rax)}`);
+        }
+        if (reason === "error") {
+          const hit = normalizeHit({
+            status: "fault",
+            error: { message: String(cpu.fault?.message ?? ""), rip: cpu.fault?.rip },
+            retMarker: bp.paused.retMarker,
+          });
+          if (hit !== null) return w(fmtHit(hit));
+          bp.paused = null; relaxPolicy();
+          return w(`g: fault @ ${fmtAddr(cpu.fault?.rip ?? cpu.rip)}: ${cpu.fault?.message ?? "?"} (see !analyze)`, "err");
+        }
+        bp.paused = null; relaxPolicy();
+        return w(`g: ${reason}`, "warn");
+      }
+    } finally {
+      cpu.stopOnRip = saved;
+    }
+  }
+
   const commands = {
     help(args, w) {
       w("commands:");
@@ -456,10 +779,24 @@ export function createCommands(kernel) {
       w("  eb <a> <b1> [b2...]       write bytes into mapped memory");
       w("  db <a> [n|Ln] | dq <a> [n|Ln]   hex dump bytes/qwords (L40 => hex length)");
       w("  r                         register context | clear");
+      w("  r <reg>=<expr>            set a register (r rip=nt!DbgPrint, r eax=5)");
+      w("  --- execution control (real int3 breakpoints) -----------------------");
+      w("  bp <addr|mod!sym>         set software breakpoint");
+      w("  bc <addr|*>               clear breakpoint(s)");
+      w("  bd / be <addr>            disable / re-enable a breakpoint");
+      w("  bl                        list breakpoints (hit counts)");
+      w("  t                         single-step (into)");
+      w("  p                         step over calls");
+      w("  g                         go: run until the next breakpoint");
+      w("  gu                        go until this frame returns");
       w("  --- lab extensions -------------------------------------------------");
       w("  !mmstate / !mmrun         manual-map loader state / run (manual-map lab)");
-      w("  !irql [n]                 current IRQL (name) / force a level (lab ext)");
+      w("  !irql [-a|n]              current IRQL, all cores, or force a level (lab ext)");
       w("  !dpcs / !dpcdrain         DPC queue contents / drain at <= DISPATCH");
+      w("  !dpcpump [n]              advance the clock n ticks (timers + DPC retire)");
+      w("  !dpcstat                  DPC/timer telemetry: depth, age, anomalies");
+      w("  !dpcwatchdog              modeled DPC_WATCHDOG check (bugcheck 0x133)");
+      w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
@@ -801,6 +1138,29 @@ export function createCommands(kernel) {
     ks(args, w) { commands["kv"](args, w); },
 
     r(args, w) {
+      // write form: r reg=expr — WinDbg assignment syntax
+      if (args.length) {
+        const joined = args.join(" ");
+        const m = joined.match(/^([a-z0-9]{2,4})\s*=\s*(.+)$/i);
+        if (!m) return w(`r: bad assignment "${joined}" (try: r rip=nt!DbgPrint)`, "err");
+        const [, name, exprText] = m;
+        const cpu = cpuOf();
+        if (!(name.toLowerCase() in cpu.regs) && name.toLowerCase() !== "rip") {
+          return w(`r: unknown register "${name}"`, "err");
+        }
+        const resolver = (key) => resolveArg(key) ?? (() => {
+          try { return BigInt(key); } catch { return null; }
+        })();
+        let v;
+        try { v = evalExpr(exprText, resolver); } catch (e) {
+          return w(`r: ${e.message}`, "err");
+        }
+        const key = name.toLowerCase();
+        try { cpu.regs[key] = BigInt.asUintN(64, v); } catch (e) {
+          return w(`r: cannot write ${name}: ${e.message}`, "err");
+        }
+        return w(`${key} = ${fmtAddr(v)}${sym(v) ? `  ${sym(v)}` : ""}`);
+      }
       const src = kernel.contextSource === "dump" ? "   ; context from dump" : "";
       for (const [k, v] of Object.entries(kernel.cpu.regs)) {
         const s = sym(v);
@@ -808,6 +1168,78 @@ export function createCommands(kernel) {
       }
       if (src) w(src, "dim");
     },
+
+    // ---- breakpoints -------------------------------------------------------
+    bp(args, w) {
+      const tok = args[0];
+      if (!tok) return w("usage: bp <addr|module!sym|Export>   (e.g. bp kfhook.sys+0x1010)", "err");
+      const addr = resolveArg(unquote(tok));
+      if (addr === null) return w(`bp: cannot resolve "${tok}"`, "err");
+      if (bp.map.has(addr)) return w(`breakpoint already set @ ${fmtAddr(addr)}`, "warn");
+      bp.map.set(addr, { enabled: true, hits: 0 });
+      engineSetBp(addr);
+      armPolicy();
+      w(`Breakpoint ${bp.map.size - 1} set @ ${fmtAddr(addr)}${sym(addr) ? ` (${sym(addr)})` : ""}`);
+      w("re-run the driver action to hit it; then t/p/g/gu step.", "dim");
+    },
+
+    bl(_args, w) {
+      if (!bp.map.size) return w("no breakpoints set", "dim");
+      let i = 0;
+      for (const [addr2, rec] of bp.map) {
+        w(`${i++} ${rec.enabled ? "e" : "d"} hits:${rec.hits} @ ${fmtAddr(addr2)}${sym(addr2) ? ` (${sym(addr2)})` : ""}`);
+      }
+    },
+
+    bc(args, w) {
+      const tok = args[0];
+      if (!tok) return w("usage: bc <addr|*>", "err");
+      if (tok === "*") {
+        for (const [addr2] of bp.map) engineClearBp(addr2);
+        bp.map.clear();
+        bp.paused = null;
+        relaxPolicy();
+        return w("all breakpoints cleared");
+      }
+      const addr = resolveArg(unquote(tok));
+      if (addr === null || !bp.map.has(addr)) return w(`bc: no breakpoint at "${tok}"`, "err");
+      engineClearBp(addr);
+      bp.map.delete(addr);
+      relaxPolicy();
+      w(`breakpoint cleared @ ${fmtAddr(addr)}`);
+    },
+
+    bd(args, w) {
+      const addr = resolveArg(unquote(args[0] ?? ""));
+      const rec = addr !== null ? bp.map.get(addr) : null;
+      if (!rec) return w("usage: bd <addr>", "err");
+      rec.enabled = false;
+      engineClearBp(addr);
+      w(`breakpoint disabled @ ${fmtAddr(addr)}`);
+    },
+
+    be(args, w) {
+      const addr = resolveArg(unquote(args[0] ?? ""));
+      const rec = addr !== null ? bp.map.get(addr) : null;
+      if (!rec) return w("usage: be <addr>", "err");
+      rec.enabled = true;
+      engineSetBp(addr);
+      armPolicy();
+      w(`breakpoint enabled @ ${fmtAddr(addr)}`);
+    },
+
+    t(args, w) { doStepInto(args, w); },
+    async p(args, w) { await doStepOver(args, w); },
+    gu(args, w) { doStepOut(args, w); },
+    g(args, w) { doGo(args, w); },
+
+    // internal: burst-pause adoption for the app adapter (never typed)
+    __bpBurst(res) {
+      syncPausedFromCpu();
+      return bp.paused ? bp.paused.addr : null;
+    },
+    __bpPaused: () => !!bp.paused,
+
 
     k(args, w) { stack(args, w, kindNote("k")); },
     kp(args, w) { stack(args, w, kindNote("kp") + "\n   (parameters unavailable — no unwind data modeled)"); },
@@ -1114,13 +1546,23 @@ export function createCommands(kernel) {
     },
 
     "!irql"(args, w) {
+      if (args[0] === "-a" || args[0] === "/a") {
+        const n = (kernel.cpuIrqls?.length ?? 0) + 1;
+        w("IRQL per logical core:", "hdr");
+        for (let i = 0; i < n; i++) {
+          const lvl = kernel.cpuIrql(i);
+          const tag = i === 0 ? "" : (lvl >= 2 ? "  <- pinned (watchdog bait)" : "");
+          w(`  core ${i}: ${lvl} (${irqlName(lvl)})${tag}`, lvl >= 2 && i !== 0 ? "warn" : "");
+        }
+        return;
+      }
       if (!args[0]) {
         const lvl = kernel.currentIrql ?? 0;
         w(`IRQL: ${lvl} (${irqlName(lvl)})`, "hdr");
         if (lvl > 2) {
           w("  note: threads should never SIT here — drivers raise transiently", "warn");
         }
-        w("  lab extension: '!irql <n>' forces a level (0..31)", "dim");
+        w("  lab extension: '!irql <n>' forces a level; '!irql -a' shows all cores", "dim");
         return;
       }
       const n = Number(args[0]);
@@ -1137,10 +1579,11 @@ export function createCommands(kernel) {
       const q = kernel.pendingDpcs ?? [];
       if (!q.length) return w("!dpcs: DPC queue is empty", "dim");
       w("DPC queue (per-CPU, drained at <= DISPATCH_LEVEL)", "hdr");
-      w("  DPC               DeferredRoutine     Status", "hdr");
+      w("  DPC               DeferredRoutine     Target  Status", "hdr");
       for (const d of q) {
         const target = d.routine ? `${fmtAddr(d.routine)}${sym(d.routine) ? ` (${sym(d.routine)})` : ""}` : "NULL";
-        w(`  ${fmtAddr(d.dpcVa)}  ${target}  ${d.drained ? "drained" : "QUEUED"}`,
+        const cpu = (d.targetCpu ?? 0) > 0 ? `cpu${d.targetCpu}` : "  -  ";
+        w(`  ${fmtAddr(d.dpcVa)}  ${target}  ${cpu}   ${d.drained ? "drained" : "QUEUED"}`,
           d.drained ? "dim" : "");
       }
       const stuck = q.filter((d) => !d.drained).length;
@@ -1157,11 +1600,125 @@ export function createCommands(kernel) {
         w("hint: lower the level first ('!irql 2')", "dim");
         return;
       }
-      const fired = kernel.drainDpcs();
-      w(`drained ${fired.length} DPC(s):`, "hdr");
-      for (const d of fired) w(`  ${fmtAddr(d.dpcVa)} -> ${sym(d.routine) ?? fmtAddr(d.routine)}`);
+      // retire + execute (KiRetireDpcList runs each DeferredRoutine)
+      const fired = kernel.retireQueuedDpcs();
+      w(`drained ${fired} DPC(s):`, "hdr");
+      for (const d of queued) {
+        const live = kernel.liveDpcRoutine(d);
+        const tag = live !== d.routine ? " (patched!)" : "";
+        w(`  ${fmtAddr(d.dpcVa)} -> ${sym(live) ?? fmtAddr(live)}${tag}`);
+      }
       const tail = (kernel.dbgLog ?? []).slice(-3);
       if (tail.length) { w("--- recent DbgPrint ---", "hdr"); for (const l of tail) w("  " + l); }
+    },
+
+    "!dpcpump"(args, w) {
+      if (kernel.cpu?.halted) return w("!dpcpump: CPU is halted (post-bugcheck)", "err");
+      const n = Number(args[0] ?? "1");
+      if (!Number.isInteger(n) || n < 1 || n > 100000) {
+        return w("!dpcpump: ticks must be an integer 1..100000", "err");
+      }
+      const r = kernel.advanceTicks(n);
+      w(`clock +${r.ticks} tick(s) -> tick ${kernel.tickCount}`, "hdr");
+      if (r.firedTimers) w(`  expired ${r.firedTimers} timer(s)`);
+      if (r.retired) w(`  retired ${r.retired} queued DPC(s)`);
+      else if ((kernel.currentIrql ?? 2) > 2) {
+        w("  retired nothing: core pinned above DISPATCH_LEVEL", "warn");
+      }
+    },
+
+    "!dpcstat"(args, w) {
+      const now = kernel.tickCount ?? 0n;
+      const q = kernel.pendingDpcs ?? [];
+      const pending = q.filter((d) => !d.drained);
+      w("DPC / timer telemetry (ETW EVENT_TRACE_FLAG_DPC analog)", "hdr");
+      w(`  queue depth: ${q.length} total, ${pending.length} pending`);
+      for (const d of pending.slice(0, 12)) {
+        const age = now - (d.enqueuedAt ?? now);
+        const where = (d.targetCpu ?? 0) > 0 ? ` directed@cpu${d.targetCpu}` : "";
+        w(`    ${fmtAddr(d.dpcVa)} age=${age} tick(s)${where}`,
+          age > 10n ? "warn" : "");
+      }
+      const timers = kernel.pendingTimers ?? [];
+      w(`  timers: ${timers.length} armed`);
+      for (const t of timers.slice(0, 8)) {
+        const dueIn = t.dueTick - now;
+        const bound = t.dpcVa ? fmtAddr(t.dpcVa) : "none";
+        const live = t.dpcVa ? kernel.liveDpcRoutine({ dpcVa: t.dpcVa, routine: 0n }) : 0n;
+        const mod = live ? sym(live) : null;
+        const foreign = live && !mod ? "  <- routine outside known modules" : "";
+        w(`    timer ${fmtAddr(t.timerVa)} due=+${dueIn > 0n ? dueIn : 0n} period=${t.period} dpc=${bound}${foreign}`,
+          foreign ? "warn" : "");
+      }
+      const aged = pending.filter((d) => now - (d.enqueuedAt ?? now) > 10n).length;
+      if (aged) w(`  anomaly: ${aged} DPC(s) older than 10 ticks (starvation signature)`, "err");
+      w("  pump the clock with '!dpcpump <ticks>'", "dim");
+    },
+
+    "!dpcwatchdog"(args, w) {
+      w("DPC watchdog check (KiProcessExpiredTimerList analog)", "hdr");
+      const verdict = kernel.checkDpcWatchdog();
+      if (verdict.ok) {
+        w("  no core pinned at/above DISPATCH_LEVEL — within budget", "good");
+        return;
+      }
+      for (const p of verdict.pinned) {
+        w(`  core ${p.cpu}: IRQL ${p.irql} (${irqlName(p.irql)}) — residency over budget`, "err");
+      }
+      if (!verdict.pinned.length) {
+        w(`  executing core at IRQL ${kernel.currentIrql} — above-DISPATCH residency`, "err");
+      }
+      w(`  BUGCHECK 0x133 DPC_WATCHDOG_VIOLATION raised (P1=${verdict.bugcheckLevel ?? kernel.bugcheck?.params?.[0]})`, "err");
+    },
+
+    "!pgscan"(args, w) {
+      w("integrity scan (PatchGuard/HVCI analog)", "hdr");
+      w(`  CR0: 0x${(kernel.cr0 ?? 0n).toString(16)} (WP=${(((kernel.cr0 ?? 0n) >> 16n) & 1n).toString()})` +
+        `  HVCI: ${kernel.hvciMode ? "enforced" : "off"}`);
+      const traces = kernel.cr0Trace ?? [];
+      if (traces.length) {
+        const wpClears = traces.filter((t) => ((t.old >> 16n) & 1n) === 1n && ((t.new >> 16n) & 1n) === 0n);
+        if (wpClears.length) w(`  CR0.WP was cleared ${wpClears.length} time(s) this boot — write-protect tampering`, "warn");
+      }
+      const diffs = kernel.scanProtectedRanges?.() ?? [];
+      if (!diffs.length) w("  protected ranges: clean");
+      for (const d of diffs) {
+        w(`  MODIFIED ${d.name} @ ${fmtAddr(d.base)}+0x${d.firstDelta.toString(16)} ` +
+          `(${d.count} byte(s), pristine 0x${d.pristineByte.toString(16)} -> live 0x${d.liveByte.toString(16)})`, "err");
+      }
+      // foreign DeferredRoutine sweep: a queued/timer-bound routine pointing
+      // outside every loaded module is a hijack signature — and so is ANY
+      // drift between the insert-time snapshot and live memory
+      let foreign = 0;
+      const inModule = (va) => (kernel.loadedModules ?? []).some((m) =>
+        va >= m.base && va < m.base + BigInt(m.sizeOfImage ?? 0x8000));
+      for (const d of (kernel.pendingDpcs ?? [])) {
+        const live = kernel.liveDpcRoutine(d);
+        if (!live) continue;
+        if (!inModule(live)) {
+          foreign++;
+          w(`  HIJACK? DPC ${fmtAddr(d.dpcVa)} DeferredRoutine -> ${fmtAddr(live)} outside all modules` +
+            (d.drained ? " (already drained)" : ""), "err");
+        } else if (d.routine && live !== d.routine) {
+          foreign++;
+          w(`  HIJACK? DPC ${fmtAddr(d.dpcVa)} DeferredRoutine rewritten ` +
+            `insert-time ${fmtAddr(d.routine)} -> now ${fmtAddr(live)} (${sym(live)})` +
+            (d.drained ? " (already drained)" : ""), "err");
+        }
+      }
+      for (const t of (kernel.pendingTimers ?? [])) {
+        if (!t.dpcVa) continue;
+        const probe = { dpcVa: t.dpcVa, routine: 0n };
+        const live = kernel.liveDpcRoutine(probe);
+        if (live && !inModule(live)) {
+          foreign++;
+          w(`  HIJACK? timer ${fmtAddr(t.timerVa)} bound DPC routine -> ${fmtAddr(live)} outside all modules`, "err");
+        }
+      }
+      if (!foreign) w("  deferred routines: all inside loaded modules", "good");
+      if (kernel.hvciMode && diffs.length) {
+        w("  HVCI policy: CRITICAL_STRUCTURE_CORRUPTION (0x109) would have fired at write time", "dim");
+      }
     },
 
     "!hookscan"(args, w) {
@@ -1585,5 +2142,17 @@ export function createDebugger(kernel, out) {
     }
     else try { await fn(args, write, out); } catch (e) { write(`error: ${e.message}`, "err"); }
   };
-  return { exec, write };
+  /**
+   * Lab flows (compile+load, !dpcdrain, ...) call this when a burst comes
+   * back {status:"breakpoint"} — or a fault that is really our int3 hit.
+   * Returns true when a debugger pause was adopted (real faults pass through).
+   */
+  const notifyBreak = (res) => {
+    if (res?.status !== "breakpoint" && res?.status !== "fault") return false;
+    commands.__bpBurst(res);
+    if (!commands.__bpPaused()) return false;
+    write(`Breakpoint hit @ ${fmtAddr(kernel.cpu.regs.rip)} — step with t/p, resume with g`, "warn");
+    return true;
+  };
+  return { exec, write, notifyBreak };
 }

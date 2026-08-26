@@ -31,6 +31,12 @@ Compile with \`--target=i386-linux-gnu\`, push the \`insmod\`-able \`.ko\`
 into the guest, and read \`dmesg\`. The harness captures serial output;
 lines carrying the \`KFFLAG\` magic are your lab channel.
 
+For userspace debugging, the guest speaks the GDB remote protocol over its
+second serial port: start a target with \`gdb start /root/lab/app\` in this
+console (the buildroot image carries gdb-server) and a full gdb-style
+debugger docks above — breakpoints, single-step, registers, memory. Classic
+syntax throughout: \`b *0x8048074\`, \`c\`, \`si\`, \`x/8xw $esp\`, \`info registers\`.
+
 ## Syscall numbers are ABI
 
 Unlike Windows syscalls (numbers change every build), Linux syscall

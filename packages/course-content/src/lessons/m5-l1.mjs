@@ -7,6 +7,14 @@ emulator (the same model of emulator the sogen project popularizes): no OS
 underneath, just your PE image, the system DLLs it imports from, and an
 emulator that controls every byte.
 
+A graphical debugger docks above the console for this track: a disassembly
+view with breakpoint gutter, registers, a hex memory viewer, module list,
+and a pseudocode tab — the same layout you'd find in x64dbg or the sogen
+playground. It reads the same world state your console commands mutate, so
+\`scan\` hits light up in the memory viewer. The kd> console below stays the
+primary interface; the panels are there to build the visual reflexes you
+will need with real tools.
+
 Game hacking starts the same way malware analysis does:
 
 1. \`lm\` — enumerate loaded modules and their base addresses.

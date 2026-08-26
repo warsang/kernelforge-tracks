@@ -1,4 +1,5 @@
 import "./styles.css";
+import "@kernelforge/debugger-ui/styles.css";
 import { marked } from "marked";
 import { catalog } from "@kernelforge/course-content";
 import {
@@ -14,6 +15,7 @@ import { loadTables } from "./tables.js";
 import { paneFor } from "./panes.js";
 import { createDebugger } from "./debugger.js";
 import { createDebugConsole, disposeConsoles } from "./console.js";
+import { createCodeEditor, disposeAllEditors, disposeShells } from "@kernelforge/debugger-ui";
 import { renderAnalyzer } from "./analyzer.js";
 
 warmupCompiler(); // preload the wasm toolchain in the background
@@ -312,6 +314,67 @@ COMPILE_TASKS["sentinel-v4"] = {
     ["completion secret", /secret=kf-poolmon-ok/],
   ]),
 };
+
+// --- module-2 attack/defense workshop tasks -------------------------------
+// Attacker tasks verify the attack's own telemetry; the hardened variant
+// additionally expects the modeled HVCI interception + bugcheck.
+COMPILE_TASKS["attack-wpoff"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["IRQL raise into window", /ATTACK-WPOFF: raised to IRQL 2/],
+    ["WP cleared inside window", /inside window IRQL=2 WP=0/],
+    ["canary tamper", /detour copied over canary/],
+    ["window closed + restored", /window closed; CR0 restored to 0000000080010031 \(IRQL 2\)/],
+  ]),
+};
+COMPILE_TASKS["attack-wpoff-hvci"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["raise attempted", /ATTACK-WPOFF: raised to IRQL 2/],
+    ["HVCI interception", /\[hvci\] CR0\.WP-clearing write intercepted/],
+    ["bugcheck 0x109 raised", /CRITICAL_STRUCTURE_CORRUPTION/],
+  ]),
+};
+COMPILE_TASKS["attack-lockdown"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["core 1 pinned", /ATTACK-LOCKDOWN: core 1 pinned at IRQL 2/],
+    ["core 2 pinned", /ATTACK-LOCKDOWN: core 2 pinned at IRQL 2/],
+    ["core 3 pinned", /ATTACK-LOCKDOWN: core 3 pinned at IRQL 2/],
+    ["exposure window declared", /kernel structures exposed/],
+  ]),
+};
+COMPILE_TASKS["attack-timerdpc"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["timer armed", /TIMER-PERSIST: armed \(due \+3, period 5\)/],
+    ["pump hint emitted", /!dpcpump 13/],
+  ]),
+};
+COMPILE_TASKS["attack-hijack"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["victim routine observed", /ATTACK-HIJACK: victim DeferredRoutine was fffff8055a701400/],
+    ["patch in place", /patched in place - retire the queue/],
+  ]),
+};
+COMPILE_TASKS["sentinel-telemetry"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["IRQL + queue depth sampled", /SENTINEL-TELEMETRY: sampled IRQL = 15 queue-depth = 1/],
+    ["anomaly declared", /stranded work on a pinned core/],
+    ["ladder restored", /ladder restored to 2/],
+    ["completion secret", /secret=kf-watchdog-ok/],
+  ]),
+};
+COMPILE_TASKS["sensor-deadline"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["lockdown applied", /SENTINEL-WD: cores pinned; core 1 at IRQL 2/],
+    ["deadline missed", /DEADLINE-MISSED/],
+    ["telemetry secret", /secret=kf-deadline-ok/],
+  ]),
+};
 const taskFor = (lab) => COMPILE_TASKS[lab.compileTask ?? (lab.id.includes("dkom") ? "dkom-hide" : "")] ?? null;
 
 // ---------------------------------------------------------------- rendering
@@ -391,9 +454,68 @@ function renderWelcome() {
 
 // ------------------------------------------------------------ lab rendering
 
+/**
+ * Upgrade lesson fenced code blocks (```c / ```cpp / ```js / ```json) to
+ * lazy read-only Monaco editors. Console-transcript fences (kd>, gdb>…) and
+ * untagged blocks stay plain <pre>. Mounting is IntersectionObserver-gated so
+ * lessons with many snippets stay fast.
+ */
+const FENCE_LANGS = {
+  c: "c", cpp: "cpp", "c++": "cpp", h: "cpp",hpp: "cpp",
+  js: "javascript", javascript: "javascript", json: "json",
+};
+
+function upgradeCodeFences(body) {
+  const fences = [];
+  for (const code of body.querySelectorAll("pre > code[class*=\"language-\"]")) {
+    const lang = [...code.classList]
+      .find((c) => c.startsWith("language-"))
+      ?.slice(9)?.toLowerCase();
+    const monacoLang = FENCE_LANGS[lang ?? ""];
+    if (!monacoLang) continue;
+    const src = code.textContent;
+    if (!src.trim()) continue;
+    const pre = code.parentElement;
+    const holder = h("div", { class: "fence-editor" });
+    pre.replaceWith(holder);
+    fences.push({ holder, src, monacoLang, mounted: false });
+  }
+  const mountFence = (f) => {
+    if (f.mounted) return;
+    f.mounted = true;
+    // content-sized height (Monaco needs an explicit box), capped for huge dumps
+    const lines = f.src.split("\n").length;
+    f.holder.style.height = `${Math.min(Math.max(lines * 19 + 10, 60), 480)}px`;
+    void createCodeEditor(f.holder, {
+      value: f.src,
+      language: f.monacoLang,
+      readOnly: true,
+      lineNumbers: true,
+      height: "100%",
+    });
+  };
+  if (typeof IntersectionObserver === "undefined") {
+    // headless DOM / exotic embeds: mount everything right away
+    for (const f of fences) mountFence(f);
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const f = fences.find((x) => x.holder === entry.target && !x.mounted);
+      if (!f) continue;
+      mountFence(f);
+      io.unobserve(entry.target);
+    }
+  }, { rootMargin: "200px" });
+  for (const f of fences) io.observe(f.holder);
+}
+
 function renderLesson(lesson) {
   const main = document.getElementById("main");
   disposeConsoles(); // terminals from the previous lesson render
+  disposeShells();
+  disposeAllEditors();
   main.innerHTML = "";
 
   // Lesson body: markdown (shipped as content modules in course-content).
@@ -401,6 +523,7 @@ function renderLesson(lesson) {
   const body = h("div", { class: "lesson-body md" });
   if (typeof lesson.body === "string" && lesson.body.length) {
     body.innerHTML = marked.parse(lesson.body);
+    upgradeCodeFences(body);
   } else {
     body.append(h("p", { class: "dim" }, "(no lesson text)"));
   }
@@ -457,6 +580,20 @@ function renderLesson(lesson) {
               `Windows kernel dump (${dumpWorld.meta.source}).`);
           }
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
+          // pane-registered graphical debugger shell (docks above the console)
+          if (pane.mountShell) {
+            const shellHost = h("div", { class: "shell-host" });
+            consoleHost.before(shellHost);
+            try {
+              pane.mountShell(session, {
+                card, consoleHost, shellHost, h,
+                consoleDebugger: currentDebugger,
+              });
+            } catch (err) {
+              console.warn("debugger shell mount failed:", err);
+              currentDebugger.write(`debugger shell unavailable: ${err.message}`, "warn");
+            }
+          }
           dbg.focusTarget?.focus?.();
         } catch (e) {
           dbg.innerHTML = "";
@@ -487,9 +624,17 @@ function renderLesson(lesson) {
 
     if (lab.kind === "compiler") {
       const task = taskFor(lab);
-      const editor = h("textarea", {
-        class: "code-editor", rows: 16, spellcheck: "false",
-      }, getStarterCode(lab));
+      // Shared Monaco service (@kernelforge/debugger-ui) — textarea fallback
+      // keeps headless tests and offline bundles working.
+      const editorHost = h("div", { class: "lab-editor" });
+      let editorHandle = null;
+      void createCodeEditor(editorHost, {
+        value: getStarterCode(lab),
+        language: "cpp",
+        minimap: true,
+        height: "420px",
+      }).then((hd) => { editorHandle = hd; });
+      const readSrc = () => editorHandle?.getValue?.() ?? getStarterCode(lab);
       const compileBtn = h("button", { class: "primary" }, task ? "Compile & Load Driver" : "(unsupported lab)");
       compileBtn.disabled = !task;
       const compileStatus = h("div", { class: "compile-status" });
@@ -498,7 +643,7 @@ function renderLesson(lesson) {
       compileBtn.addEventListener("click", async () => {
         if (!task) return;
         compileStatus.innerHTML = "";
-        const src = editor.value;
+        const src = readSrc();
         const validation = task.validate(src);
         if (!validation.ok) {
           for (const err of validation.errors)
@@ -549,6 +694,13 @@ function renderLesson(lesson) {
         const result = currentKernel.callFunctionSeh(loaded.entry, [loaded.drvRec.va, regPathBuf],
           loaded.image);
 
+        // A breakpoint hit pauses the burst (both engines); a unicorn int3
+        // surfaces as a fault — notifyBreak adopts it only when it is ours.
+        if ((result.status === "breakpoint" || result.status === "fault") &&
+            currentDebugger?.notifyBreak?.(result)) {
+          status("warn", "Execution paused on a breakpoint — continue in the debugger console (t/p/g/gu).");
+          return;
+        }
         if (result.status !== "ok") {
           status("err", `✗ Driver faulted: ${result.error?.message ?? result.status}`);
           for (const ex of currentKernel.exceptionTrace.splice(0)) {
@@ -592,7 +744,7 @@ function renderLesson(lesson) {
           currentDebugger.write(`Run !process 0 0 to verify kftarget.exe is hidden; lm shows your driver.`);
         }
       });
-      card.append(editor, h("div", { class: "controls" }, compileBtn), compileStatus);
+      card.append(editorHost, h("div", { class: "controls" }, compileBtn), compileStatus);
     }
 
     card.append(h("div", { class: "controls" }, backendSel, bootBtn));

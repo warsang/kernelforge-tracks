@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@kernelforge/course-content": "*",
+    "@kernelforge/debugger-ui": "*",
     "@kernelforge/ghidra-decompiler": "*",
     "@kernelforge/lab-runtime": "*",
     "@kernelforge/ntsim": "*",
@@ -21,7 +22,8 @@
     "@xterm/xterm": "^6.0.0",
     "capstone-wasm": "^1.0.3",
     "idb-keyval": "^6.2.1",
-    "marked": "^15.0.12"
+    "marked": "^15.0.12",
+    "@kernelforge/ntsim-unicorn": "*"
   },
   "devDependencies": {
     "happy-dom": "^20.11.6",

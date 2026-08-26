@@ -16,22 +16,49 @@ Status: approved 2026-08. Supersedes the roadmap stub previously only in README.
 Module 1 — Windows Kernel Fundamentals & Manual Mapping (`boot-default`,
 `dkom-hide`, `manual-map` scenarios; windbg/compiler/ntsim labs).
 
-## Module 2 — IRQL & Deferred Procedures (scenario `irql-dpc`)
+## Module 2 — IRQL & Deferred Procedures (scenarios `irql-dpc`, `irql-attackers`, `irql-hardened`)
 
 Infra (ntsim):
 - Real IRQL model on `NtKernel`: raise/lower validation (raise below current or
-  lower above current => modeled bugcheck 0xA), level-name table.
+  lower above current => modeled bugcheck 0xA), level-name table, per-core
+  side-state (`cpuIrqls`, core 0 aliases `currentIrql`).
 - Per-kernel DPC queue: `KeInitializeDpc`/`KeInsertQueueDpc` (deduped),
-  `KeRemoveQueueDpc`, `drainDpcs()` with scenario-registered callbacks.
+  `KeRemoveQueueDpc`, `drainDpcs()` (retire + scenario hook) and
+  `retireQueuedDpcs()`/`advanceTicks()` (retire + CPU execution).
+- KTIMER model (`setTimer`/`cancelTimer`, periodic re-arm), fired by the
+  `!dpcpump [n]` lab clock; timers never fire while the executing core is
+  above DISPATCH_LEVEL.
+- Directed DPCs: `KeSetTargetProcessorDpc` records a target core; insertion
+  raises that core to DISPATCH; `KfReleaseDirectedDpcs` unpins.
+- Control registers: `KfReadCr0/KfWriteCr0/KfCli/KfSti` thunks behind wdm.h
+  intrinsic shims; `hvciMode` intercepts WP-clearing writes with bugcheck
+  0x109; `protectRange`/`scanProtectedRanges` power `!pgscan`.
+- DPC watchdog analog: `checkDpcWatchdog()` raises 0x133 when any secondary
+  core sits at/above DISPATCH or the executing core sits above it.
 
-Debugger: `!irql [<n>]` (inspect / lab-extension force), `!dpcs`, `!dpcdrain`
-(refuses above DISPATCH_LEVEL like the real scheduler would).
+Debugger: `!irql [<n>|-a]` (inspect / all cores / lab-extension force),
+`!dpcs`, `!dpcdrain` (refuses above DISPATCH_LEVEL, executes routines),
+`!dpcpump [n]`, `!dpcstat`, `!dpcwatchdog`, `!pgscan`.
 
-Lab flow: boot world where `kfdpc.sys` left the CPU at CRITICAL_LEVEL with a
-queued-not-drained DPC; student reads IRQL, records DeferredRoutine address,
-lowers to DISPATCH and drains to release the secret.
+Lab flow (m2.l1/m2.l2): boot world where `kfdpc.sys` left the CPU at
+POWER_LEVEL with a queued-not-drained DPC; student reads IRQL, records
+DeferredRoutine address, lowers to DISPATCH and drains to release the secret;
+then compiles the v2 watchdog to do the same from ring 0.
 
-Answers: stuck IRQL (decimal), DeferredRoutine VA (0x…), drain secret string.
+Attack workshop (m2.l3, world `irql-attackers`; anchors in scenarios.js
+`KFWARZ_*`): four compiled attack drivers — WPOFFx64 canary patch inside a
+raised window (flags: window IRQL, restored CR0), directed-DPC lockdown
+(flags: pinned-core count, 0x133), timer-DPC persistence (flags: payload runs
+after `!dpcpump 13`, payload IRQL), DeferredRoutine hijack (flags: victim DPC
+VA, payoff secret `kf-hijack-seen`). Fixtures:
+`packages/compiler-worker/test/fixtures/kf{wpoff,lockdown,timerdpc,hijack}.obj`
+compiled from the exact starter text by `scripts/gen-m2-fixtures.mjs`.
+
+Defense workshop (m2.l4): telemetry sensor on the pinned world (queue depth +
+secret), self-watchdog deadline alarm under lockdown (`missed` +
+`kf-deadline-ok`), baseline forensics sweep via the new commands (timer
+period, boot queue depth), and the HVCI ceiling where the same WPOFFx64
+source dies with 0x109.
 
 ## Module 3 — Inline Hooks & Control Flow (scenario `api-hook`)
 
@@ -179,7 +206,8 @@ the driver-mode C that produces the same information from inside the kernel.
   committed COFF fixtures compiled from the exact same text
   (packages/compiler-worker/test/fixtures/kfsentinel_v*.obj); verification
   matches the sensor's own DbgPrint telemetry (main.js COMPILE_TASKS).
-- Progression chain extended linearly: ...m1.l4 -> m2.l1 -> m2.l2 -> m3.l1 ->
+- Progression chain extended linearly: ...m1.l4 -> m2.l1 -> m2.l2 -> m2.l3 ->
+  m2.l4 -> m3.l1 ->
   m3.l2 -> m4.l1 -> m4.l2 -> m5.l1...
 
 **Fidelity fixes surfaced by compiled sensor code:**

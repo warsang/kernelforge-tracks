@@ -113,6 +113,26 @@ VOID KeRaiseIrql(KIRQL NewIrql, PKIRQL OldIrql);
 KIRQL KeRaiseIrqlToDpcLevel(void);
 VOID KeLowerIrql(KIRQL NewIrql);
 
+/*
+ * --- control registers / interrupt flag (modeled thunks) --------------------
+ * The compiler would emit raw MOV CRx / CLI / STI for these intrinsics, which
+ * ntsim's JS interpreter does not decode. The macros below redirect them to
+ * modeled thunk exports instead, so attacker-lab code (WPOFFx64-style WP
+ * flips) runs identically on the js and unicorn backends and leaves a trace
+ * the defender labs can sample. See lesson m2.l3.
+ */
+unsigned long long KfReadCr0(void);
+VOID KfWriteCr0(unsigned long long Value);
+VOID KfCli(void);
+VOID KfSti(void);
+ULONG KeQueryPerCpuIrql(ULONG ProcessorNumber); /* lab extension */
+ULONG KeQueryDpcQueueDepth(void);               /* lab extension */
+
+#define __readcr0()   KfReadCr0()
+#define __writecr0(v) KfWriteCr0((unsigned long long)(v))
+#define _disable()    KfCli()
+#define _enable()     KfSti()
+
 /* --- spinlocks -------------------------------------------------------------- */
 
 typedef unsigned long long KSPIN_LOCK, *PKSPIN_LOCK;
@@ -124,16 +144,22 @@ VOID KeReleaseSpinLock(PKSPIN_LOCK SpinLock, KIRQL NewIrql);
 
 /* --- DPC / timer ------------------------------------------------------------ */
 
-typedef VOID (*PKDEFERRED_ROUTINE)(
-    void *Dpc, void *DeferredContext, void *SystemArgument1, void *SystemArgument2);
+typedef struct _KDPC KDPC, *PKDPC;   /* forward: full layout below */
 
+typedef VOID (*PKDEFERRED_ROUTINE)(
+    PKDPC Dpc, void *DeferredContext, void *SystemArgument1, void *SystemArgument2);
+
+/*
+ * Teaching KDPC layout — matches ntsim's runtime exactly (routine @ +0x08,
+ * context @ +0x10) so patches through the struct are visible at drain time.
+ * The REAL x64 _KDPC embeds a 16-byte LIST_ENTRY before DeferredRoutine
+ * (routine @ +0x18); labs read addresses out of the debugger, so the model
+ * keeps the simpler layout (same precedent as KeInitializeApc).
+ */
 typedef struct _KDPC {
-    SHORT Type;
-    UCHAR Number;
-    UCHAR Importance;
-    struct _KDPC *DpcListEntry;
-    PKDEFERRED_ROUTINE DeferredRoutine;
-    void *DeferredContext;
+    unsigned long long Marker;              /* 'DPCk' set by KeInitializeDpc */
+    PKDEFERRED_ROUTINE DeferredRoutine;     /* +0x08 */
+    void *DeferredContext;                  /* +0x10 */
     void *SystemArgument1;
     void *SystemArgument2;
     void *DpcData;
@@ -150,9 +176,15 @@ typedef struct _KTIMER {
 VOID KeInitializeDpc(PKDPC Dpc, PKDEFERRED_ROUTINE DeferredRoutine, void *DeferredContext);
 BOOLEAN KeInsertQueueDpc(PKDPC Dpc, void *SA1, void *SA2);
 BOOLEAN KeRemoveQueueDpc(PKDPC Dpc);
+VOID KeSetTargetProcessorDpc(PKDPC Dpc, CHAR Number); /* directed-DPC labs */
+
 VOID KeInitializeTimer(PKTIMER Timer);
 BOOLEAN KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc);
+BOOLEAN KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, ULONG Period, PKDPC Dpc);
 BOOLEAN KeCancelTimer(PKTIMER Timer);
+VOID KeQueryTickCount(PLARGE_INTEGER TickCount); /* lab clock */
+/* lab extension: release every directed spin-DPC and unpin its target core */
+ULONG KfReleaseDirectedDpcs(void);
 
 /* --- processes / threads ----------------------------------------------------- */
 
@@ -190,7 +222,7 @@ LONG PsSetCreateProcessNotifyRoutineRoutine_placeholder; /* removed below */
 
 unsigned long long DbgPrint(const char *Format, ...);
 VOID DbgBreakPoint(void);
-void KeStallProcessor(unsigned long long MicroSeconds); /* ntsim: busy-wait */
+void KeStallExecutionProcessor(unsigned long long MicroSeconds); /* ntsim: busy-wait */
 LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER *Frequency);
 
 /* --- object manager surface (used by AC labs) --------------------------------- */
