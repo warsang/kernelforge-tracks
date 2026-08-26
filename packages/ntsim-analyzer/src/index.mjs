@@ -92,7 +92,37 @@ function rekeySecurityCookie(kernel, mapped) {
  *   makeBackend    async (mem)=>CpuBackend factory override (browser unicorn path)
  * @returns {Promise<object>} report
  */
+/**
+ * Run a driver, automatically rescuing pure-JS runs that hit instructions the
+ * interpreter refuses (SSE, etc.) by retrying once on the hybrid backend —
+ * speakeasy-style "it just works" behavior. Disable with
+ * opts.autoHybridFallback = false.
+ */
 export async function analyzeDriver(imageBytes, opts = {}) {
+  const r = await analyzeDriverOnce(imageBytes, opts);
+  if (opts.autoHybridFallback === false) return r;
+  if (opts.makeBackend || opts.cpu) return r; // caller chose a backend explicitly
+  if (opts.backend && opts.backend !== "js") return r;
+  const err = `${r.entry?.error ?? ""} ${r.bugcheck ?? ""}`;
+  if (!/unimplemented|unsupported|0f opcode/i.test(err)) return r;
+  try {
+    const { HybridCpuBackend } = await import("@kernelforge/ntsim-unicorn/src/hybrid.mjs");
+    const retried = await analyzeDriverOnce(imageBytes, {
+      ...opts,
+      backendName: "hybrid",
+      makeBackend: async () => HybridCpuBackend.create(null),
+    });
+    if (retried.entry?.status === "ok" || !/unimplemented/i.test(retried.entry?.error ?? "")) {
+      retried.meta.fallbackFrom = "js";
+      return retried;
+    }
+  } catch {
+    /* unicorn unavailable in this environment — keep the JS report */
+  }
+  return r;
+}
+
+async function analyzeDriverOnce(imageBytes, opts = {}) {
   // One address space for guest + kernel model + CPU: adopt whatever backend
   // we get (or NtKernel's default JsInterpreter) and reuse its SparseMemory.
   let cpu;
