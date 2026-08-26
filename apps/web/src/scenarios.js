@@ -687,7 +687,7 @@ scenarios["irql-dpc"] = {
  *
  * Deterministic layout (catalog.mjs header tracks these anchors):
  *   KFWARZ_BASE      0xfffff8055a700000   kvmdrv.sys image base
- *   VICTIM_DPC       base + 0x1000        KDPC struct ('DPCk' @+0, routine @+8)
+ *   VICTIM_DPC       base + 0x1000        KDPC struct ('DPCk' @+0, routine @+0x18)
  *   VICTIM_ROUTINE   base + 0x1400        heartbeat DeferredRoutine
  *   TIMER_STRUCT     base + 0x1800        KTIMER for the periodic heartbeat
  *   CANARY_PAGE      base + 0x2000        protected-range canary (64 bytes)
@@ -703,8 +703,9 @@ function setupIrqlWarzone(kernel, { hvci = false } = {}) {
   kernel.currentIrql = 2;
 
   // victim module with a queued heartbeat DPC
+  // (real x64 _KDPC: 'DPCk' marker @+0, DeferredRoutine @+0x18)
   kernel.mem.writeAnsi(KFWARZ_VICTIM_DPC, "DPCk");
-  kernel.mem.w64(KFWARZ_VICTIM_DPC + 8n, KFWARZ_VICTIM_ROUTINE);
+  kernel.mem.w64(KFWARZ_VICTIM_DPC + 0x18n, KFWARZ_VICTIM_ROUTINE);
   // real body for the heartbeat routine (mov eax,0x100; ret) so timer fires
   // and drains execute cleanly instead of hitting CC filler
   kernel.mem.write(KFWARZ_VICTIM_ROUTINE, new Uint8Array([0xb8, 0x00, 0x01, 0x00, 0x00, 0xc3]));

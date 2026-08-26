@@ -256,7 +256,7 @@ NTSTATUS DriverEntry(
 // Module 2 attack/defense workshops (m2.l3 / m2.l4). World anchors are the
 // KFWARZ_* constants exported from apps/web/src/scenarios.js:
 //   kvmdrv.sys base   0xfffff8055a700000
-//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+8)
+//   victim KDPC       0xfffff8055a701000   ('DPCk' @+0, routine @+0x18)
 //   canary page       0xfffff8055a702000   (protected range, 64 bytes)
 // ---------------------------------------------------------------------------
 

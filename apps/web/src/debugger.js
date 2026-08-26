@@ -1794,7 +1794,12 @@ export function createCommands(kernel) {
       w("DPC queue (per-CPU, drained at <= DISPATCH_LEVEL)", "hdr");
       w("  DPC               DeferredRoutine     Target  Status", "hdr");
       for (const d of q) {
-        const target = d.routine ? `${fmtAddr(d.routine)}${sym(d.routine) ? ` (${sym(d.routine)})` : ""}` : "NULL";
+        // LIVE read of KDPC.DeferredRoutine (+0x18) every invocation, resolved
+        // against the current lm table — a patched slot shows the patch, not
+        // the insert-time snapshot (issue #16)
+        const live = kernel.liveDpcRoutine(d) ?? 0n;
+        const drift = live !== d.routine ? "  (patched)" : "";
+        const target = live ? `${fmtAddr(live)}${sym(live) ? ` (${sym(live)})` : ""}${drift}` : "NULL";
         const cpu = (d.targetCpu ?? 0) > 0 ? `cpu${d.targetCpu}` : "  -  ";
         w(`  ${fmtAddr(d.dpcVa)}  ${target}  ${cpu}   ${d.drained ? "drained" : "QUEUED"}`,
           d.drained ? "dim" : "");

@@ -192,3 +192,42 @@ test("decorative separator lines are skipped by the console dispatcher", async (
   await dbg.exec("!cr3"); // console still functional afterwards
   assert.match(out.join("\n"), /kd> !cr3|no paging world/);
 });
+
+// ---------------------------------------------------------------- #16
+
+test("!dpcs shows the LIVE DeferredRoutine after an in-place patch", async () => {
+  const k = await plainKernel();
+  const dpcVa = 0xfffff8055a701000n;
+  const origRoutine = 0xfffff8055a701400n;
+  k.mem.writeAnsi(dpcVa, "DPCk");
+  k.mem.w64(dpcVa + 0x18n, origRoutine); // real x64 offset
+  kernel_queueDpc(k, dpcVa, origRoutine);
+  const patched = 0xfffff8055a702000n;
+  k.mem.w64(dpcVa + 0x18n, patched);
+
+  const c = capture(k);
+  c.exec("!dpcs");
+  const out = c.lines.join("\n");
+  assert.match(out, new RegExp(patched.toString(16)), "live pointer shown");
+  assert.doesNotMatch(out, new RegExp(origRoutine.toString(16).slice(8)), "snapshot hidden");
+  assert.match(out, /\(patched\)/);
+});
+
+function kernel_queueDpc(k, va, routine) {
+  k.queueDpc(va, routine, 0n);
+}
+
+test("KDPC layout is real x64: KeInitializeDpc writes routine @+0x18", async () => {
+  const k = await plainKernel();
+  const dpc = k.allocPool(64);
+  k.apiImpls.get("KeInitializeDpc")(dpc, 0x60000100n, 0x60000200n);
+  assert.equal(k.mem.u64(dpc), 0x4b444350n);              // 'DPCk' header marker
+  assert.equal(k.mem.u64(dpc + 0x18n), 0x60000100n);      // DeferredRoutine
+  assert.equal(k.mem.u64(dpc + 0x20n), 0x60000200n);      // DeferredContext
+
+  // live readers agree with the memory image
+  k.queueDpc(dpc, 0x60000100n, 0x60000200n);
+  assert.equal(k.liveDpcRoutine({ dpcVa: dpc, routine: 0x60000100n }), 0x60000100n);
+  k.mem.w64(dpc + 0x18n, 0x60000300n);
+  assert.equal(k.liveDpcRoutine({ dpcVa: dpc, routine: 0x60000100n }), 0x60000300n);
+});

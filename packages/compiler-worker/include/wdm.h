@@ -206,17 +206,16 @@ typedef VOID (*PKDEFERRED_ROUTINE)(
     PKDPC Dpc, void *DeferredContext, void *SystemArgument1, void *SystemArgument2);
 
 /*
- * Teaching KDPC layout — matches ntsim's runtime exactly (routine @ +0x08,
- * context @ +0x10) so patches through the struct are visible at drain time.
- * The REAL x64 _KDPC embeds a 16-byte LIST_ENTRY before DeferredRoutine
- * (routine @ +0x18); labs read addresses out of the debugger, so the model
- * keeps the simpler layout (same precedent as KeInitializeApc).
+ * Real x64 _KDPC layout — matches ntsim's runtime exactly (routine @ +0x18,
+ * context @ +0x20) so patches through the struct are visible at drain time
+ * and hand-computed offsets from the Vergilius tables line up (issue #16).
  */
 typedef struct _KDPC {
-    unsigned long long Marker;              /* 'DPCk' set by KeInitializeDpc */
-    PKDEFERRED_ROUTINE DeferredRoutine;     /* +0x08 */
-    void *DeferredContext;                  /* +0x10 */
-    void *SystemArgument1;
+    unsigned long long Header;              /* +0x00 type/importance bits; 'DPCk' marker set by KeInitializeDpc */
+    LIST_ENTRY DpcListEntry;                /* +0x08 */
+    PKDEFERRED_ROUTINE DeferredRoutine;     /* +0x18 */
+    void *DeferredContext;                  /* +0x20 */
+    void *SystemArgument1;                  /* +0x28 */
     void *SystemArgument2;
     void *DpcData;
 } KDPC, *PKDPC;
