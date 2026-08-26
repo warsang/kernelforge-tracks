@@ -185,6 +185,8 @@ const F = {
   m23l1f3: "86edefad6b6e2d7df966ecd7a6b3e3770f155745ac13d99bca4dc99c794d524c", // PPL-off secret
   m23l1f4: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // Cid-0004 count after spoof
   m23l1f5: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // identity cross-ref
+  m23l1f6: "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b", // SMEP initially enabled (lowercase "1")
+  m23l1f7: "b6a86a7d5f35d176d075dee22593c8df167cd6dfdb0a16dee1b4c65811495bf6", // ret2usr payload output (lowercase)
 
   // --- m19 reversing the sensor (kfwatch grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -2136,6 +2138,32 @@ export const module23 = {
                 "kftarget's true identity? Submit the field name (one word, " +
                 "lowercase).",
               points: 150,
+            },
+          ],
+        },
+        {
+          id: "m23.l1.lab3",
+          kind: "windbg",
+          title: "Toggle SMEP and execute user-mode shellcode",
+          brief:
+            "CR4.SMEP prevents kernel-mode fetches from user pages. Query it " +
+            "with !smep, clear it, and execute the ret2usr payload at 0x10000.",
+          scenario: "dkom-smep",
+          flags: [
+            {
+              id: "m23.l1.f6",
+              sha256: F.m23l1f6,
+              prompt:
+                "What is CR4.SMEP (bit 20) in the dkom-smep world? Submit 0 or 1.",
+              points: 50,
+            },
+            {
+              id: "m23.l1.f7",
+              sha256: F.m23l1f7,
+              prompt:
+                "After clearing SMEP and executing the payload at 0x10000, " +
+                "what does !dbgprint show? Submit the first line.",
+              points: 200,
             },
           ],
         },

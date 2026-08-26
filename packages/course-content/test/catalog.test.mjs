@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-three modules / thirty-four lessons / ninety-eight flags", () => {
+test("catalog v5 has twenty-three modules / thirty-four lessons / one hundred flags", () => {
   assert.equal(catalog.version, 5);
   assert.equal(catalog.modules.length, 23);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   assert.equal(lessons.length, 34);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 98);
+  assert.equal(flags.length, 100);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -148,6 +148,8 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m23.l1.f3": "kf-ppl-off",
     "m23.l1.f4": "2",
     "m23.l1.f5": "apcstate",
+    "m23.l1.f6": "1",
+    "m23.l1.f7": "SMEP: ret2usr payload executed",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

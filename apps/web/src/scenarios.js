@@ -1027,6 +1027,37 @@ scenarios["dkom-pid"] = {
   },
 };
 
+scenarios["dkom-smep"] = {
+  title: "dkom-smep — SMEP toggle and ret2usr",
+  description:
+    "Paging world with SMEP enabled (CR4 bit 20). A user-mode page contains " +
+    "a shellcode payload. With SMEP on, fetching from it faults. Clear SMEP " +
+    "with !smep 0, execute the payload, collect the secret.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    // Enable SMEP in CR4
+    if (kernel.mmu) {
+      kernel.mmu.cr4 |= 0x100000n; // bit 20
+    }
+    // Seed a user-mode page with shellcode that prints a secret
+    const userPage = 0x10000n; // user-mode VA
+    kernel.mem.write(userPage, new Uint8Array([
+      0x48, 0x8d, 0x0d, 0x10, 0x00, 0x00, 0x00, // lea rcx, [rip+0x10]
+      0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // movabs rax, DbgPrint
+      0xff, 0xd0, // call rax
+      0xc3, // ret
+      // string: "SMEP: ret2usr payload executed\n"
+      0x53, 0x4d, 0x45, 0x50, 0x3a, 0x20, 0x72, 0x65,
+      0x74, 0x32, 0x75, 0x73, 0x72, 0x20, 0x70, 0x61,
+      0x79, 0x6c, 0x6f, 0x61, 0x64, 0x20, 0x65, 0x78,
+      0x65, 0x63, 0x75, 0x74, 0x65, 0x64, 0x0a, 0x00,
+    ]));
+    session.kind = "dkom-smep";
+    return session;
+  },
+};
+
 /**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
