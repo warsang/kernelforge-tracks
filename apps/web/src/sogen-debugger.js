@@ -34,7 +34,10 @@ export function createSogenDebugger(session, out) {
       return;
     }
     if (result) write(result);
+    // graphical shell panels re-read world state after every command
+    adapter.onAfterExec?.();
   };
 
-  return { exec, write };
+  const adapter = { exec, write, onAfterExec: null };
+  return adapter;
 }
