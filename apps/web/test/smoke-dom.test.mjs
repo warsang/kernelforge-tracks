@@ -83,6 +83,30 @@ test("app boots: shell renders, lesson opens, lab card present", async () => {
       assert.doesNotMatch(p.textContent, /FLAG\{/, "prompt still uses FLAG{} syntax");
     }
 
+    // glossary tooltips: lesson prose is annotated with hoverable terms
+    const termEls = [...doc.querySelectorAll(".lesson-body [data-term-key]")];
+    assert.ok(termEls.length >= 6, `expected >=6 annotated terms in m1.l1, got ${termEls.length}`);
+    assert.ok(
+      termEls.some((t) => t.getAttribute("data-term-key") === "hal"),
+      "HAL should be annotated as a glossary term",
+    );
+    // debugger listings must stay untouched
+    assert.equal(
+      doc.querySelector("pre [data-term-key]"), null,
+      "no glossary markers inside code listings",
+    );
+    // popover opens on hover with the entry's expansion text...
+    const halEl = termEls.find((t) => t.getAttribute("data-term-key") === "hal");
+    doc.dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    halEl.dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    let pop = doc.body.querySelector(".term-popover.open");
+    assert.ok(pop, "popover did not open on hover");
+    assert.ok(pop.textContent.includes("Hardware Abstraction Layer"), "popover missing HAL expansion");
+    // ...and closes again when the pointer leaves
+    halEl.dispatchEvent(new window.MouseEvent("mouseout", { bubbles: true, relatedTarget: doc.body }));
+    pop = doc.body.querySelector(".term-popover.open");
+    assert.ok(!pop || !pop.classList.contains("open"), "popover stayed open after mouseout");
+
     // Boot on BOTH backends; console must report success, never 'boot failed'
     for (const backend of ["js", "unicorn"]) {
       const sel = doc.querySelector("select");

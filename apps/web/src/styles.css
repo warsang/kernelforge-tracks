@@ -128,3 +128,31 @@ input.cmd { width: 100%; font-family: var(--mono); margin-top: 6px; }
   margin: 8px 0; padding: 4px 14px; border-left: 3px solid var(--accent);
   color: var(--dim);
 }
+
+/* glossary term markers + hover popover */
+.term {
+  border-bottom: 1px dotted var(--accent);
+  cursor: help;
+}
+span.term { border-radius: 2px; }
+.term:hover, .term:focus {
+  background: var(--panel2);
+  outline: none;
+  border-bottom-style: solid;
+}
+code.term { cursor: help; }
+.term-popover {
+  position: fixed; z-index: 1000; display: none;
+  max-width: 360px; padding: 10px 12px; margin: 0;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 13px; line-height: 1.5;
+}
+.term-popover.open { display: block; }
+.term-popover-name {
+  font-family: var(--mono); font-size: 12.5px; font-weight: 700;
+  color: var(--accent); margin-bottom: 2px;
+}
+.term-popover-full { font-style: italic; color: var(--dim); margin-bottom: 4px; }
+.term-popover-def { margin: 0; }

@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v2 has four modules / six lessons / twelve flags", () => {
+test("catalog v2 has five modules / seven lessons / fifteen flags", () => {
   assert.equal(catalog.version, 2);
-  assert.equal(catalog.modules.length, 4);
+  assert.equal(catalog.modules.length, 5);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 6);
+  assert.equal(lessons.length, 7);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 12);
+  assert.equal(flags.length, 15);
 });
 
 test("lesson chain is linear m1.l1 -> m4.l1", () => {
@@ -47,6 +47,12 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m3.l1.f3": "STATUS_SUCCESS",
     "m4.l1.f1": "0xfffff90000001200",
     "m4.l1.f2": "kf-pool-guard-ok",
+    // anti-trace world: TraceVeh @ kftrace base +0x1400; one traced selftest
+    // swallows exactly 4 int1 events (A:1, B:1, C: stall-expiry + nop = 2);
+    // secret prints only after eb-clearing g_AntiTraceEnabled
+    "m5.l1.f1": "0xfffff8055a801400",
+    "m5.l1.f2": "4",
+    "m5.l1.f3": "kf-trace-bypass-ok",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

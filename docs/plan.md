@@ -69,9 +69,37 @@ guard with `eb`, verifies, and captures the checksum secret.
 
 Answers: corrupted block user VA (0x…), heal secret string.
 
+## Module 5 — Tracing & Anti-Tracing (scenario `anti-trace`)
+
+Infra (ntsim):
+- CPU: RFLAGS.TF (bit 8) modeled; `PUSHFQ`/`POPFQ` (0x9C/0x9D) compose and
+  reload the live flag image; `MOV SS` (0x8E /2) opens the Intel-documented
+  one-instruction debug-exception inhibit window; `run()` raises
+  `EXCEPTION_SINGLE_STEP` after an instruction executes with TF armed,
+  auto-clears TF, and routes to `onDebugException` (handled = continue,
+  unhandled = debugger-style stop, surfaced by `callFunction` as
+  `debug-stop`). grp1 `0x81` fixed to canonical sign-extended imm32.
+- Kernel: vectored-handler list (`registerVectoredHandler`),
+  `deliverDebugException()` with deterministic counters
+  (`int1Raised` / `vehHandled` / `swallowedByTracer`), attached-tracer
+  simulation that intercepts events BEFORE guest handlers.
+
+Debugger: `!traceinfo` (defenses map + counters), `!trace [on|off]`
+(attach/detach simulated tracer — arms/clears TF), `!selftest` (executes
+real guest sequences: variant A pushfq probe, variant B TF injection into
+kftrace!TraceVeh, mov-ss stalled injection with unmasked snapshot).
+`r` now prints the EFLAGS image including TF state.
+
+Lab flow: `kftrace.sys` guards a payload secret. Student maps the defenses
+(VEH address), validates every tripwire under the tracer (exactly 4 INT 1s
+swallowed before TraceVeh sees one), then eb-clears `g_AntiTraceEnabled`
+and reruns clean to release the secret.
+
+Answers: TraceVeh VA (0x…), swallowed-event count (decimal), bypass secret.
+
 ## Integration checklist
 
-- `catalog.version = 2`; lesson chain `m1.l3 -> m2.l1 -> m3.l1 -> m4.l1`.
+- `catalog.version = 2`; lesson chain `m1.l3 -> m2.l1 -> m3.l1 -> m4.l1 -> m5.l1`.
 - Lesson bodies ship as markdown-in-JS under `packages/course-content/src/lessons/`
   rendered client-side via `marked`.
 - e2e extended: every new lab boots headless and accepts its answers.

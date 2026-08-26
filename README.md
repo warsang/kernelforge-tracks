@@ -87,6 +87,13 @@ An upstream overflow smashed one of `kfpooler.sys`'s trailing pool guards.
 Locate the block (`!poolfind KfPb`), rewrite the guard with `eb`, verify
 (`!poolverify`), capture the checksum secret.
 
+**Module 5 — Tracing & Anti-Tracing** (`anti-trace`)
+`kftrace.sys` arms CPU trap-flag tripwires: passive TF reads
+(`pushfq`/`test 100h`), TF injection into a vectored handler, and the
+mov-ss stall. Map them (`!traceinfo`), attach a simulated tracer and watch
+it starve the driver's VEH (`!trace on`, `!selftest` — count swallowed
+INT 1s), then clear the gate byte with `eb` to release the secret.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 2: Sogen fork (Windows userland track, real ntdll) + Sauerbraten headless target

@@ -11,6 +11,7 @@ import { validateDriverSource, runDkomDriver } from "./driver-builder.mjs";
 import { loadTables } from "./tables.js";
 import { createDebugger } from "./debugger.js";
 import { createDebugConsole, disposeConsoles } from "./console.js";
+import { annotateTerms, attachTermPopovers } from "./terms.js";
 
 const app = document.getElementById("app");
 let progress = emptyProgress();
@@ -146,6 +147,7 @@ function renderLesson(lesson) {
   const body = h("div", { class: "lesson-body md" });
   if (typeof lesson.body === "string" && lesson.body.length) {
     body.innerHTML = marked.parse(lesson.body);
+    annotateTerms(body);
   } else {
     body.append(h("p", { class: "dim" }, "(no lesson text)"));
   }
@@ -298,6 +300,7 @@ function renderLesson(lesson) {
     }
 
     main.append(card);
+    annotateTerms(card);
   }
 }
 
@@ -306,4 +309,5 @@ function renderLesson(lesson) {
 (async function init() {
   try { progress = (await loadProgress()) ?? emptyProgress(); } catch { progress = emptyProgress(); }
   renderShell();
+  attachTermPopovers();
 })();

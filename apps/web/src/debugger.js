@@ -260,6 +260,9 @@ export function createCommands(kernel) {
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
       w("  !poolverify               sweep all allocation guards");
+      w("  !traceinfo                kftrace anti-trace state (anti-trace lab)");
+      w("  !trace [on|off]           attach/detach simulated single-step tracer");
+      w("  !selftest                 run kftrace CPU trap-flag tripwires");
       w("  r | db <a> [n] | dq <a> [n] | clear");
     },
     "!help"(args, w) { commands.help(args, w); },
@@ -575,6 +578,15 @@ export function createCommands(kernel) {
         const s = sym(v);
         w(`${k.padEnd(4)}=${fmtAddr(v)}${s ? `  ${s}` : ""}`);
       }
+      // RFLAGS image: TF (bit 8) is the single-stepping bit this course hunts
+      const cpu = kernel.cpu;
+      if (typeof cpu.composeFlags === "function") {
+        const efl = cpu.composeFlags();
+        w(`efl=${fmtAddr(efl)}  iopl=0 ${cpu.zf ? "zf " : "   "}${cpu.cf ? "cf " : "   "}` +
+          `${cpu.sf ? "sf " : "   "}${cpu.of ? "of" : "  "} ` +
+          `tf=${cpu.tf ? "1  <-- TRAP FLAG ARMED" : "0"}`,
+          cpu.tf ? "warn" : "dim");
+      }
       if (src) w(src, "dim");
     },
 
@@ -882,6 +894,173 @@ export function createCommands(kernel) {
           base: mm.payloadBase, sizeOfImage: 0x4000, name: "mmpayload.sys",
           full: "\\SystemRoot\\system32\\mmpayload.sys",
         });
+      }
+    },
+
+    // ------------------------------------------------------------- anti-trace
+
+    "!trace"(args, w) {
+      const t = kernel.tracer;
+      if (!t || !kernel.traceStats) {
+        return w("!trace: no tracing model booted (boot the anti-trace lab)", "err");
+      }
+      const mode = (args[0] ?? "").toLowerCase();
+      if (mode === "on") {
+        t.attached = true;
+        kernel.cpu.tf = true; // tracer single-steps: trap flag armed
+        kernel.dbgLog.push("nt: tracer attached — TF armed, INT1 interception ON");
+        w("tracer ATTACHED: RFLAGS.TF armed; EXCEPTION_SINGLE_STEP events are", "hdr");
+        w("intercepted BEFORE guest vectored handlers (Variant B starvation).");
+        return;
+      }
+      if (mode === "off") {
+        t.attached = false;
+        kernel.cpu.tf = false;
+        kernel.inhibitWindow = 0;
+        kernel.dbgLog.push("nt: tracer detached — TF cleared, guest handlers see INT1 again");
+        w("tracer DETACHED: TF cleared, debug exceptions flow to guest handlers");
+        return;
+      }
+      w(`tracer: ${t.attached ? "ATTACHED (TF armed)" : "detached"}   usage: !trace [on|off]`);
+    },
+
+    "!traceinfo"(args, w) {
+      const at = kernel.antiTrace;
+      if (!at) return w("!traceinfo: kftrace.sys not booted (boot the anti-trace lab)", "err");
+      const s = kernel.traceStats;
+      w("kftrace.sys anti-tracing state", "hdr");
+      w(`  module base      : ${fmtAddr(at.base)}`);
+      w(`  VEH handler      : ${fmtAddr(at.vehAddr)}  (kftrace!TraceVeh)` +
+        `${sym(at.vehAddr) ? "" : ""}`);
+      const gate = mem.u8(at.gateAddr);
+      w(`  g_AntiTraceEnabled @ ${fmtAddr(at.gateAddr)} = ${gate} ` +
+        `(${gate ? "ARMED — secret withheld" : "cleared"})`,
+        gate ? "warn" : "good");
+      w(`  tracer           : ${kernel.tracer?.attached ? "ATTACHED" : "detached"}`);
+      w(`  int1 raised      : ${s.int1Raised}`);
+      w(`  handled by VEH   : ${s.vehHandled}`);
+      w(`  swallowed by tracer: ${s.swallowedByTracer}`);
+      w(`  selftest runs    : ${at.runs}` +
+        (at.lastVerdict ? `  last verdict: ${at.lastVerdict}` : ""));
+      w("  checks           : A tf-read (pushfq/test 100h)", "dim");
+      w("                     B tf-inject (or [rsp],100h; popfq) -> TraceVeh", "dim");
+      w("                     C mov-ss stall before pushfq (unmasked tf)", "dim");
+      w("  try: !trace on / !selftest — then decide how to get past the gate", "dim");
+    },
+
+    "!selftest"(args, w) {
+      const at = kernel.antiTrace;
+      if (!at) return w("!selftest: kftrace.sys not booted (boot the anti-trace lab)", "err");
+      at.runs++;
+      const cpu = kernel.cpu;
+      const traced = !!kernel.tracer?.attached;
+
+      // Guest sequences use only interpreter-supported opcodes. Each returns
+      // rax=0 clean / nonzero detected; capturing stores raw efl to *out.
+      const SEQ_A = [ // variant A: read live TF
+        0x9c,                                     // pushfq
+        0x58,                                     // pop rax
+        0x48, 0x89, 0x01,                         // mov [rcx], rax
+        0x25, 0x00, 0x01, 0x00, 0x00,             // and eax, 100h
+        0x74, 0x06,                               // jz clean
+        0xb8, 0x01, 0x00, 0x00, 0x00,             // mov eax, 1  (detected)
+        0xc3,                                     // ret
+        0x31, 0xc0,                               // clean: xor eax, eax
+        0xc3,                                     // ret
+      ];
+      const SEQ_B = [ // variant B: inject TF, decoy nop takes the #DB
+        0x9c,                                     // pushfq
+        0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0x00, 0x00, // or qword [rsp], 100h
+        0x9d,                                     // popfq   (TF armed)
+        0x90,                                     // nop     <- INT1 boundary
+        0x31, 0xc0,                               // xor eax, eax
+        0xc3,                                     // ret
+      ];
+      const SEQ_C = [ // advanced: mov-ss stall snapshots tf, then injects
+        0x8e, 0xd1,                               // mov ss, cx   (window opens)
+        0x9c,                                     // pushfq       (protected)
+        0x58,                                     // pop rax
+        0x48, 0x89, 0x01,                         // mov [rcx], rax (mid-window efl)
+        0x9c,                                     // pushfq       (inject)
+        0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0x00, 0x00, // or qword [rsp], 100h
+        0x9d,                                     // popfq        (TF armed)
+        0x90,                                     // nop     <- INT1 boundary
+        0x31, 0xc0,                               // xor eax, eax
+        0xc3,                                     // ret
+      ];
+
+      mem.write(at.selftestCode, Uint8Array.from(SEQ_A));
+      mem.write(at.selftestCode + 0x100n, Uint8Array.from(SEQ_B));
+      mem.write(at.selftestCode + 0x200n, Uint8Array.from(SEQ_C));
+
+      // simulate an actively stepping tracer: arm TF for this pass
+      if (traced) cpu.tf = true;
+
+      const s = kernel.traceStats;
+      const int1Before = s.int1Raised, vehBefore = s.vehHandled, swBefore = s.swallowedByTracer;
+
+      w(`kftrace.sys self-test #${at.runs} (tracer: ${traced ? "ATTACHED" : "detached"})`, "hdr");
+
+      // -- check A: passive trap-flag read --------------------------------
+      mem.w64(at.selftestOut, 0n);
+      const ra = cpu.callFunction(at.selftestCode, [at.selftestOut]);
+      const eflA = mem.u64(at.selftestOut);
+      const aDetected = ra.status === "ok" && ra.retval === 1n;
+      w(`  [A] tf-read   pushfq/pop/test 100h -> ${aDetected ? "DETECTED" : "clean"}` +
+        `   (captured efl=0x${eflA.toString(16)})`,
+        aDetected ? "warn" : "");
+
+      // -- check B: TF injection into TraceVeh ----------------------------
+      const bInt1Before = s.int1Raised;
+      const rb = cpu.callFunction(at.selftestCode + 0x100n, []);
+      const bInt1 = s.int1Raised - bInt1Before;
+      w(`  [B] tf-inject or [rsp],100h;popfq;nop -> ${bInt1} int1, ` +
+        `${vehSink(bInt1, traced)}`, bInt1 ? "" : "dim");
+      void rb;
+
+      // -- check C: mov-ss stalled injection ------------------------------
+      mem.w64(at.selftestOut, 0n);
+      if (traced) cpu.tf = true; // tracer is stepping this check too
+      const cInt1Before = s.int1Raised;
+      const rc = cpu.callFunction(at.selftestCode + 0x200n, [at.selftestOut]);
+      const cInt1 = s.int1Raised - cInt1Before;
+      const eflC = mem.u64(at.selftestOut);
+      const stallBit = (eflC & 0x100n) !== 0n;
+      w(`  [C] movss-stall mov ss;pushfq;...;int1 x${cInt1}: ` +
+        `${vehSink(cInt1, traced)}; mid-window efl bit8=${stallBit ? "1 UNMASKED" : "0"}`,
+        stallBit ? "warn" : "");
+      void rc;
+
+      const int1 = s.int1Raised - int1Before;
+      const veh = s.vehHandled - vehBefore;
+      const sw = s.swallowedByTracer - swBefore;
+
+      let verdict = "INCONCLUSIVE";
+      if (aDetected && veh === 0) verdict = "TRACER DETECTED";
+      else if (!aDetected && veh === int1 && int1 > 0) verdict = "CLEAN";
+      at.lastVerdict = verdict;
+      w(`  totals: int1=${int1} veh=${veh} swallowed=${sw}`, "dim");
+      w(`  verdict: ${verdict}`, verdict === "CLEAN" ? "good" : "err");
+
+      if (verdict === "CLEAN") {
+        if (at.enabled()) {
+          w("  payload secret WITHHELD: g_AntiTraceEnabled is still armed", "dim");
+          w(`  hint: the operator who controls the gate controls kftrace (eb)`, "dim");
+        } else {
+          kernel.dbgLog.push("kftrace: anti-trace gate cleared — operator verified");
+          kernel.dbgLog.push("kftrace: secret=kf-trace-bypass-ok");
+          w("--- recent DbgPrint ---", "hdr");
+          for (const l of kernel.dbgLog.slice(-2)) w("  " + l);
+          w("(captured in the DbgPrint buffer — see !analyze -v)", "dim");
+        }
+      } else if (verdict === "TRACER DETECTED") {
+        w("  kftrace refuses to talk while your INT1 appetite gives you away.", "dim");
+        w("  hint: detach (!trace off) — and think about who owns the gate byte.", "dim");
+      }
+
+      function vehSink(n, isTraced) {
+        if (!n) return "none";
+        return isTraced ? "swallowed by tracer (TraceVeh starved)" : "handled by TraceVeh";
       }
     },
   };

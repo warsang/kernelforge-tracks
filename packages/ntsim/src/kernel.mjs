@@ -109,6 +109,16 @@ export class NtKernel {
     /** when true, double-free raises a modeled BAD_POOL_CALLER bugcheck */
     this.poolStrict = false;
 
+    // ------------------------------------------------------ tracing model
+    /** @type {Array<{name:string, fn:(info:{code:string,rip:bigint})=>boolean}>}
+     *  Modeled vectored exception handlers (KiVectoredHandler list). */
+    this.vectoredHandlers = [];
+    /** attached-tracer simulation: when on, #DB events are intercepted
+     *  before guest handlers ever see them (Variant B starvation). */
+    this.tracer = { attached: false };
+    /** deterministic counters backing !traceinfo and lab flags */
+    this.traceStats = { int1Raised: 0, vehHandled: 0, swallowedByTracer: 0 };
+
     /** @type {Map<string, bigint>} name -> EPROCESS va */
     this.processesByName = new Map();
 
@@ -137,6 +147,7 @@ export class NtKernel {
       { Start: "\u0003\u0000\u0000\u0000" });
 
     this._installCpuHook();
+    this._installDebugExceptionHook();
   }
 
   // ------------------------------------------------------------------ boot
@@ -320,6 +331,57 @@ export class NtKernel {
       try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
     }
     return fired;
+  }
+
+  // ------------------------------------------------------------ debug exc
+
+  /**
+   * Register a modeled vectored exception handler (VEH). Handlers run in
+   * registration order; return true from fn to claim the event.
+   * @param {string} name display name, e.g. "kftrace!TraceVeh"
+   * @param {(info: {code: string, rip: bigint}) => boolean} fn
+   */
+  registerVectoredHandler(name, fn) {
+    const entry = { name, fn };
+    this.vectoredHandlers.push(entry);
+    return entry;
+  }
+
+  /**
+   * Deliver a debug exception (#DB family, e.g. EXCEPTION_SINGLE_STEP):
+   * an attached tracer intercepts FIRST — the guest VEH list is starved,
+   * which is precisely how Variant B anti-tracing detects analysis — and
+   * only otherwise do registered vectored handlers get the event.
+   * @returns {boolean} true if handled (execution continues seamlessly)
+   */
+  deliverDebugException(info = {}) {
+    const ev = {
+      code: String(info.code ?? "EXCEPTION_SINGLE_STEP"),
+      rip: BigInt(info.rip ?? this.cpu.rip ?? 0n),
+    };
+    this.traceStats.int1Raised++;
+    if (this.tracer?.attached) {
+      this.traceStats.swallowedByTracer++;
+      this.dbgLog.push(
+        `nt: ${ev.code} @ 0x${ev.rip.toString(16)} intercepted by attached tracer`);
+      return true;
+    }
+    for (const h of this.vectoredHandlers) {
+      let handled = false;
+      try { handled = h.fn(ev) === true; } catch (e) {
+        this.dbgLog.push(`[veh] ${h.name} threw: ${e.message}`);
+      }
+      if (handled) {
+        this.traceStats.vehHandled++;
+        return true;
+      }
+    }
+    this.dbgLog.push(`nt: unhandled ${ev.code} @ 0x${ev.rip.toString(16)}`);
+    return false;
+  }
+
+  _installDebugExceptionHook() {
+    this.cpu.onDebugException = (info) => this.deliverDebugException(info);
   }
 
   // ------------------------------------------------------------ API surface

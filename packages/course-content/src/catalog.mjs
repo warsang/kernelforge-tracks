@@ -11,6 +11,9 @@
  *     ActiveProcessLinks +0x448 => answer 0xffffc80000001448   (m1.l2.f1)
  *   - irql-dpc world: DeferredRoutine at 0xfffff8055a401400    (m2.l1.f2)
  *   - pool-corrupt world: second KfPb block at 0xfffff90000001200 (m4.l1.f1)
+ *   - anti-trace world: kftrace!TraceVeh at 0xfffff8055a800000+0x1400
+ *     => answer 0xfffff8055a801400; traced !selftest swallows exactly 4
+ *     EXCEPTION_SINGLE_STEP events before TraceVeh sees one    (m5.l1.f1/f2)
  */
 import m1l1Body from "./lessons/m1-l1.mjs";
 import m1l2Body from "./lessons/m1-l2.mjs";
@@ -18,6 +21,7 @@ import m1l3Body from "./lessons/m1-l3.mjs";
 import m2l1Body from "./lessons/m2-l1.mjs";
 import m3l1Body from "./lessons/m3-l1.mjs";
 import m4l1Body from "./lessons/m4-l1.mjs";
+import m5l1Body from "./lessons/m5-l1.mjs";
 
 const F = {
   m1l1f1: "5c5ff15e068d0e09659a861ee1c8894f5ab3fb9d239f176d715e3b2a526eb670",
@@ -34,6 +38,11 @@ const F = {
   m3l1f3: "c55edb2e0282de46e56e00d9708090d56690bda1bf2fb2daa061067ba19f60dc",
   m4l1f1: "50bac58f006cecfdbf8bc09893ee32e2bc3eaae6d5b92a6799645cc1463bf031",
   m4l1f2: "e00133bdd1fb36765d3379852981a2b2c7163f1a0cd1b826f82b516d6080d0d0",
+  // anti-trace: VEH address, swallowed-int1 count of one traced selftest,
+  // bypass secret released once g_AntiTraceEnabled is eb'd to 0
+  m5l1f1: "7e42f0651ea88cf8aef7cfcc06130640bd22f4510142ec56ec163cbbaf1f0896",
+  m5l1f2: "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+  m5l1f3: "9c852c785adf33aa647e451ae74e177c62eb37c4637b1a97949a7aa06ae059e7",
 };
 
 export const module1 = {
@@ -299,7 +308,67 @@ export const module4 = {
   ],
 };
 
+export const module5 = {
+  id: "m5",
+  title: "Tracing & Anti-Tracing",
+  track: "windows-kernel",
+  summary:
+    "The trap flag as both scalpel and tripwire: hardware single-stepping, " +
+    "pushfq/popfq detection, TF injection into vectored handlers, and the " +
+    "mov-ss stall that keeps snapshots honest.",
+  lessons: [
+    {
+      id: "m5.l1",
+      title: "Tracing & anti-tracing",
+      body: m5l1Body,
+      requires: ["m4.l1"],
+      labs: [
+        {
+          id: "m5.l1.lab1",
+          kind: "windbg",
+          title: "Walk the trap-flag gauntlet",
+          brief:
+            "kftrace.sys guards a payload secret behind CPU-level tripwires. " +
+            "Map them, validate every check under a simulated tracer, then " +
+            "neutralize the gate and take the secret.",
+          scenario: "anti-trace",
+          flags: [
+            {
+              id: "m5.l1.f1",
+              sha256: F.m5l1f1,
+              prompt:
+                "!traceinfo shows kftrace's registered vectored exception " +
+                "handler (kftrace!TraceVeh). Submit its address as full " +
+                "16-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m5.l1.f2",
+              sha256: F.m5l1f2,
+              prompt:
+                "Attach the simulated tracer (!trace on) and run !selftest " +
+                "exactly once. Every EXCEPTION_SINGLE_STEP the driver raises " +
+                "is intercepted before TraceVeh sees one. Submit how many " +
+                "events were swallowed by the tracer (decimal number).",
+              points: 150,
+            },
+            {
+              id: "m5.l1.f3",
+              sha256: F.m5l1f3,
+              prompt:
+                "Detach (!trace off), clear g_AntiTraceEnabled with eb at the " +
+                "address from !traceinfo, rerun !selftest until the verdict " +
+                "is CLEAN and the secret DbgPrints. Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 2,
-  modules: [module1, module2, module3, module4],
+  modules: [module1, module2, module3, module4, module5],
 };
