@@ -302,6 +302,8 @@ export function createDebuggerShell(host, opts = {}) {
   // ---- hotkeys ----------------------------------------------------------------
 
   const onKey = (e) => {
+    // never steal keys from code editors or the floating workspace
+    if (e.target.closest?.(".kf-monaco-host") || e.target.closest?.(".kf-ws")) return;
     if (e.key === "F5") {
       e.preventDefault();
       if (session.paused) act(() => session.resume?.() ?? session.continueExecution?.());
