@@ -459,7 +459,7 @@ export const module1 = {
               id: "m1.l3.f1",
               sha256: F.m1l3f1,
               prompt:
-                "When your mapped payload runs it DbgPrints a secret string (see !analyze -v). " +
+                "When your mapped payload runs it DbgPrints a secret string (see !dbgprint). " +
                 "Submit that secret string exactly.",
               points: 400,
             },
@@ -509,7 +509,7 @@ export const module1 = {
               sha256: F.m1l4f3,
               prompt:
                 "When both sensors finish, Sentinel v1 prints its completion secret in the " +
-                "DbgPrint buffer (!analyze -v). Submit it exactly.",
+                "DbgPrint buffer (!dbgprint). Submit it exactly.",
               points: 200,
             },
           ],
@@ -564,7 +564,7 @@ export const module2 = {
               sha256: F.m2l1f3,
               prompt:
                 "Repair the level (!irql 2), drain the queue (!dpcdrain), and read the secret " +
-                "the deferred routine DbgPrints (!analyze -v). Submit it exactly.",
+                "the deferred routine DbgPrints (!dbgprint). Submit it exactly.",
               points: 150,
             },
           ],
@@ -1081,7 +1081,7 @@ export const module4 = {
               sha256: F.m4l2f2,
               prompt:
                 "On conviction the monitor prints its completion secret to the DbgPrint " +
-                "buffer (!analyze -v). Submit it exactly.",
+                "buffer (!dbgprint). Submit it exactly.",
               points: 250,
             },
           ],
@@ -1674,7 +1674,7 @@ export const module15 = {
               prompt:
                 "Patch one immediate of the name compare (eb) so the " +
                 "callback can never match, rerun !notifytest, and submit " +
-                "the telemetry-gap secret from !analyze -v.",
+                "the telemetry-gap secret from !dbgprint.",
               points: 300,
             },
           ],
@@ -1731,7 +1731,7 @@ export const module16 = {
               prompt:
                 "Restore the pristine prologue with eb, re-run !ssdt until " +
                 "it reports clean, and submit the secret kfvillain prints " +
-                "(see !analyze -v).",
+                "(see !dbgprint).",
               points: 250,
             },
           ],

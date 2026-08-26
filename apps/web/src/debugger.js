@@ -955,6 +955,7 @@ export function createCommands(kernel) {
       w("  s [-a] <start> <len> <pat> search memory (hex bytes or \"text\" w/ -a)");
       w("  k | kp | kv | ks          stack (rip frame + module+offset; no unwind data)");
       w("  !analyze [-v]             modeled crash/state analysis");
+      w("  !dbgprint                 replay the buffered DbgPrint output");
       w("  sym <addr>                resolve module+offset");
       w("  x <pattern>               symbol listing, wildcards: x nt!Ps*");
       w("  ? <expr>                  evaluate expression (? nt!DbgPrint+0x10)");
@@ -1499,8 +1500,8 @@ export function createCommands(kernel) {
         w(`MODULES:  ${(kernel.loadedModules ?? []).length} loaded` +
           ((kernel.loadedModules ?? []).some((m) => m.real) ? " (real-dump set)" : ""));
         w(`THREADS:  CurrentThread=${fmtAddr(kernel.currentThread ?? 0n)}`);
-        const tail = (kernel.dbgLog ?? []).slice(-5);
-        if (tail.length) { w("--- recent DbgPrint ---", "hdr"); for (const l of tail) w("  " + l, "dim"); }
+        // NB: debug output is NOT analyzed here (matches real !analyze, which
+        // never replays DbgPrint history) — use !dbgprint for the buffer.
       }
       w("========================================================", "hdr");
     },
@@ -2177,6 +2178,12 @@ export function createCommands(kernel) {
       if (tail.length) { w("--- recent DbgPrint ---", "hdr"); for (const l of tail) w("  " + l); }
     },
 
+    "!dbgprint"(args, w) {
+      if (!kernel.dbgLog?.length) return w("!dbgprint: no debug output buffered", "dim");
+      for (const l of kernel.dbgLog) w(l);
+
+    },
+
     "!dpcpump"(args, w) {
       if (kernel.cpu?.halted) return w("!dpcpump: CPU is halted (post-bugcheck)", "err");
       const n = Number(args[0] ?? "1");
@@ -2618,7 +2625,7 @@ export function createCommands(kernel) {
         w("kfloader: import resolution is STUBBED — IAT left zeroed", "err");
         w("kfloader: payload DriverEntry skipped (first import call would fault)", "err");
         w("hint: inspect !mmstate, repair the loader with 'eb', retry !mmrun", "dim");
-        kernel.dbgLog.push("kfloader: failed to resolve imports for mmpayload.sys");
+        kernel.debugPrint("kfloader: failed to resolve imports for mmpayload.sys");
         return;
       }
       mm.imports.forEach((_, i) => mem.w64(mm.iatBase + BigInt(i * 8), mm.thunks[i]));
@@ -2627,11 +2634,9 @@ export function createCommands(kernel) {
         w(`  IAT[${i}] ${imp.padEnd(26)} -> ${fmtAddr(mm.thunks[i])}`, "dim");
       }
       w("kfloader: transferring control to mmpayload.sys!DriverEntry...");
-      kernel.dbgLog.push("mmpayload: DriverEntry entered (manually mapped, imports resolved)");
-      kernel.dbgLog.push(`mmpayload: secret=${mm.secret}`);
-      w("--- recent DbgPrint ---", "hdr");
-      for (const l of kernel.dbgLog.slice(-2)) w("  " + l);
-      w("(captured in the DbgPrint buffer — see !analyze -v)", "dim");
+      kernel.debugPrint("mmpayload: DriverEntry entered (manually mapped, imports resolved)");
+      kernel.debugPrint(`mmpayload: secret=${mm.secret}`);
+      w("(payload telemetry streams above; full history: !dbgprint)", "dim");
       if (!kernel.loadedModules.some((m) => m.name === "mmpayload.sys")) {
         kernel.loadedModules.push({
           base: mm.payloadBase, sizeOfImage: 0x4000, name: "mmpayload.sys",
@@ -2963,6 +2968,11 @@ export function createDebugger(kernel, out) {
     out.appendChild(line);
     out.scrollTop = out.scrollHeight;
   };
+  // Live debug-output sink: like a real kernel debugger, DbgPrint telemetry
+  // appears inline as it happens. The buffer stays available via !dbgprint.
+  if (kernel && "onDebugPrint" in kernel) {
+    kernel.onDebugPrint = (line) => write(line, "dim");
+  }
   const exec = async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;

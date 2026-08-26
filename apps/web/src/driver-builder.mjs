@@ -125,7 +125,7 @@ export function runDkomDriver(kernel, targetEproc, opts = {}) {
   const linksAddress = targetEproc + linksOff;
 
   // Log like DbgPrint would
-  kernel.dbgLog.push(`DKOM: unlinked kftarget.exe, LIST_ENTRY @ ${linksAddress.toString(16)}`);
+  kernel.debugPrint(`DKOM: unlinked kftarget.exe, LIST_ENTRY @ ${linksAddress.toString(16)}`);
 
   const before = kernel.listProcesses().map((p) => ({ pid: p.pid, name: p.name }));
   const r = kernel.callDriverEntry(entry, targetEproc, 0n);

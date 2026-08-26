@@ -256,7 +256,9 @@ test("manual-map: stubbed run fails; repairing g_ResolveImports releases payload
   c.exec("!mmrun");
   t = c.text();
   assert.match(t, /resolved 2 import\(s\) against nt!/);
-  assert.match(t, new RegExp(flagPlain.replace(/[{}$]/g, "\\$&")));
+  // payload telemetry no longer echoes inline — it streams via the sink and
+  // replays from !dbgprint (matches real KD, where !analyze never does this)
+  assert.ok(!t.includes(flagPlain), "!mmrun must not inline-echo payload telemetry");
   // thunks landed in the IAT
   assert.notEqual(kernel.mem.u64(mm.iatBase), 0n);
   assert.notEqual(kernel.mem.u64(mm.iatBase + 8n), 0n);
@@ -265,15 +267,59 @@ test("manual-map: stubbed run fails; repairing g_ResolveImports releases payload
   assert.ok(kernel.dbgLog.some((l) => l.includes(flagPlain)),
     `DbgPrint buffer missing secret: ${JSON.stringify(kernel.dbgLog)}`);
 
-  // 5) !analyze -v surfaces the captured DbgPrint lines
+  // 5) !dbgprint replays the buffer; !analyze -v must NOT surface prints
+  c = capture(kernel);
+  c.exec("!dbgprint");
+  t = c.text();
+  assert.match(t, new RegExp(flagPlain.replace(/[{}$]/g, "\\$&")));
   c = capture(kernel);
   c.exec("!analyze -v");
-  assert.match(c.text(), /secret=/);
+  assert.ok(!c.text().includes("recent DbgPrint"),
+    "!analyze -v must not replay debug output");
 
   // 6) mapped payload becomes visible to lm
   c = capture(kernel);
   c.exec("lm");
   assert.match(c.text(), /mmpayload\.sys/);
+
+  // 7) live streaming: a wired sink receives telemetry as it is emitted
+  {
+    const streamed = [];
+    kernel.onDebugPrint = (line) => streamed.push(line);
+    kernel.debugPrint("mmpayload: stream-check");
+    assert.ok(streamed.includes("mmpayload: stream-check"), "sink fired");
+    delete kernel.onDebugPrint;
+  }
+});
+
+test("!dbgprint replays the full buffer and degrades gracefully when empty", async () => {
+  const { kernel } = await bootedManualMap();
+  kernel.debugPrint("one");
+  kernel.debugPrint("two");
+  const c = capture(kernel);
+  c.exec("!dbgprint");
+  const t = c.text();
+  assert.match(t, /^one$/m);
+  assert.match(t, /^two$/m);
+  // order preserved across the whole buffer
+  assert.ok(t.indexOf("one") < t.indexOf("two"), "buffer order preserved");
+
+  // empty buffer degrades gracefully on a fresh world
+  const { kernel: fresh } = await booted();
+  const c2 = capture(fresh);
+  c2.exec("!dbgprint");
+  assert.match(c2.text(), /no debug output buffered/);
+});
+
+test("createDebugger wires the live sink so DbgPrint streams into the console", async () => {
+  const { kernel } = await booted();
+  const { createDebugger } = await import("../src/debugger.js");
+  const lines = [];
+  const fakeOut = { write: (text, cls) => lines.push(cls ? `[${cls}]${text}` : text) };
+  createDebugger(kernel, fakeOut); // sink must be attached as a side effect
+  kernel.debugPrint("kfdpc: secret=kf-dpc-drain-ok");
+  assert.ok(lines.some((l) => l === "[dim]kfdpc: secret=kf-dpc-drain-ok"),
+    `sink did not stream into console; got ${JSON.stringify(lines)}`);
 });
 
 test("!mm commands degrade gracefully without the manual-map lab", async () => {
