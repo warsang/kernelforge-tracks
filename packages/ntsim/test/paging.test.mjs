@@ -251,7 +251,7 @@ test("CR3 shuffle: real DTB findable via self-ref signature scan", async () => {
   const real = pts.createProcess({ name: "victim", pid: 668 });
   pts.mapPage(real, joinVa(0x8, 0x8, 0x8, 0x8, 0, false), {});
 
-  // decoy DTB whose self-ref sits at a different index — EAC-style shuffle
+  // decoy DTB whose self-ref sits at a different index — anti-cheat-style shuffle
   const decoy = pts.createProcess({ name: "decoy", pid: 665, selfRefIndex: 0x12 });
   decoy.decoy = true;
   pts.mapPage(decoy, joinVa(0x8, 0x8, 0x8, 0x8, 0, false), {});

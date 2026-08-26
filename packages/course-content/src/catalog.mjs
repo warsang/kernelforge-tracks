@@ -186,7 +186,7 @@ const F = {
   m23l1f4: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // Cid-0004 count after spoof
   m23l1f5: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // identity cross-ref
 
-  // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
+  // --- m19 reversing the sensor (kfwatch grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
   m19l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
@@ -1512,7 +1512,7 @@ export const module14 = {
   track: "windows-kernel",
   summary:
     "Four-level translation on real PML4/PDPT/PD/PT bytes: CR3 walking, " +
-    "self-map alias math, hardware PTE bits — and an EAC-style CR3 shuffle.",
+    "self-map alias math, hardware PTE bits — and an anti-cheat-style CR3 shuffle.",
   lessons: [
     {
       id: "m14.l1",
@@ -1569,12 +1569,12 @@ export const module15 = {
   title: "Kernel Callbacks & EDR Sensors",
   track: "windows-kernel",
   summary:
-    "Falcon-style process-creation telemetry with real callback machine " +
+    "KF-Watch-style process-creation telemetry with real callback machine " +
     "code: enumerate the sensor, read its CreationStatus kill switch, blind it.",
   lessons: [
     {
       id: "m15.l1",
-      title: "Inside the mini-Falcon",
+      title: "Inside the KF-Watch mini",
       body: m15l1Body,
       requires: ["m14.l1"],
       labs: [
@@ -1583,7 +1583,7 @@ export const module15 = {
           kind: "windbg",
           title: "Blind the process-create sensor",
           brief:
-            "kfalcon.sys blocks kfimplant.exe spawns. Enumerate callbacks, " +
+            "kfwatch.sys blocks kfimplant.exe spawns. Enumerate callbacks, " +
             "trigger the block, locate the name-compare immediates in the " +
             "callback body, patch one byte so the implant slips through.",
           scenario: "edr-sensor",
@@ -1790,7 +1790,7 @@ export const module19 = {
   track: "reversing",
   summary:
     "Boundary recovery, rel32 resolution and fixture-shaped pseudocode over " +
-    "kfalcon.sys — read the kill switch without executing a single byte.",
+    "kfwatch.sys — read the kill switch without executing a single byte.",
   lessons: [
     {
       id: "m19.l1",
@@ -1803,7 +1803,7 @@ export const module19 = {
           kind: "windbg",
           title: "Decompile the CreationStatus store",
           brief:
-            "!funcs recovers kfalcon.sys's grid; !pseudocode renders the " +
+            "!funcs recovers kfwatch.sys's grid; !pseudocode renders the " +
             "process callback as C. Name the count, the callback, the offset.",
           scenario: "edr-sensor",
           flags: [
@@ -1811,7 +1811,7 @@ export const module19 = {
               id: "m19.l1.f1",
               sha256: F.m19l1f1,
               prompt:
-                "!funcs kfalcon.sys recovers how many functions from the .text " +
+                "!funcs kfwatch.sys recovers how many functions from the .text " +
                 "grid? Submit the decimal count.",
               points: 150,
             },

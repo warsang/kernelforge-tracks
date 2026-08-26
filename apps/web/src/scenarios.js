@@ -1277,7 +1277,7 @@ scenarios["task-hide"] = {
 /* ---------------------------------------------------------------------- */
 
 /**
- * m11 — x64 paging world. A decoy DTB is registered FIRST (EAC-style CR3
+ * m11 — x64 paging world. A decoy DTB is registered FIRST (anti-cheat-style CR3
  * shuffle), so the lowest frame is a trap. kftarget.exe carries the real
  * tables with self-map index 0xF; one code-page PTE was corrupted with NX,
  * failing the driver's integrity pass until the student repairs it through
@@ -1353,7 +1353,7 @@ scenarios["paging-walk"] = {
   title: "paging-walk — four-level translation under a shuffled CR3",
   description:
     "Low-memory world with real PML4/PDPT/PD/PT pages. One process sports an " +
-    "EAC-style shuffled self-map entry as a decoy. Walk the tables by hand " +
+    "anti-cheat-style shuffled self-map entry as a decoy. Walk the tables by hand " +
     "(!cr3/!pte/!vtop), repair the NX-smashed code PTE through the alias.",
   boot: async (io) => {
     const session = await bootLow(io);
@@ -1364,24 +1364,24 @@ scenarios["paging-walk"] = {
 };
 
 /**
- * m12 — EDR sensor world: kfalcon.sys registers a REAL Ex-style process-
+ * m12 — EDR sensor world: kfwatch.sys registers a REAL Ex-style process-
  * creation callback (hand-assembled machine code executing on whichever
  * backend the pane selected — js and QEMU behave identically) that denies
  * kfimplant.exe via PS_CREATE_NOTIFY_INFO.CreationStatus.
  */
 export const EDR_CONST = (() => {
-  const KFALCON = LOW_BASES.driver + 0x100000n; // 0x50100000
+  const KFWATCH = LOW_BASES.driver + 0x100000n; // 0x50100000
   return {
-    KFALCON,
-    CALLBACK: KFALCON + 0x1000n,
-    GRID: KFALCON + 0x1800n,
+    KFWATCH,
+    CALLBACK: KFWATCH + 0x1000n,
+    GRID: KFWATCH + 0x1800n,
     BLOCKED_NAME: "kfimplant.exe",
     DENY_STATUS: 0xc0000022n, // STATUS_ACCESS_DENIED
     secret: "kf-edr-blindspot",
   };
 })();
 
-/** Assemble kfalcon's Ex callback (see packages/ntsim/test/notify.test.mjs). */
+/** Assemble kfwatch's Ex callback (see packages/ntsim/test/notify.test.mjs). */
 function assembleSensorCallback() {
   const enc = (s) => [...s].flatMap((c) => [c.charCodeAt(0), 0]);
   const q = (b) => [...b].reduceRight((a, x) => (a << 8n) | BigInt(x), 0n);
@@ -1418,7 +1418,7 @@ function setupEdrSensor(kernel) {
   // and !notifyroutines see exactly what a real driver registration does
   kernel.apiImpls.get("PsSetCreateProcessNotifyRoutineEx")(C.CALLBACK, 0);
   kernel.obCallbacks = [{
-    callback: C.KFALCON + 0x2000n, altitude: "385201",
+    callback: C.KFWATCH + 0x2000n, altitude: "385201",
     masks: { process: 0xffedcfffn, thread: 0xffedf3ffn },
   }];
 
@@ -1428,22 +1428,22 @@ function setupEdrSensor(kernel) {
     const res = fire(pid, imageName, opts);
     if (!res.blocked && imageName === C.BLOCKED_NAME && !paid) {
       paid = true;
-      kernel.dbgLog.push("kfalcon: telemetry gap — implant spawn went unreported");
-      kernel.dbgLog.push(`kfalcon: secret=${C.secret}`);
+      kernel.dbgLog.push("kfwatch: telemetry gap — implant spawn went unreported");
+      kernel.dbgLog.push(`kfwatch: secret=${C.secret}`);
     }
     return res;
   };
 
   kernel.loadedModules.push({
-    base: C.KFALCON, sizeOfImage: 0x8000, name: "kfalcon.sys",
-    full: "\\SystemRoot\\system32\\drivers\\kfalcon.sys", lab: true,
+    base: C.KFWATCH, sizeOfImage: 0x8000, name: "kfwatch.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfwatch.sys", lab: true,
   });
 }
 
 scenarios["edr-sensor"] = {
-  title: "edr-sensor — Falcon-style process-create blocking",
+  title: "edr-sensor — KF-Watch-style process-create blocking",
   description:
-    "kfalcon.sys registers a kernel process-creation callback that denies " +
+    "kfwatch.sys registers a kernel process-creation callback that denies " +
     "kfimplant.exe via CreationStatus. Enumerate callbacks, read the deny in " +
     "!notifytest, then blind the sensor by patching its name compare.",
   boot: async (io) => {

@@ -2,10 +2,10 @@
 /** Lesson body: m15.l1 — kernel callbacks & EDR sensors (markdown). */
 export default `## Where EDRs actually see you
 
-A Falcon-class sensor owns six kernel vantage points: process-create,
+A KF-Watch-class sensor owns six kernel vantage points: process-create,
 thread-create, image-load notifications, object callbacks, registry
 callbacks and a file-system minifilter. This lab boots the first one for
-real: \`kfalcon.sys\` registered a \`PsSetCreateProcessNotifyRoutineEx\`
+real: \`kfwatch.sys\` registered a \`PsSetCreateProcessNotifyRoutineEx\`
 callback whose **machine code executes on the emulated CPU** — under the
 JS interpreter and QEMU alike.
 
@@ -36,7 +36,7 @@ PatchGuard-class integrity monitors exist to catch.
 
 ### Further reading
 
-- 0xdbgman — "Inside the Falcon: How CrowdStrike Catches You" (six callback sources, CreationStatus kill)
+- 0xdbgman — "Inside a kernel sensor: How CrowdStrike Catches You" (six callback sources, CreationStatus kill)
 - windows-internals.com (Yarden Shafir) — "Thread and Process State Change" (EDR hook evasion), ObRegisterCallbacks masks
 - secret.club — drew, "Hiding execution of unsigned code in system threads"
 `;
