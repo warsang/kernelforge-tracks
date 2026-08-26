@@ -759,6 +759,31 @@ export class JsInterpreter {
       return;
     }
 
+    // ---- minimal SSE surface --------------------------------------------
+    // clang -O1 uses 16-byte vector moves/zeroing for struct copies and
+    // wide stores even in integer-only drivers. Integer labs never observe
+    // XMM values, so a tiny opaque model keeps the instruction stream exact:
+    // each xmm register holds one 128-bit BigInt.
+    if (op === 0x10 || op === 0x11 || op === 0x57) {
+      this.xmm = this.xmm ?? new Array(16).fill(0n);
+      const { mod, reg, rm } = this.decodeModrm(opsize);
+      if (op === 0x10) {
+        // movups/movss reg <- rm
+        this.xmm[reg] = mod === 3 ? this.xmm[rm.reg ?? 0]
+          : this.loadMem((rm.addr ?? 0n) & M64, 16);
+      } else if (op === 0x11) {
+        // movups/movss rm <- reg
+        const v = this.xmm[reg] ?? 0n;
+        if (mod === 3) this.xmm[rm.reg ?? 0] = v;
+        else this.storeMem((rm.addr ?? 0n) & M64, 16, v);
+      } else {
+        // xorps/xorpd: reg==rm is clang's zeroing idiom
+        this.xmm[reg] = reg === (rm.reg ?? -1) ? 0n
+          : (this.xmm[reg] ?? 0n) ^ (this.xmm[rm.reg ?? 0] ?? 0n);
+      }
+      return;
+    }
+
     // movsxd 0f 63
     if (op === 0x63) {
       const { reg, rm } = this.decodeModrm(4);
@@ -771,6 +796,13 @@ export class JsInterpreter {
     if (op >= 0x90 && op <= 0x9f) {
       const { rm } = this.decodeModrm(1);
       this.storeOp(rm, 1, this.cond(op & 0xf) ? 1n : 0n);
+      return;
+    }
+
+    // long conditional jumps: 0f 8x (jcc rel32)
+    if (op >= 0x80 && op <= 0x8f) {
+      const disp = this.fetchImmSx(4);
+      if (this.cond(op & 0xf)) this.rip = (this.rip + disp) & M64;
       return;
     }
 
@@ -820,8 +852,7 @@ export class JsInterpreter {
       }
       case 0x05: throw new CpuError("syscall reached interpreter — kernel hook layer must intercept", startRip);
       default:
-        throw new CpuError(`unimplemented 0f opcode 0x${op.toString(16)}`, startRip);
-    }
+        throw new CpuError(`unimplemented 0f opcode 0x${op.toString(16)}`, startRip);    }
   }
 
   pushVal(v) {

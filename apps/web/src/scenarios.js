@@ -906,6 +906,34 @@ scenarios["pg-hooks"] = {
 };
 
 /**
+ * m21 userland-injection world: kftarget.exe carries a plausible game code
+ * page at a user-range VA. The compiled lab driver writes it twice — once
+ * through a minted handle (ZwOpenProcess/ZwWriteVirtualMemory) and once
+ * handleless via KeStackAttachProcess — proving both paths land bytes.
+ */
+scenarios["ul-inject"] = {
+  title: "ul-inject — handle-based vs handleless injection target",
+  description:
+    "Standard 22H2 world; kftarget.exe exposes a game-like code page at " +
+    "0x7ff600100000. Your driver injects payload bytes through a process " +
+    "handle AND by attaching — compare the footprints.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    const TARGET_VA = 0x00007ff600100000n;
+    // game-code-looking page: prologue-ish NOPs + a version dword
+    kernel.mem.write(TARGET_VA, new Uint8Array(0x40).fill(0x90));
+    kernel.mem.w32(TARGET_VA + 0x38n, 0x00010100); // version stamp
+    kernel.ulInjectTarget = {
+      va: TARGET_VA,
+      eproc: kernel.processesByName.get("kftarget.exe"),
+    };
+    session.kind = "ul-inject";
+    return session;
+  },
+};
+
+/**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
  * one trailing guard. Student audits (!poolfind), repairs with eb, verifies

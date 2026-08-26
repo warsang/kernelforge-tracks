@@ -280,6 +280,16 @@ function makeSentinelVerify(patterns) {
   };
 }
 
+COMPILE_TASKS["ul-inject"] = {
+  validate: (src) => validateDriverSource(src, "inject"),
+  verify: makeSentinelVerify([
+    ["handle minted for pid 888", /ZwOpenProcess: pid 888 -> handle/],
+    ["handle-based write landed", /INJ: handle-based write -> ok/],
+    ["attach-based write landed", /INJ: attach-based write -> ok/],
+    ["completion secret", /secret=kf-ul-inject-ok/],
+  ]),
+};
+
 COMPILE_TASKS["sentinel-v1"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([

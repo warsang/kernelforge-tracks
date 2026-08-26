@@ -308,6 +308,13 @@ on the lab clock: install a hook, use it, restore pristine bytes and cross
 a clean sweep before CRITICAL_STRUCTURE_CORRUPTION (0x109) fires. Lesson 2
 covers the userland techniques (IAT/EAT/inline/VEH/thread hijack).
 
+**Module 21 — Userland Injection** (`ul-inject`)
+Handle-based vs handleless injection into kftarget.exe's game page:
+`ZwOpenProcess`/`ZwWriteVirtualMemory` with real access-right enforcement
+against `PsLookupProcessByProcessId` + `KeStackAttachProcess` direct writes.
+The Js interpreter gained a minimal SSE surface (movups/xorps/jcc rel32)
+for clang's vectorized stores.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +

@@ -48,6 +48,7 @@ import {
   SENTINEL_V4_STARTER,
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
   ATTACK_HIJACK_STARTER, SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
+  INJECT_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -60,6 +61,7 @@ import m18l1Body from "./lessons/m18-l1.mjs";
 import m19l1Body from "./lessons/m19-l1.mjs";
 import m20l1Body from "./lessons/m20-l1.mjs";
 import m20l2Body from "./lessons/m20-l2.mjs";
+import m21l1Body from "./lessons/m21-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -164,6 +166,11 @@ const F = {
   m20l1f3: "4b86ca5be6355028fdf22002f8ad1958bfbcc37ebe6362da4b12ea67fab9622e", // stealth-window secret
   m20l2f1: "3df05ba6053db552571d26c662c79f7363a804a352f6e0187c1d9a9382cdbaae", // IAT
   m20l2f2: "005bc5c2e3eda888e9710622372ad53ddfaca6ac6d69d21e043dd1c159bfd1f7", // VEH
+  // --- m21 userland injection (handle-based vs handleless) ---
+  m21l1f1: "b287909b883b5658cca5b9590df5aa5c24c8c3bc3b2825da597778fb3613c8e3", // completion secret
+  m21l1f2: "139bab6cd5244c9e0dcc9f6a24f022b8fead8cc04fea0824f704a42e39df9492", // PROCESS_VM_WRITE
+  m21l1f3: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // ApcState
+
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
@@ -1908,7 +1915,70 @@ export const module20 = {
   ],
 };
 
+export const module21 = {
+  id: "m21",
+  title: "Userland Injection",
+  track: "windows-userland",
+  summary:
+    "Land bytes in another process two ways — a real handle with audited " +
+    "access rights, or handleless via KeStackAttachProcess — and compare " +
+    "what each footprint leaks to a defender.",
+  lessons: [
+    {
+      id: "m21.l1",
+      title: "Handle-based vs handleless injection",
+      body: m21l1Body,
+      requires: ["m20.l2"],
+      labs: [
+        {
+          id: "m21.l1.lab1",
+          kind: "compiler",
+          title: "Inject both ways into kftarget.exe",
+          brief:
+            "Compile the starter: it opens a tracked handle against pid 888, " +
+            "writes payload via ZwWriteVirtualMemory, then re-writes " +
+            "handlelessly through KeStackAttachProcess. Telemetry proves " +
+            "both paths.",
+          scenario: "ul-inject",
+          compileTask: "ul-inject",
+          starterFiles: [
+            { path: "driver/kfinject.c", content: INJECT_STARTER },
+          ],
+          flags: [
+            {
+              id: "m21.l1.f1",
+              sha256: F.m21l1f1,
+              prompt:
+                "Run the compiled driver in the ul-inject world. Its DbgPrint " +
+                "buffer ends with a completion secret — submit it exactly.",
+              points: 200,
+            },
+            {
+              id: "m21.l1.f2",
+              sha256: F.m21l1f2,
+              prompt:
+                "ZwWriteVirtualMemory needs PROCESS_VM_OPERATION plus one more " +
+                "access right on the handle. Submit that constant exactly as " +
+                "spelled in ntddk.h.",
+              points: 100,
+            },
+            {
+              id: "m21.l1.f3",
+              sha256: F.m21l1f3,
+              prompt:
+                "The handleless path attaches to the target. Which per-thread " +
+                "structure records the attachment? Submit the field name " +
+                "(one word, lowercase).",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21],
 };
