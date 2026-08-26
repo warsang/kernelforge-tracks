@@ -645,6 +645,9 @@ function setupIrqlDpc(kernel) {
   kernel.currentIrql = 15;
 
   // stranded DPC: initialized but never drained because nothing below can run
+  // (memory image must match the queued record: 'DPCk' @+0, routine @+0x18)
+  kernel.mem.writeAnsi(DPC_STRUCT, "DPCk");
+  kernel.mem.w64(DPC_STRUCT + 0x18n, DPC_ROUTINE);
   kernel.queueDpc(DPC_STRUCT, DPC_ROUTINE, 0n);
 
   // searchable evidence page
