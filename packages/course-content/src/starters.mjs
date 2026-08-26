@@ -336,6 +336,10 @@ export const ATTACK_LOCKDOWN_STARTER = `// ATTACK 2 - directed-DPC CPU lockdown 
 
 #define CORES 4
 
+// deterministic world anchor: keep the full-width VA in your source so the
+// structural validator can tie your patch site to this world's canary page
+#define CANARY_PAGE 0xfffff8055a702000ULL
+
 static KDPC g_lockDpc[CORES];
 
 NTSTATUS DriverEntry(

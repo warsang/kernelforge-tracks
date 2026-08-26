@@ -1085,23 +1085,36 @@ export class NtKernel {
   dbgPrint(fmtAddr, args) {
     const fmt = this.mem.readAnsi(fmtAddr, 512);
     let ai = 0;
-    const out = fmt.replace(/%(-?\d+)?(?:\.(\d+))?([wsdIxXpuZgsc])/g, (_m, _w, _p, conv) => {
-      const v = args[ai++] ?? 0n;
-      switch (conv) {
-        case "d": return BigInt.asIntN(64, v).toString();
-        case "u": return v.toString();
-        case "x": case "X": return v.toString(16).padStart(conv === "X" ? 8 : 8, conv === "X" ? "XXXXXXXXXXXXXXXX".slice(0, 8) : "00000000");
-        case "p": return v === 0n ? "0000000000000000" : v.toString(16).padStart(16, "0");
-        case "w": case "Z": {
-          // %wZ = UNICODE_STRING*
-          const usLen = this.mem.u16(v);
-          const buf = this.mem.u64(v + 8n);
-          return this.mem.readUtf16(buf, usLen / 2);
+    // Length modifiers are parsed so the argument is consumed exactly once:
+    // %I64u (MSVC spelling), %llu/%lld and %llx all render their full 64-bit
+    // value instead of printing the literal suffix and desyncing every later
+    // %-conversion in the same string (issue #13).
+    const out = fmt.replace(
+      /%(-?\d+)?(?:\.(\d+))?(I(?:32|64)|l{1,2})?([diuxXpsZwcg])/g,
+      (_m, _w, _p, mod, conv) => {
+        void _p;
+        const wide = !!mod;
+        const v = args[ai++] ?? 0n;
+        switch (conv) {
+          case "d": return BigInt.asIntN(64, v).toString();
+          case "u": return v.toString();
+          case "x": case "X": {
+            const width = wide ? 16 : 8;
+            const digits = v.toString(16);
+            const padded = digits.padStart(width, conv === "X" ? "F" : "0");
+            return conv === "X" ? padded.slice(-width).toUpperCase() : padded.slice(-width);
+          }
+          case "p": return v === 0n ? "0000000000000000" : v.toString(16).padStart(16, "0");
+          case "w": case "Z": {
+            // %wZ = UNICODE_STRING*
+            const usLen = this.mem.u16(v);
+            const buf = this.mem.u64(v + 8n);
+            return this.mem.readUtf16(buf, usLen / 2);
+          }
+          case "s": return this.mem.readAnsi(v);
+          default: return `%${conv}`;
         }
-        case "s": return this.mem.readAnsi(v);
-        default: return `%${conv}`;
-      }
-    });
+      });
     this.dbgLog.push(out);
     this.emitTrace({ kind: "dbgprint", text: out });
     return out;

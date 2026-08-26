@@ -34,7 +34,10 @@ function usRead(mem, va) {
 
 export function installWinApi(kernel) {
   const mem = kernel.mem;
-  const t = kernel.tables;
+  // tables are resolved lazily: loadTablesFromDir() may swap the StructTables
+  // object AFTER construction, and a captured reference would go stale
+  // ("unknown type _EPROCESS" from every offset walk)
+  const t = { offsetOf: (...a) => kernel.tables.offsetOf(...a) };
 
   // ------------------------------------------------------------- state
   kernel.registry = new Map(); // path -> Map(valueName -> {type,data})
@@ -268,7 +271,10 @@ export function installWinApi(kernel) {
   k.define("PsGetCurrentProcess", () => currentEproc() ?? 0n);
   k.define("IoGetCurrentProcess", () => currentEproc() ?? 0n);
   k.define("PsGetCurrentThread", () => kernel.currentThread ?? 0n);
+  k.define("KeGetCurrentThread", () => kernel.currentThread ?? 0n);
   k.define("PsGetProcessId", (eproc) => mem.u64(eproc + t.offsetOf("_EPROCESS", "UniqueProcessId")));
+  k.define("PsGetProcessImageFileName", (eproc) =>
+    eproc ? eproc + t.offsetOf("_EPROCESS", "ImageFileName") : 0n);
   k.define("PsLookupProcessByProcessId", (pid, out) => {
     const e = kernel.findEprocessByPid(pid);
     if (!e) return 0xc000000bn;

@@ -57,9 +57,16 @@
 #define NTINLINE inline
 #define FORCEINLINE inline
 
+/* kernel-export linkage: real WDK expands to __declspec(dllimport); the ntsim
+ * linker resolves these by name, so the empty spelling keeps WDK-flavored
+ * forward declarations (`NTKERNELAPI HANDLE NTAPI PsGetProcessId(...)`)
+ * compiling verbatim (issue #13) */
+#define NTKERNELAPI
+
 /* --- fundamental types --------------------------------------------------- */
 
 typedef char                CHAR;
+typedef char                CCHAR;      /* kernel-internal char (KeSetTargetProcessorDpc) */
 typedef short               SHORT;
 typedef long                LONG;
 typedef long long           LONGLONG;

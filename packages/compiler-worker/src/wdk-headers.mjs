@@ -26,6 +26,7 @@ export const HEADERS = [
   "ntdef.h",
   "ntstatus.h",
   "winapifamily.h", // some WDK headers guard on it; we provide a permissive stub
+  "intrin.h",       // shim: shadows the resource-dir intrinsics header (issue #21)
 ];
 
 /** Absolute include dir for the Node-side bridge. */
