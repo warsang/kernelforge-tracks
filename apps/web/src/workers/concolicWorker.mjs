@@ -1,6 +1,5 @@
 /**
  * concolicWorker.mjs — Web Worker for concolic solving of a single IOCTL
- * Similar to fuzzWorker but runs concolicCampaign.
  */
 
 import { StructTables } from "@kernelforge/ntsim/src/structs.mjs";
@@ -10,10 +9,28 @@ import { concolicCampaign } from "@kernelforge/ntsim-analyzer/src/symbolic/conco
 let tablesCache = null;
 async function ensureTables(tablesData){
   if(tablesCache) return tablesCache;
-  if(tablesData){ tablesCache = new StructTables(tablesData); return tablesCache; }
-  const res = await fetch("/tables/windows-10/22h2/_EPROCESS.json");
-  if(!res.ok) throw new Error("tables fetch failed");
-  tablesCache = await StructTables.loadDir("/tables/windows-10/22h2", ["_EPROCESS","_ETHREAD","_KLDR_DATA_TABLE_ENTRY"]);
+  if(tablesData && Array.isArray(tablesData) && tablesData.length){
+    tablesCache = new StructTables();
+    for(const [name, info] of tablesData){
+      try{
+        const fields = info.fields ? info.fields : Object.values(info.fieldsByName||{});
+        tablesCache.register(name, info.totalSize, fields);
+      }catch{}
+    }
+    if(tablesCache.has("_EPROCESS")) return tablesCache;
+  }
+  const TYPES = ["_EPROCESS","_ETHREAD","_KPROCESS","_KTHREAD","_LIST_ENTRY","_UNICODE_STRING","_OBJECT_TYPE","_OBJECT_HEADER","_HANDLE_TABLE","_PS_PROTECTION","_KLDR_DATA_TABLE_ENTRY","_LDR_DATA_TABLE_ENTRY","_KPCR","_KPRCB","_MMVAD","_MMVAD_SHORT"];
+  tablesCache = new StructTables();
+  await Promise.all(TYPES.map(async (name)=>{
+    try{
+      const res = await fetch(`/tables/windows-10/22h2/${name}.json`);
+      if(!res.ok) return;
+      const json = await res.json();
+      const fields = json.fields ? json.fields : Object.values(json.fieldsByName||{});
+      tablesCache.register(name, json.totalSize, fields);
+    }catch{}
+  }));
+  if(!tablesCache.has("_EPROCESS")) throw new Error("EPROCESS table not loaded");
   return tablesCache;
 }
 

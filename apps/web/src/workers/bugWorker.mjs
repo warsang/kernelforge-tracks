@@ -8,10 +8,33 @@ import { NtKernel, createDriverObject, initDriverObjectName, createDeviceObject,
 import { findBugsCampaign } from "@kernelforge/ntsim-analyzer/src/bug/engine.mjs";
 
 let tablesCache=null;
-async function ensureTables(d){
+
+async function ensureTables(tablesData){
   if(tablesCache) return tablesCache;
-  if(d){ tablesCache=new StructTables(d); return tablesCache; }
-  tablesCache=await StructTables.loadDir("/tables/windows-10/22h2", ["_EPROCESS","_ETHREAD","_KLDR_DATA_TABLE_ENTRY"]);
+  if(tablesData && Array.isArray(tablesData) && tablesData.length){
+    // tablesData is Array of [name, {totalSize, fieldsByName, fields}]
+    tablesCache = new StructTables();
+    for(const [name, info] of tablesData){
+      try {
+        const fields = info.fields ? info.fields : Object.values(info.fieldsByName || {});
+        tablesCache.register(name, info.totalSize, fields);
+      } catch {}
+    }
+    if(tablesCache.has("_EPROCESS")) return tablesCache;
+  }
+  // fallback: fetch via browser
+  const TYPES = ["_EPROCESS","_ETHREAD","_KPROCESS","_KTHREAD","_LIST_ENTRY","_UNICODE_STRING","_OBJECT_TYPE","_OBJECT_HEADER","_HANDLE_TABLE","_PS_PROTECTION","_KLDR_DATA_TABLE_ENTRY","_LDR_DATA_TABLE_ENTRY","_KPCR","_KPRCB","_MMVAD","_MMVAD_SHORT"];
+  tablesCache = new StructTables();
+  await Promise.all(TYPES.map(async (name)=>{
+    try{
+      const res = await fetch(`/tables/windows-10/22h2/${name}.json`);
+      if(!res.ok) return;
+      const json = await res.json();
+      const fields = json.fields ? json.fields : Object.values(json.fieldsByName || {});
+      tablesCache.register(name, json.totalSize, fields);
+    }catch{}
+  }));
+  if(!tablesCache.has("_EPROCESS")) throw new Error("EPROCESS table not loaded");
   return tablesCache;
 }
 

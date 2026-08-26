@@ -637,7 +637,15 @@ export function renderAnalyzer(main) {
           const useWorkers = typeof Worker !== "undefined" && maxCodesForBugs > 1 && (navigator.hardwareConcurrency||4) > 2;
           if (useWorkers) {
             pushLog(`[find-bugs] using ${Math.min(maxCodesForBugs, navigator.hardwareConcurrency||2)} workers for parallel probing`);
-            // parallel via bugWorker
+            // parallel via bugWorker — serialize tables for worker bootstrap
+            function serializeTables(tbl){
+              const out=[];
+              for(const [k,v] of tbl.types.entries()){
+                out.push([k, {totalSize: v.totalSize, fieldsByName: v.fieldsByName, fields: v.fields}]);
+              }
+              return out;
+            }
+            const tablesData = serializeTables(session.kernel.tables);
             const workerUrl = new URL("./workers/bugWorker.mjs", import.meta.url);
             const poolSize = Math.min(maxCodesForBugs, navigator.hardwareConcurrency||4, 4);
             let nextIdx = 0;
@@ -656,8 +664,8 @@ export function renderAnalyzer(main) {
                 }
               };
               w.onerror = (err)=>{ clearTimeout(timeout); w.terminate(); reject(err); };
-              // transfer imageBytes (clone)
-              w.postMessage({ type:"run", id: idx, imageBytes: session.image.bytes, ctlCode: code.value, base: base.toString(), size: size.toString(), opts:{ iterations: fuzz?fuzz.iterations:96, corpusCap: fuzz?fuzz.corpusCap:16, driverHash } });
+              // transfer imageBytes (clone) + tables
+              w.postMessage({ type:"run", id: idx, imageBytes: session.image.bytes, ctlCode: code.value, base: base.toString(), size: size.toString(), tablesData, opts:{ iterations: fuzz?fuzz.iterations:96, corpusCap: fuzz?fuzz.corpusCap:16, driverHash } });
             });
             // simple pool
             const queue = harvested.slice(0, maxCodesForBugs);

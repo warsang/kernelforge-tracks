@@ -1,12 +1,6 @@
 /**
  * fuzzWorker.mjs — Web Worker for coverage-guided fuzzing of a single IOCTL
  * Runs fuzzIoctl in a separate thread to keep UI responsive.
- * Message protocol:
- *   {type:"run", id, imageBytes, tablesData, ctlCode, base, size, opts}
- * Response:
- *   {type:"done", id, corpus, globalSeen, iterations}
- *   {type:"progress", id, phase, iter, coverage}
- *   {type:"error", id, error}
  */
 
 import { StructTables } from "@kernelforge/ntsim/src/structs.mjs";
@@ -17,17 +11,28 @@ let tablesCache = null;
 
 async function ensureTables(tablesData) {
   if (tablesCache) return tablesCache;
-  if (tablesData) {
-    // tablesData is already loaded StructTables JSON, reconstruct
-    tablesCache = new StructTables(tablesData);
-    return tablesCache;
+  if (tablesData && Array.isArray(tablesData) && tablesData.length) {
+    tablesCache = new StructTables();
+    for (const [name, info] of tablesData) {
+      try {
+        const fields = info.fields ? info.fields : Object.values(info.fieldsByName || {});
+        tablesCache.register(name, info.totalSize, fields);
+      } catch {}
+    }
+    if (tablesCache.has("_EPROCESS")) return tablesCache;
   }
-  // fallback: fetch from /tables (worker has fetch)
-  const res = await fetch("/tables/windows-10/22h2/_EPROCESS.json");
-  if (!res.ok) throw new Error("tables fetch failed");
-  // For simplicity, load minimal tables via import
-  const dir = "/tables/windows-10/22h2";
-  tablesCache = await StructTables.loadDir(dir, ["_EPROCESS","_ETHREAD","_KLDR_DATA_TABLE_ENTRY"]);
+  const TYPES = ["_EPROCESS","_ETHREAD","_KPROCESS","_KTHREAD","_LIST_ENTRY","_UNICODE_STRING","_OBJECT_TYPE","_OBJECT_HEADER","_HANDLE_TABLE","_PS_PROTECTION","_KLDR_DATA_TABLE_ENTRY","_LDR_DATA_TABLE_ENTRY","_KPCR","_KPRCB","_MMVAD","_MMVAD_SHORT"];
+  tablesCache = new StructTables();
+  await Promise.all(TYPES.map(async (name)=>{
+    try{
+      const res = await fetch(`/tables/windows-10/22h2/${name}.json`);
+      if(!res.ok) return;
+      const json = await res.json();
+      const fields = json.fields ? json.fields : Object.values(json.fieldsByName || {});
+      tablesCache.register(name, json.totalSize, fields);
+    }catch{}
+  }));
+  if(!tablesCache.has("_EPROCESS")) throw new Error("EPROCESS table not loaded");
   return tablesCache;
 }
 
