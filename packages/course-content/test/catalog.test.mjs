@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-two modules / thirty-three lessons / ninety-three flags", () => {
+test("catalog v5 has twenty-three modules / thirty-four lessons / ninety-eight flags", () => {
   assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 22);
+  assert.equal(catalog.modules.length, 23);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 33);
+  assert.equal(lessons.length, 34);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 93);
+  assert.equal(flags.length, 98);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -142,6 +142,12 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m22.l2.f1": "0xe9",
     "m22.l2.f2": "2",
     "m22.l2.f3": "kf-ept-detected",
+    // m23 DKOM field labs
+    "m23.l1.f1": "0x62",
+    "m23.l1.f2": "STATUS_ACCESS_DENIED",
+    "m23.l1.f3": "kf-ppl-off",
+    "m23.l1.f4": "2",
+    "m23.l1.f5": "apcstate",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

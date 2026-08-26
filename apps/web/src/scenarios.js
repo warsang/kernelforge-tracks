@@ -984,6 +984,44 @@ scenarios["ept-shadow"] = {
 };
 
 /**
+ * m23 DKOM field labs. Both worlds are the standard 22H2 machine; the labs
+ * are edits the STUDENT makes with eb, verified via !openprocess / !process.
+ */
+scenarios["dkom-ppl"] = {
+  title: "dkom-ppl — PPL removal target",
+  description:
+    "lsass.exe runs as PPL-WinTcb (Protection byte 0x62): !openprocess 108 " +
+    "is ACCESS_DENIED. Find lsass's EPROCESS (dt/!eproc), eb its Protection " +
+    "byte to 00, and open it for real.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    // deterministic PPL byte regardless of dump-overlay authenticity:
+    // Light(2) | WinTcb(6<<4) => 0x62, the classic lsass PPL-WinTcb value
+    const protOff = kernel.tables.offsetOf("_EPROCESS", "Protection");
+    const lsass = kernel.processesByName.get("lsass.exe");
+    if (lsass && protOff !== undefined) {
+      kernel.mem.w8(lsass + BigInt(protOff), 0x62);
+    }
+    session.kind = "dkom-ppl";
+    return session;
+  },
+};
+
+scenarios["dkom-pid"] = {
+  title: "dkom-pid — Cid spoofing target",
+  description:
+    "Standard 22H2 world. Spoof kftarget's UniqueProcessId to 4 with eb at " +
+    "_EPROCESS+0x440 and watch !process list two processes wearing the " +
+    "System Cid — while every other record still knows who it is.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    session.kind = "dkom-pid";
+    return session;
+  },
+};
+
+/**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
  * one trailing guard. Student audits (!poolfind), repairs with eb, verifies

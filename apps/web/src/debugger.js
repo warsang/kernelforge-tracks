@@ -867,6 +867,7 @@ export function createCommands(kernel) {
       w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
       w("  !pgstatus                 mini-PatchGuard state: sweeps, regions, verdict");
       w("  !eptlist / !eptview <va> / !eptverify   EPT shadow views (m22)");
+      w("  !openprocess <pid> [access]  modeled userland open (PPL enforced)");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
@@ -1852,6 +1853,44 @@ export function createCommands(kernel) {
         w("A hypervisor is splitting fetches from reads below the kernel.");
         w("secret=kf-ept-detected");
       }
+    },
+
+    "!openprocess"(args, w) {
+      // modeled userland OpenProcess through the same ZwOpenProcess impl the
+      // compiler labs use — PPL enforced, handle minted, telemetry printed.
+      if (!args[0]) return w("usage: !openprocess <pid> [access-hex]", "err");
+      const open = kernel.apiImpls.get("ZwOpenProcess");
+      if (!open) return w("!openprocess: ZwOpenProcess not modeled here", "err");
+      const pid = /^\d+$/.test(args[0]) ? BigInt(args[0]) : null;
+      if (pid === null) return w("!openprocess: pid must be decimal", "err");
+      let access = 0x143an;
+      if (args[1]) {
+        const a = args[1].replace(/\`/g, "");
+        access = BigInt(/^0x/i.test(a) ? a : "0x" + (/^[0-9a-fA-F]+$/.test(a) ? a : a));
+      }
+      const cidBuf = kernel.allocPool(16);
+      mem.w64(cidBuf, pid);
+      const hOut = kernel.allocPool(8);
+      const st = BigInt.asUintN(32, BigInt(open(hOut, access, 0n, cidBuf)));
+      const status = statusName(st) || `0x${st.toString(16)}`;
+      if (st === 0n) {
+        const h = mem.u64(hOut);
+        w(`ZwOpenProcess(${pid}, 0x${access.toString(16)}) -> STATUS_SUCCESS  handle 0x${h.toString(16)}`, "good");
+        // m23 PPL lab payoff: an open that succeeds against lsass while its
+        // Protection byte is ZERO means the student's DKOM landed
+        const target = kernel.findEprocessByPid(pid);
+        try {
+          const protOff = tables.offsetOf("_EPROCESS", "Protection");
+          const nmOff = tables.offsetOf("_EPROCESS", "ImageFileName");
+          const name = mem.readAnsi(target + nmOff, 15);
+          if (name.startsWith("lsass") && mem.u8(target + protOff) === 0 && !kernel.pplSecretShown) {
+            kernel.pplSecretShown = true;
+            w("secret=kf-ppl-off");
+          }
+        } catch { /* optional fields */ }
+        return;
+      }
+      w(`ZwOpenProcess(${pid}, 0x${access.toString(16)}) -> ${status}`);
     },
 
     "!pgstatus"(args, w) {
