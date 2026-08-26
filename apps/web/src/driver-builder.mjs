@@ -42,6 +42,16 @@ const REQUIRED_PATTERNS = {
     { pattern: /DbgPrint/i,
       hint: "Sensors emit findings via DbgPrint telemetry — the lab verifies your printed lines." },
   ],
+  // m2.l3 attack workshop: technique drivers must reference a world anchor
+  // and emit telemetry the debugger can audit.
+  "attack": [
+    { pattern: /DriverEntry/i,
+      hint: "Every kernel driver needs a DriverEntry(PDRIVER_OBJECT, PUNICODE_STRING) entry point." },
+    { pattern: /0x[0-9a-fA-F]{12,16}/,
+      hint: "Attack drivers target deterministic world anchors — keep the full-width VA/constant in your source." },
+    { pattern: /DbgPrint/i,
+      hint: "DbgPrint what you did so the lab (and !analyze -v) can verify the effect." },
+  ],
 };
 
 export function validateDriverSource(source, labKind) {

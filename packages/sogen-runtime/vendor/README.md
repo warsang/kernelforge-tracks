@@ -1,38 +1,46 @@
-# Vendor: sogen WASM core (upgrade path)
+# sogen-runtime vendor — WASM core provenance
 
-The reference backend (`src/world.mjs`) is a deterministic plain-JS model of a
-game process. The **real** sogen core (https://github.com/momo5502/sogen,
-GPL-2.0) runs actual PE images against real system DLLs and replaces it behind
-the same session API.
+Status: **JS glue vendored, 90 MB payload boot-fetched** (never committed).
 
-## What to vendor
+## What is vendored in-repo
 
-1. Pin an upstream commit (record it here + in `vendor/BUILD-NOTES`).
-2. Build the emscripten target:
-   ```
-   git clone --recurse-submodules https://github.com/momo5502/sogen.git
-   cd sogen && cmake --preset=release-wasm   # see upstream wiki/Build-Instructions
-   ```
-3. Copy the produced `emulator-worker.js` (+ `.wasm`) into this directory.
-4. Implement `src/backend-wasm.mjs`: spawn the worker, speak its Flatbuffers
-   debugger protocol (upstream `page/src/emulator.ts` is the reference
-   client), and adapt it to this package's session shape:
+| file | lives at | sha256 |
+|---|---|---|
+| worker loader (`emulator-worker.js`) | `apps/web/public/sogen/emulator-worker.js` | `534513dea1fe8d6e44e2f780cbc712fecb677b97ff0e68240af1b6ae7fd6555c` |
+| emscripten glue, 32-bit (`analyzer.js`) | `apps/web/public/sogen/32/analyzer.js` | `94ac9331d4c1349dcbd87425c6e9dc8c892d420e1fa0c3b41c8c6a9438a1a06f` |
 
-   ```js
-   // target API the labs already use:
-   session.mem.read/write/u32/w32      -> worker msg: mem_read/mem_write
-   session.modules                     -> worker msg: module_list
-   session.hookscan()                  -> snapshot + diff over module ranges
-   ```
+Both pulled from the sogen.dev production deploy:
+`https://sogen.dev/emulator-worker.js`, `https://sogen.dev/32/analyzer.js`
+(last-modified `Tue, 25 Aug 2026 07:20:17 GMT`). Upstream project:
+github.com/momo5502/sogen @ main (GPL-2.0) — obligations identical to the
+Unicorn vendor row in docs/legal.md (source offer + rebuild recipe below).
 
-5. Flip `src/index.mjs#resolveBackend()` to prefer the wasm bundle with a
-   lazy dynamic import; keep the JS backend as test/differential fallback
-   (same policy as `packages/ntsim-unicorn`).
+## Boot-time payload (NOT committed)
 
-## License notes
+| file | fetched by | size |
+|---|---|---|
+| `apps/web/public/sogen/32/analyzer.wasm` | `npm run vendor:sogen` (tools/fetch-sogen-wasm.mjs) | ~90 MB |
 
-- sogen core is GPL-2.0. Vendoring + distribution triggers the same source
-  obligations already documented for `packages/ntsim-unicorn`; keep this
-  directory's LICENSE notice intact.
-- The emulation root ships Wine-derived DLLs (LGPL) — built by
-  `tools/build-wine-root.mjs`, never committed from a real Windows install.
+Pin via env: `SOGEN_WASM_SHA256=<hash> npm run vendor:sogen`.
+
+## Rebuild from source (upstream recipe)
+
+```bash
+git clone https://github.com/momo5502/sogen && cd sogen
+git submodule update --init --recursive
+cmake --preset emscripten        # cmake/toolchain/emscripten.cmake
+cmake --build --preset emscripten
+# outputs page/public/emulator-worker.js + page/public/{32,64}/analyzer.{js,wasm}
+```
+
+Record any re-vendor here with commit hash + all four sha256s.
+
+## Integration state
+
+- Worker lifecycle (run/log/end messages), asset probe, and session flip:
+  `src/backend-wasm.mjs` (+ `resolveSogenBackend` in src/index.mjs).
+- Debugger verb channel (Flatbuffers DebugCommand envelope → JSON payloads,
+  kinds 0–13 per upstream docs/debugger/ARCHITECTURE.md): transport is wired;
+  the Flatbuffers encoder/decoder is the remaining milestone — tracked in
+  backend-wasm.mjs as `debugCommand()`, loud-degrades to the static session
+  until it lands.

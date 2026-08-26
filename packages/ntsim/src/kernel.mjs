@@ -88,7 +88,7 @@ export class NtKernel {
     this.paging = !!opts.paging && !opts.cpu;
     if (this.paging) {
       const tm = new TranslatedMemory();
-      this.mmu = new Mmu(raw, { demandMap: opts.demandMap ?? true });
+      this.mmu = new Mmu(raw, { demandMap: opts.demandMap ?? true, frameBase: opts.frameBase });
       tm.attach(this.mmu);
       this.mem = tm;
       this.cr3 = this.mmu.newAddressSpace();
@@ -123,6 +123,14 @@ export class NtKernel {
     };
     this.buildName = opts.buildName ?? "synthetic-22h2";
 
+    if (this.paging) {
+      // Reserve the API-thunk arena up front: defineApi stamps an hlt marker
+      // per export, and lazy demand-mapping would tie the physical frame
+      // layout to the number of defined exports — shifting PA-anchored lab
+      // constants (e.g. KUSER_SHARED_DATA) whenever new APIs are added.
+      this.mmu.ensureRange(this.bases.thunk, 0x10000);
+    }
+
     /** @type {Map<string, bigint>} export name -> thunk VA */
     this.apiThunks = new Map();
     this.nextThunk = this.bases.thunk;
@@ -151,6 +159,25 @@ export class NtKernel {
     this.pendingThreads = [];
     /** modeled data exports (PsProcessType & co): name -> slot VA holding ptr */
     this.dataExports = new Map();
+
+    // module-2 extension state (IRQL/DPC attack & defense labs) ------------
+    /** modeled KTIMERs: {timerVa, dueTick, period, dpcVa}; fired by
+     *  advanceTicks()/fireDueTimers() — the lab's explicit clock */
+    this.pendingTimers = [];
+    /** directed-DPC targeting: KDPC va -> processor number (KeSetTargetProcessorDpc) */
+    this.dpcTargetCpu = new Map();
+    /** per-CPU IRQL side-state for cores 1..N-1 (core 0 aliases currentIrql) */
+    this.cpuIrqls = [0, 0, 0];
+    /** control-register model: WP = bit 16; written via KfWriteCr0 thunks */
+    this.cr0 = 0x80010031n;
+    /** CR0 write history: {tick, old, new} */
+    this.cr0Trace = [];
+    /** interrupt flag (KfCli/KfSti) */
+    this.interruptsEnabled = true;
+    /** HVCI/VBS analog: when true, clearing CR0.WP bugchecks 0x109 */
+    this.hvciMode = false;
+    /** integrity-scanned ranges: {base, size, name, pristine:Uint8Array} */
+    this.protectedRanges = [];
 
     // pool
     this.nextPool = this.bases.pool;
@@ -562,9 +589,98 @@ export class NtKernel {
     this.currentIrql = level;
   }
 
-  queueDpc(dpcVa, routine, context = 0n) {
+  /** IRQL of logical core i (core 0 aliases currentIrql). */
+  cpuIrql(i) {
+    return i === 0 ? (this.currentIrql ?? 0) : (this.cpuIrqls[i - 1] ?? 0);
+  }
+
+  /** Move a logical core to an IRQL (cores >0 are directed-DPC lab state). */
+  setCpuIrql(i, level) {
+    if (i === 0) this.currentIrql = level;
+    else if (i >= 1 && i <= this.cpuIrqls.length) this.cpuIrqls[i - 1] = level;
+  }
+
+  /**
+   * CR0 write through the KfWriteCr0 thunk. Records history; under the
+   * HVCI/VBS analog a WP-clearing write is intercepted with modeled
+   * CRITICAL_STRUCTURE_CORRUPTION (0x109) — matching real VBS behavior.
+   */
+  writeCr0(value) {
+    const v = BigInt.asUintN(64, BigInt(value));
+    const old = this.cr0;
+    const CR0_WP = 0x10000n;
+    this.cr0Trace.push({ tick: this.tickCount ?? 0n, old, new: v });
+    this.dbgLog.push(
+      `nt: mov cr0, 0x${v.toString(16)} (WP=${((v >> 16n) & 1n).toString()}, was ${((old >> 16n) & 1n).toString()})`);
+    if ((old & CR0_WP) !== 0n && (v & CR0_WP) === 0n && this.hvciMode) {
+      this.dbgLog.push("[hvci] CR0.WP-clearing write intercepted -> CRITICAL_STRUCTURE_CORRUPTION");
+      this.bugcheck = { code: 0x109n, params: [3n, v, old, 0n] };
+      this.crash = { code: "0x109" };
+      this.cpu.halted = true;
+      throw new Error("HVCI: CR0.WP-clearing write blocked (CRITICAL_STRUCTURE_CORRUPTION)");
+    }
+    this.cr0 = v;
+    return old;
+  }
+
+  /**
+   * Register a pristine-vs-live integrity range (PatchGuard/HVCI analog).
+   * Snapshots current bytes for later !pgscan / scanProtectedRanges().
+   */
+  protectRange(base, size, name = "protected") {
+    const len = Number(size);
+    const range = { base, size: len, name, pristine: this.mem.read(base, len) };
+    this.protectedRanges.push(range);
+    return range;
+  }
+
+  /** Diff protected ranges against their pristine snapshot. */
+  scanProtectedRanges() {
+    const diffs = [];
+    for (const r of this.protectedRanges) {
+      const live = this.mem.read(r.base, r.size);
+      let firstDelta = -1;
+      let count = 0;
+      for (let i = 0; i < r.size; i++) {
+        if (live[i] !== r.pristine[i]) {
+          count++;
+          if (firstDelta < 0) firstDelta = i;
+        }
+      }
+      if (firstDelta >= 0) diffs.push({ ...r, firstDelta, count, liveByte: live[firstDelta], pristineByte: r.pristine[firstDelta] });
+    }
+    return diffs;
+  }
+
+  /**
+   * Drain-time read of a queued DPC's DeferredRoutine/DeferredContext from
+   * guest memory (teaching layout: routine @+8, context @+16). Re-reading at
+   * drain time is what makes post-insert patches (hijack labs) observable.
+   * Falls back to the insert-time snapshot when memory is unmapped/zeroed.
+   */
+  _liveDpcField(d, byteOffset, fallback) {
+    try {
+      if (this.mem.canRead(d.dpcVa + byteOffset, 8)) {
+        const v = this.mem.u64(d.dpcVa + byteOffset);
+        if (v !== 0n) return v;
+      }
+    } catch { /* guarded */ }
+    return fallback;
+  }
+
+  liveDpcRoutine(d) { return this._liveDpcField(d, 8n, d.routine); }
+  liveDpcContext(d) { return this._liveDpcField(d, 16n, d.context); }
+
+  queueDpc(dpcVa, routine, context = 0n, opts = {}) {
     if (this.pendingDpcs.some((d) => d.dpcVa === dpcVa && !d.drained)) return false;
-    this.pendingDpcs.push({ dpcVa, routine, context, drained: false });
+    this.pendingDpcs.push({
+      dpcVa,
+      routine,
+      context,
+      drained: false,
+      targetCpu: opts.targetCpu ?? 0,
+      enqueuedAt: opts.enqueuedAt ?? (this.tickCount ?? 0n),
+    });
     return true;
   }
 
@@ -576,9 +692,139 @@ export class NtKernel {
       d.drained = true;
       fired.push(d);
       this.dbgLog.push(`nt: KiRetireDpcList: DPC @ ${d.dpcVa.toString(16)} fired`);
+      const live = this.liveDpcRoutine(d);
+      if (live !== d.routine && d.routine) {
+        this.dbgLog.push(`[dpc] DeferredRoutine now 0x${live.toString(16)} (insert-time 0x${d.routine.toString(16)})`);
+      }
       try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
     }
     return fired;
+  }
+
+  // -------------------------------------------------------------- timers
+
+  /**
+   * Model KeSetTimer/KeSetTimerEx. `dueTick` is absolute on the lab clock
+   * (kernel.tickCount); `period` > 0 re-arms after each expiration.
+   * @returns {boolean} true when the timer was already pending (real contract)
+   */
+  setTimer(timerVa, dueTick, period = 0, dpcVa = 0n) {
+    const t = this.pendingTimers.find((x) => x.timerVa === timerVa);
+    if (t) {
+      Object.assign(t, { dueTick, period, dpcVa });
+      return true;
+    }
+    this.pendingTimers.push({ timerVa, dueTick, period, dpcVa, firedCount: 0 });
+    return false;
+  }
+
+  cancelTimer(timerVa) {
+    const idx = this.pendingTimers.findIndex((x) => x.timerVa === timerVa);
+    if (idx < 0) return false;
+    this.pendingTimers.splice(idx, 1);
+    return true;
+  }
+
+  /** Expire due timers, executing bound KDPC routines read from memory.
+   *  Nothing timer-driven fires while the executing core is pinned above
+   *  DISPATCH_LEVEL — the clock interrupt itself is masked up there. */
+  fireDueTimers(maxPerTimer = 64) {
+    if ((this.currentIrql ?? 2) > 2) return 0;
+    let fired = 0;
+    for (const t of [...this.pendingTimers]) {
+      let guard = 0;
+      while ((this.tickCount ?? 0n) >= t.dueTick) {
+        fired++;
+        guard++;
+        t.firedCount++;
+        this.dbgLog.push(`nt: KiTimerExpiration: timer 0x${t.timerVa.toString(16)} expired (tick ${t.dueTick})`);
+        let routine = null;
+        let context = 0n;
+        if (t.dpcVa) {
+          try {
+            if (this.mem.canRead(t.dpcVa, 24)) {
+              const r = this.mem.u64(t.dpcVa + 8n);
+              if (r !== 0n) routine = r;
+              context = this.mem.u64(t.dpcVa + 16n);
+            }
+          } catch { /* guarded */ }
+          if (!routine) {
+            const rec = this.pendingDpcs.find((d) => d.dpcVa === t.dpcVa);
+            if (rec) { routine = rec.routine; context = rec.context; }
+          }
+          // the timer retires its bound record so !dpcs reflects reality
+          const rec = this.pendingDpcs.find((d) => d.dpcVa === t.dpcVa && !d.drained);
+          if (rec) rec.drained = true;
+        }
+        if (routine) {
+          const r = this.cpu.callFunction(routine, [t.dpcVa ?? 0n, context, 0n, 0n]);
+          this.dbgLog.push(`[timer] DPC routine 0x${routine.toString(16)} -> ${r.status}`);
+          if (r.status !== "ok") this.exceptionTrace.push({ kind: "timer", detail: r.status });
+        }
+        if (guard >= maxPerTimer) break;
+        if (t.period > 0) t.dueTick += BigInt(t.period);
+        else { this.cancelTimer(t.timerVa); break; }
+      }
+    }
+    return fired;
+  }
+
+  /**
+   * Advance the lab clock by n ticks, expire timers and — when the CPU is at
+   * or below DISPATCH_LEVEL — retire queued DPCs with real execution.
+   * This is the debugger's KiRetireDpcList/KiTimerExpiration analog.
+   */
+  advanceTicks(n = 1) {
+    const ticks = Math.max(0, Math.min(Number(n) || 0, 100000));
+    this.tickCount = (this.tickCount ?? 0n) + BigInt(ticks);
+    const firedTimers = this.fireDueTimers();
+    let retired = 0;
+    if ((this.currentIrql ?? 2) <= 2) retired = this.retireQueuedDpcs();
+    return { ticks, firedTimers, retired };
+  }
+
+  /**
+   * Retire every queued DPC like drainDpcs(), but ALSO execute each routine
+   * through the CPU (drainDpcs is retirement-only for scenario hooks).
+   */
+  retireQueuedDpcs() {
+    let n = 0;
+    for (const d of this.pendingDpcs.filter((x) => !x.drained)) {
+      d.drained = true;
+      n++;
+      this.dbgLog.push(`nt: KiRetireDpcList: DPC @ ${d.dpcVa.toString(16)} fired`);
+      const routine = this.liveDpcRoutine(d) || d.routine;
+      try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
+      if (!routine) continue;
+      const r = this.cpu.callFunction(routine, [d.dpcVa ?? 0n, this.liveDpcContext(d), 0n, 0n]);
+      this.dbgLog.push(`[dpc] routine 0x${routine.toString(16)} -> ${r.status}`);
+      if (r.status !== "ok") this.exceptionTrace.push({ kind: "dpc", detail: r.status });
+    }
+    return n;
+  }
+
+  /**
+   * DPC watchdog analog (KiProcessExpiredTimerList / bugcheck 0x133). Two
+   * trip conditions mirror real Windows budgets: any SECONDARY core parked
+   * at or above DISPATCH_LEVEL (directed-DPC lockdown), or the executing
+   * core sitting above DISPATCH (the m2.l1 pinned-world). Core 0 at exactly
+   * DISPATCH is the lab's healthy idle state and never trips alone.
+   */
+  checkDpcWatchdog() {
+    const pinned = [];
+    for (let i = 1; i <= this.cpuIrqls.length; i++) {
+      const lvl = this.cpuIrql(i);
+      if (lvl >= 2) pinned.push({ cpu: i, irql: lvl });
+    }
+    const core0Above = (this.currentIrql ?? 2) > 2;
+    const starved = this.pendingDpcs.filter((d) => !d.drained).length;
+    if (!pinned.length && !core0Above) return { ok: true, pinned, starved };
+    const worst = pinned.length ? pinned[0].irql : (this.currentIrql ?? 2);
+    this.bugcheck = { code: 0x133n, params: [BigInt(worst), 0n, 0n, 0n] };
+    this.crash = { code: "0x133" };
+    this.cpu.halted = true;
+    this.dbgLog.push("nt: KiProcessExpiredTimerList: DPC_WATCHDOG_VIOLATION (0x133): core(s) pinned at/above DISPATCH_LEVEL");
+    return { ok: false, pinned, starved };
   }
 
   // ------------------------------------------------------------ API surface
@@ -879,10 +1125,11 @@ export class NtKernel {
         this.dbgLog.push(`nt: KiRetireDpcList: DPC @ ${d.dpcVa.toString(16)} fired`);
         this.emitTrace({ kind: "dpc", routine: d.routine ?? 0n, context: d.context ?? 0n, detail: "fired" });
         try { this.onDpcDrain?.(d); } catch (e) { this.dbgLog.push(`[dpc] callback threw: ${e.message}`); }
-        if (!d.routine) continue;
-        const r = this.cpu.callFunction(d.routine, [d.dpcVa ?? 0n, d.context ?? 0n, 0n, 0n]);
-        this.dbgLog.push(`[dpc] routine 0x${d.routine.toString(16)} -> ${r.status}`);
-        this.emitTrace({ kind: "dpc", routine: d.routine, context: d.context ?? 0n, detail: `-> ${r.status}` });
+        const routine = this.liveDpcRoutine(d) || d.routine;
+        if (!routine) continue;
+        const r = this.cpu.callFunction(routine, [d.dpcVa ?? 0n, this.liveDpcContext(d), 0n, 0n]);
+        this.dbgLog.push(`[dpc] routine 0x${routine.toString(16)} -> ${r.status}`);
+        this.emitTrace({ kind: "dpc", routine, context: d.context ?? 0n, detail: `-> ${r.status}` });
         if (r.status !== "ok") this.exceptionTrace.push({ kind: "dpc", detail: r.status });
       }
       for (const w of work) {

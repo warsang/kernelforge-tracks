@@ -8,6 +8,7 @@
  */
 
 import { SerialCapture } from "./serial.mjs";
+import { GdbSession } from "./gdb-session.mjs";
 
 let cachedBundle = null;
 
@@ -20,8 +21,8 @@ export async function resolveV86() {
   if (cachedBundle !== null) return cachedBundle;
   try {
     // opaque specifier: bundlers must not try to resolve a missing vendor file
-    const specifier = "./v86-bundle-" + "lib.js";
-    cachedBundle = await import(/* @vite-ignore */ `${specifier}`).catch(() => null);
+    const spec = new URL("../vendor/v86-bundle-" + "lib.js", import.meta.url).href;
+    cachedBundle = await import(/* @vite-ignore */ `${spec}`).catch(() => null);
   } catch {
     cachedBundle = null;
   }
@@ -69,17 +70,24 @@ export async function fetchGuestImage(fetchImpl = globalThis.fetch) {
 export async function bootLinuxSession({ worldId, image, snapshot, v86 }) {
   if (!worldId) throw new Error("bootLinuxSession: worldId required");
 
-  const bundle = v86 ?? await resolveV86();
+  // Explicit `v86: null` forces the missing-bundle path (deterministic in
+  // tests); otherwise lazily resolve whatever is vendored.
+  const bundle = v86 !== undefined ? v86 : await resolveV86();
   if (!bundle) throw new BundleMissingError();
 
   const serial = new SerialCapture();
-  const emulator = await bundle.V86({
+  // NB: the vendored bundle's V86 is a constructor — calling it without `new`
+  // throws "Cannot add property cpu_is_running, object is not extensible"
+  // (strict-mode `this` is undefined inside the CPU class).
+  const emulator = await new bundle.V86({
     bios: { url: "vendor/seabios.bin" },
     vga_bios: { url: "vendor/vgabios.bin" },
     bzimage: { buffer: image },
     cmdline: "console=ttyS0 tsc=reliable",
     uart1: true,
     autostart: true,
+    // wasm sits next to the vendored bundle; served by the app origin
+    wasm_path: "vendor/v86.wasm",
   });
 
   // wire UART output into the capture harness
@@ -111,5 +119,28 @@ export class V86LabSession {
 
   async destroy() {
     try { await this.emulator.destroy(); } catch { /* already gone */ }
+  }
+
+  /**
+   * Attach a GDB RSP session to the guest's gdbserver over ttyS1.
+   * The guest must have started it first: `gdbserver /dev/ttyS1 <target>`.
+   * Requires the buildroot image to include gdb-server (see
+   * scripts/build-buildroot.sh — BR2_PACKAGE_GDB_SERVER).
+   */
+  async attachGdb() {
+    const emu = this.emulator;
+    const transport = {
+      send: (bytes) => {
+        for (const b of bytes) {
+          if (typeof emu.serial1_send === "function") emu.serial1_send(b);
+          else if (emu.bus) emu.bus.send("serial1-input", b);
+          else throw new Error("v86: no uart1 tx path on this bundle");
+        }
+      },
+      onReceive: (cb) => {
+        emu.add_listener?.("serial1-output-byte", (byte) => cb(byte));
+      },
+    };
+    return GdbSession.attach(transport);
   }
 }

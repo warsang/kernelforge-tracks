@@ -327,7 +327,17 @@ export function installWinApi(kernel) {
     kernel.lowerIrql(kirql(newIrql));
     return undefined;
   });
+  k.define("KeRaiseIrqlToDpcLevel", () => BigInt(kernel.raiseIrql(2)));
   k.define("KeGetCurrentIrql", () => BigInt(kernel.currentIrql ?? 2));
+
+  // control-register model: KfReadCr0/KfWriteCr0/KfCli/KfSti are the thunk
+  // targets behind the __readcr0/__writecr0/_disable/_enable header shims.
+  k.define("KfReadCr0", () => kernel.cr0);
+  k.define("KfWriteCr0", (value) => { kernel.writeCr0(value); return undefined; });
+  k.define("KfCli", () => { kernel.interruptsEnabled = false; return undefined; });
+  k.define("KfSti", () => { kernel.interruptsEnabled = true; return undefined; });
+  /** lab extension: sample another logical core's IRQL (directed-DPC labs). */
+  k.define("KeQueryPerCpuIrql", (num) => BigInt(kernel.cpuIrql(Number(BigInt.asUintN(8, BigInt(num ?? 0n))))));
   k.define("KeInitializeDpc", (dpc, deferred, ctx) => {
     mem.w64(dpc, 0x4b444350n); // 'DPCk' marker
     mem.w64(dpc + 8n, ptrSizeMask(deferred));
@@ -337,22 +347,63 @@ export function installWinApi(kernel) {
   k.define("KeInsertQueueDpc", (dpc, sysArg1, sysArg2) => {
     void sysArg1; void sysArg2;
     // already-queued DPCs are not requeued (returns FALSE in real Windows)
-    return kernel.queueDpc(
-      ptrSizeMask(dpc),
+    const va = ptrSizeMask(dpc);
+    const target = kernel.dpcTargetCpu.get(va) ?? 0;
+    const ok = kernel.queueDpc(
+      va,
       mem.u64(dpc + 8n),
       mem.u64(dpc + 16n),
-    ) ? 1n : 0n;
+      { targetCpu: target },
+    );
+    // directed delivery: a DPC targeted at another core raises that core to
+    // DISPATCH_LEVEL the moment it arrives (the lab's KiDpcInterrupt analog)
+    if (ok && target > 0) {
+      kernel.setCpuIrql(target, Math.max(kernel.cpuIrql(target), 2));
+      kernel.dbgLog.push(`nt: KiDpcInterrupt: directed DPC 0x${va.toString(16)} raised core ${target} to DISPATCH_LEVEL`);
+    }
+    return ok ? 1n : 0n;
   });
   k.define("KeRemoveQueueDpc", (dpc) => {
     const va = ptrSizeMask(dpc);
     const idx = kernel.pendingDpcs.findIndex((d) => d.dpcVa === va && !d.drained);
     if (idx < 0) return 0n;
-    kernel.pendingDpcs[idx].drained = true;
+    const d = kernel.pendingDpcs[idx];
+    d.drained = true;
+    if ((d.targetCpu ?? 0) > 0) kernel.setCpuIrql(d.targetCpu, 0); // unpin core
     return 1n;
   });
+  /** lab extension: release every directed (spin) DPC and unpin its core. */
+  k.define("KfReleaseDirectedDpcs", () => {
+    let released = 0;
+    for (const d of kernel.pendingDpcs) {
+      if (d.drained || !(d.targetCpu > 0)) continue;
+      d.drained = true;
+      released++;
+      kernel.setCpuIrql(d.targetCpu, 0);
+      kernel.dbgLog.push(`nt: directed DPC 0x${d.dpcVa.toString(16)} released core ${d.targetCpu}`);
+    }
+    return BigInt(released);
+  });
   k.define("KeInitializeTimer", () => undefined);
-  k.define("KeSetTimer", () => 0n); // timer was not pending
-  k.define("KeCancelTimer", () => 0n);
+  // DueTime is a LARGE_INTEGER passed by value (8 bytes -> rdx). Negative =
+  // relative. Lab simplification: |DueTime| is ticks on kernel.tickCount.
+  k.define("KeSetTimer", (timer, dueTime, dpc) => {
+    const rel = BigInt.asIntN(64, BigInt.asUintN(64, BigInt(dueTime ?? 0n)));
+    const delta = rel < 0n ? -rel : rel;
+    const wasPending = kernel.setTimer(
+      ptrSizeMask(timer), (kernel.tickCount ?? 0n) + delta, 0, ptrSizeMask(dpc));
+    return wasPending ? 1n : 0n;
+  });
+  k.define("KeSetTimerEx", (timer, dueTime, period, dpc) => {
+    const rel = BigInt.asIntN(64, BigInt.asUintN(64, BigInt(dueTime ?? 0n)));
+    const delta = rel < 0n ? -rel : rel;
+    const wasPending = kernel.setTimer(
+      ptrSizeMask(timer), (kernel.tickCount ?? 0n) + delta,
+      Number(BigInt.asUintN(32, BigInt(period ?? 0n))), ptrSizeMask(dpc));
+    return wasPending ? 1n : 0n;
+  });
+  k.define("KeCancelTimer", (timer) =>
+    kernel.cancelTimer(ptrSizeMask(timer)) ? 1n : 0n);
   k.define("KeQueryTickCount", (countPtr) => {
     kernel.tickCount += 1n;
     mem.w64(countPtr, kernel.tickCount);

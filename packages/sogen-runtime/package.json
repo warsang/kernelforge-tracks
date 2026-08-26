@@ -8,6 +8,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@kernelforge/ntsim": "*"
+    "@kernelforge/debugger-ui": "*",
+    "@kernelforge/ntsim": "*",
+    "capstone-wasm": "^1.0.3"
   }
 }

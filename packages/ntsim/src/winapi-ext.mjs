@@ -727,12 +727,18 @@ export function installWinApiExt(kernel, ctx) {
   k.define("KeEnterGuardedRegion", () => undefined);
   k.define("KeLeaveGuardedRegion", () => undefined);
   k.define("KeWaitForMultipleObjects", () => STATUS_SUCCESS);
-  k.define("KeQueryActiveProcessors", () => 1n);
+  k.define("KeQueryActiveProcessors", () => 0xfn); // 4 logical cores, all online
   k.define("KeGetCurrentProcessorNumber", () => 0n);
   k.define("KeGetCurrentProcessorNumberEx", (_out) => 0n);
   k.define("KeQueryMaximumProcessorCount", () => 4n);
-  k.define("KeSetTargetProcessorDpc", () => undefined);
+  k.define("KeSetTargetProcessorDpc", (dpc, number) => {
+    kernel.dpcTargetCpu.set(ptrSizeMask(dpc), Number(BigInt.asUintN(8, BigInt(number ?? 0n))));
+    return undefined;
+  });
   k.define("KeSetImportanceDpc", () => undefined);
+  /** lab extension: pending-DPC depth for telemetry sensors (m2.l4). */
+  k.define("KeQueryDpcQueueDepth", () =>
+    BigInt((kernel.pendingDpcs ?? []).filter((d) => !d.drained).length));
 
   k.define("ExInitializeFastMutex", (fm) => {
     mem.w32(fm, 1); mem.w32(fm + 4n, 0); mem.w64(fm + 8n, 0n);

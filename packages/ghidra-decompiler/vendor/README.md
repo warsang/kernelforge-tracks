@@ -3,30 +3,52 @@
 The analysis pane decompiles with **Ghidra's C++ decompiler engine**
 (`ghidra/Features/Decompiler/src/decompile/cpp`, Apache-2.0) compiled to
 WebAssembly. Static-analysis commands (!funcs, rel32 resolution) work without
-the artifact; `!decomp` degrades loudly until it is vendored.
+the artifact; `!decomp` and the debugger shell's Pseudocode tab degrade
+loudly until it is vendored.
 
-## Build recipe (pinned)
+## Build recipe — pyre pipeline (adopted 2026-08)
 
-1. Source: https://github.com/NationalSecurityAgency/ghidra — record the
-   release tag here when vendoring.
-2. Emscripten the standalone decompiler:
-   ```
-   git clone --depth 1 --branch <TAG> https://github.com/NationalSecurityAgency/ghidra
-   cd ghidra/Features/Decompiler/src/decompile/cpp
-   # swap the makefile toolchain for emcc, or use a community wasm port if
-   # the pinned tag ships one; the binary target is `decompile` (sleigh + pdg)
-   emmake make decompile
-   ```
-3. Produce `vendor/decompiler-wasm.mjs`: an emscripten MODULARIZE wrapper
-   exposing
-   ```
-   export function decompile(imageBytes: Uint8Array, baseHex: string, funcHex: string): string
-   ```
-   Initialize SLEIGH with the x86-64 Windows .sla/.pspec from the same build.
-4. Record provenance in this file: ghidra tag, emcc version, sha256 of the
-   produced artifacts.
+[pyre](https://github.com/ant4g0nist/pyre) (MIT) ships a maintained,
+docker-contained build of exactly this artifact; we adopt its pipeline:
+
+```bash
+git clone https://github.com/ant4g0nist/pyre && cd pyre
+# option A: local emsdk
+./decompiler-wasm/build.sh            # -> decompiler-wasm/dist/pyre_decompiler.{js,wasm}
+# option B: hermetic docker (emsdk + JDK + gradle)
+docker build -t pyre-dev -f docker/Dockerfile .
+docker run --rm -it -v "$PWD":/work -w /work -p 5173:5173 pyre-dev
+#   then, inside: ./decompiler-wasm/build.sh
+```
+
+Stage SLEIGH specs for x86-64 from any Ghidra install:
+
+```bash
+./specs/stage-specs.sh /path/to/ghidra   # -> specs/dist/x86/data/languages/*.{sla,ldefs,cspec,pspec}
+```
+
+### Adapter shim (drop at packages/ghidra-decompiler/src/decompiler-wasm.mjs)
+
+pyre's bridge speaks worker-JSON; our wrapper contract is an emscripten
+MODULARIZE export:
+
+```js
+export function decompile(imageBytes: Uint8Array, baseHex: string, funcHex: string): string
+```
+
+Wrap `pyre_decompiler.js`: mount the staged specs under `/spec` (lazy FS),
+register the image bytes as a single-region LoadImage, call through to
+Ghidra's `decompile(funcAddr)`, return the generated C. Keep the wrapper's
+signature so `src/wrapper.mjs` and `src/client.mjs` need no changes.
+
+## Provenance record (fill on vendor)
+
+- pyre commit:
+- ghidra source tag used for SLEIGH specs:
+- emcc version:
+- sha256 (decompiler-wasm.mjs / .wasm / x86-64.sla):
 
 ## License
 
-Apache-2.0. Keep the upstream NOTICE text alongside the vendor directory;
-the platform's license inventory lives in docs/legal.md.
+Apache-2.0 (upstream Ghidra); pyre tooling MIT. Keep upstream NOTICE text
+alongside the vendor directory; inventory lives in docs/legal.md.

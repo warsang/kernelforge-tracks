@@ -78,6 +78,19 @@ export class JsInterpreter {
     this.fault = null;
     /** when set, run() returns "returned" upon reaching this rip (call sentinel) */
     this.stopOnRip = null;
+    /**
+     * Debugger policy for int3 hits inside callFunction: "continue" (default,
+     * legacy int3-padding tolerance) or "pause" (attached debugger takes
+     * control; callFunction returns {status:"breakpoint", ...}).
+     */
+    this.breakpointPolicy = "continue";
+    /**
+     * Debugger software-breakpoint gate: addresses checked BEFORE fetch.
+     * A hit parks RIP on the address (nothing executes) and behaves exactly
+     * like an executed int3: pendingBreak -> run()=="breakpoint". Memory is
+     * never modified, so no self-modifying-code/TLB concerns.
+     */
+    this.debugBps = new Set();
     /** port I/O hooks (CpuBackend contract): (port, size)=>value | undefined */
     this.onPortRead = null;
     /** (port, value, size)=>void — SMI triggers ride on this */
@@ -314,6 +327,12 @@ export class JsInterpreter {
 
   step() {
     if (this.halted) throw new Error("cpu halted");
+    // debugger breakpoint gate: park RIP on the address, report a break
+    if (this.debugBps.size > 0 && this.debugBps.has(this.rip)) {
+      this.steps++;
+      this.pendingBreak = true;
+      return this.rip;
+    }
     if (this.onCodeHook?.(this.rip) === true) {
       this.steps++;
       return "hook";
@@ -847,6 +866,7 @@ export class JsInterpreter {
 
   /** Call a function using the Windows x64 ABI. */
   callFunction(funcAddr, args = [], shadowSpace = 32) {
+    this.pausedFrame = null; // cleared unless THIS call ends paused
     const retAddrMarker = 0xdead0000feed0000n; // unlikely to collide with real code
     const savedStop = this.stopOnRip;
     this.regs.rsp = (this.regs.rsp & ~0xfn) - 8n; // align
@@ -863,7 +883,26 @@ export class JsInterpreter {
     for (;;) {
       const reason = this.run();
       if (reason === "returned") break;
-      if (reason === "breakpoint") continue;
+      if (reason === "breakpoint") {
+        // Debugger integration: "continue" keeps the legacy int3-padding
+        // tolerance (module extents are CC-filled); "pause" hands control to
+        // an attached debugger instead of resuming through the hit.
+        if (this.breakpointPolicy === "pause") {
+          this.stopOnRip = savedStop;
+          this.pausedFrame = {
+            rip: this.rip,
+            ripAfterInt3: this.ripAfterInt3 ?? this.rip,
+            retMarker: retAddrMarker,
+          };
+          return {
+            status: "breakpoint",
+            rip: this.rip,
+            ripAfterInt3: this.ripAfterInt3 ?? this.rip,
+            retMarker: retAddrMarker,
+          };
+        }
+        continue;
+      }
       this.stopOnRip = savedStop;
       if (reason === "error") return { status: "fault", error: this.fault };
       if (reason === "timeout") return { status: "timeout" };

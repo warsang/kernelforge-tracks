@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has nineteen modules / twenty-six lessons / sixty-three flags", () => {
+test("catalog v5 has nineteen modules / twenty-eight lessons / seventy-nine flags", () => {
   assert.equal(catalog.version, 5);
   assert.equal(catalog.modules.length, 19);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 26);
+  assert.equal(lessons.length, 28);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 63);
+  assert.equal(flags.length, 79);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -49,6 +49,24 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m2.l1.f1": "15",
     "m2.l1.f2": "0xFFFFF8055A401400",
     "m2.l1.f3": "kf-dpc-drain-ok",
+    // m2.l3 attack workshop (irql-attackers world; KFWARZ_* anchors)
+    "m2.l3.f1": "2",
+    "m2.l3.f2": "0x80010031",
+    "m2.l3.f3": "3",
+    "m2.l3.f4": "133",
+    "m2.l3.f5": "3",
+    "m2.l3.f6": "2",
+    "m2.l3.f7": "0xfffff8055a701000",
+    "m2.l3.f8": "kf-hijack-seen",
+    // m2.l4 defense workshop
+    "m2.l4.f1": "1",
+    "m2.l4.f2": "kf-watchdog-ok",
+    "m2.l4.f3": "missed",
+    "m2.l4.f4": "2",
+    "m2.l4.f5": "5",
+    "m2.l4.f6": "1",
+    "m2.l4.f7": "109",
+    "m2.l4.f8": "0",
     "m3.l1.f1": "PsLookupProcessByProcessId",
     "m3.l1.f2": "666",
     "m3.l1.f3": "STATUS_SUCCESS",

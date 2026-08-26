@@ -15,7 +15,8 @@
     "assets": "npm run build --workspace @kernelforge/ntsim-assets",
     "bridge": "node apps/web/compile-bridge.mjs",
     "web": "npm run dev --workspace @kernelforge/web",
-    "carve": "node packages/ntsim-assets/scripts/carve-dump.mjs"
+    "carve": "node packages/ntsim-assets/scripts/carve-dump.mjs",
+    "vendor:sogen": "node tools/fetch-sogen-wasm.mjs"
   },
   "devDependencies": {
     "typescript": "^5.5.4"

@@ -20,6 +20,8 @@ export class SerialCapture {
     this.waiters = new Map();
     this.waiterSeq = 0;
     this.onLine = null;
+    /** Raw byte tap (debug transports like the GDB RSP bridge). */
+    this.onByte = null;
   }
 
   /** Feed raw bytes (string or Uint8Array) from the UART. */
@@ -27,6 +29,11 @@ export class SerialCapture {
     const text = typeof chunk === "string"
       ? chunk
       : new TextDecoder().decode(chunk);
+    if (this.onByte) {
+      for (let i = 0; i < text.length; i++) {
+        try { this.onByte(text.charCodeAt(i) & 0xff); } catch { /* listener bug */ }
+      }
+    }
     this.buffer += text;
     let idx;
     while ((idx = this.buffer.indexOf("\n")) >= 0) {

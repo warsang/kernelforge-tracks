@@ -89,6 +89,98 @@ export class HybridCpuBackend {
   get halted() { return this.activeEngine.halted; }
   set halted(v) { this.activeEngine.halted = v; }
 
+  /**
+   * Breakpoint policy for callFunction int3 hits. Applied to BOTH engines so
+   * arming before a burst survives a mid-call JS->unicorn handoff (the
+   * unicorn engine ignores it today — its hit path is exception-shaped and
+   * handled in the debugger layer).
+   */
+  get breakpointPolicy() { return this.js.breakpointPolicy; }
+  set breakpointPolicy(v) {
+    this.js.breakpointPolicy = v;
+    if (this.uc) this.uc.breakpointPolicy = v;
+  }
+
+  // ---- debugger software breakpoints (execute-gates, memory untouched) ----
+
+  #bpAddr(addr) {
+    return BigInt.asUintN(64, BigInt(addr));
+  }
+
+  /** Arm a breakpoint gate on BOTH engines (survives JS->unicorn handoff). */
+  setDebugBp(addr) {
+    const a = this.#bpAddr(addr);
+    this.js.debugBps.add(a);
+    if (this.uc) this.uc.setDebugBp(a);
+  }
+
+  clearDebugBp(addr) {
+    const a = this.#bpAddr(addr);
+    this.js.debugBps.delete(a);
+    if (this.uc) this.uc.clearDebugBp(a);
+  }
+
+  /** True when the given address has an armed gate on the active engine. */
+  hasDebugBp(addr) {
+    const a = this.#bpAddr(addr);
+    if (this.active === "js") return this.js.debugBps.has(a);
+    return this.uc.debugBps.some((x) => x === a);
+  }
+
+  /**
+   * Execute exactly one instruction on the ACTIVE engine.
+   * Returns the rip the step started at.
+   */
+  stepInsn() {
+    if (this.active === "js") {
+      const start = this.js.opcodeStart ?? this.js.rip;
+      this.js.step();
+      return start;
+    }
+    if (typeof this.uc.stepInsn === "function") return this.uc.stepInsn();
+    this.uc.run(1); // legacy fallback: chunk cap == one instruction
+    return null;
+  }
+
+  /**
+   * Run until RIP reaches `stopAddr` (temporary, self-disarming), a
+   * breakpoint/error/timeout fires, or `maxSteps` elapse.
+   * @returns {"stopped"|"breakpoint"|"error"|"timeout"|"halted"}
+   */
+  runUntilStop(stopAddr, maxSteps = 10_000_000) {
+    if (this.active === "js") {
+      const saved = this.js.stopOnRip;
+      this.js.stopOnRip = stopAddr;
+      try {
+        const reason = this.js.run(maxSteps);
+        if (reason === "returned") {
+          return this.js.rip === stopAddr ? "stopped" : "exited";
+        }
+        if (reason === "breakpoint") return "breakpoint";
+        if (reason === "error") return "error";
+        return reason; // halted / timeout
+      } finally {
+        this.js.stopOnRip = saved;
+      }
+    }
+    // unicorn: UC_HOOK_CODE fires BEFORE the instruction executes, so a
+    // true-returning hook parks RIP exactly on stopAddr (stop-before).
+    let stopped = false;
+    const handle = this.uc.addCodeHook(() => {
+      stopped = true;
+      return true;
+    }, stopAddr, stopAddr);
+    try {
+      const reason = this.uc.run(Math.min(200_000, maxSteps));
+      if (stopped && this.uc.regs.rip === stopAddr) return "stopped";
+      if (reason === "error") return "error";
+      if (reason === "timeout") return "timeout";
+      return this.uc.halted ? "halted" : "timeout";
+    } finally {
+      try { this.uc.hook_del(handle); } catch { /* wrapper handle absent */ }
+    }
+  }
+
   // ----------------------------------------------------------- handoff
 
   #isUnsupported(error) {

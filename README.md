@@ -13,6 +13,7 @@ packages/
   ntsim                      emulated x64 Windows kernel
     memory.mjs               sparse 64-bit page store (BigInt addresses)
     cpu.mjs                  deterministic x86-64 interpreter (Win64 ABI)
+                             debugBps execute-gates + breakpointPolicy pause
     structs.mjs              Vergilius-table-driven struct access (no hardcoded offsets)
     pe.mjs / pebuilder.mjs   PE32+ manual mapper + image builder
     devices.mjs              DRIVER_OBJECT/DEVICE_OBJECT/IRP model + scripted IRP engine
@@ -28,13 +29,25 @@ packages/
   ntsim-analyzer             run-any-.sys harness: map -> DriverEntry -> IOCTLs -> report
   ntsim-assets               VergiliusProject scraper -> per-build offset JSON (CC0);
                              kdmp.mjs (crash-dump parser) + carve-dump.mjs (genuine pages)
-  ntsim-unicorn              Unicorn/QEMU-TCG wasm CPU backend + HybridCpuBackend
+  ntsim-unicorn              Unicorn/QEMU wasm CPU backend + HybridCpuBackend
                              (JS interpreter front end, automatic one-way handoff to
-                             QEMU on any instruction the interpreter refuses)
+                             QEMU on any instruction the interpreter refuses;
+                             stepInsn/runUntilStop/debugBp gates shared with the JS side)
   windbg-web                 kd> engine: dt/!process/lm/r/bp over live ntsim state
   compiler-worker            COFF parser + x64 linker: clang .obj -> runnable .sys
   course-content             module catalog, flag hashes, progression graph
   lab-runtime                flag checker, progress reducer, IndexedDB persistence
+  debugger-ui                track-agnostic debugger shell (docked disasm/registers/
+                             memory/stack/bp/threads/modules/pseudocode tabs, F5/F10/
+                             F11 hotkeys) over the DebugSession contract; Monaco editor
+                             service (all code surfaces) with textarea fallback
+  sogen-runtime              windows-userland track: JS reference world + static
+                             debug session + wasm-core client (worker transport,
+                             loud-degrade until the FB verb codec lands)
+  v86-lab                    i386 buildroot guest: serial harness + GDB RSP bridge
+                             (rsp.mjs / GdbSession) over the second UART
+  ghidra-decompiler          prologue boundary scanner + decompiler wrapper/client
+                             (pyre-pipeline build recipe; loud degrade)
 ```
 
 ## The pipeline (all verified by tests)
@@ -85,20 +98,46 @@ synthetic overlay. Without it everything runs on synthetic bytes.
 
 ## Debugger surface (apps/web/src/debugger.js)
 
-Native-engine commands: `lm`, `dt`, `r`, `k/kp/kv`, `eb`, `db/dq` (WinDbg
-`L<hex>` length prefixes supported), `s` (page-wise degrade on partially
-mapped ranges), `u`/`uf` (capstone-wasm x64 disassembly, branch-target
+Native-engine commands: `lm`, `dt`, `r` (read + `r reg=expr` writes), `k/kp/kv`, `eb`,
+`db/dq` (WinDbg `L<hex>` length prefixes supported), `s` (page-wise degrade on
+partially mapped ranges), `u`/`uf` (capstone-wasm x64 disassembly, branch-target
 symbolization), `da`/`du`, `x <pattern>`, `? <expr>`, `sym`.
+
+**Live execution control** (real software breakpoints on BOTH CPU backends):
+`bp/bc/bd/be/bl`, `t` (step into), `p` (step over calls), `g` (go),
+`gu` (step out). Breakpoints are execute-gates — memory is never patched, so
+no SMC/TLB hazards; a hit parks RIP on the address and any lab burst that
+pauses (compile+load, `!dpcdrain`, ...) adopts into the same stepping state.
+
 Debugger extensions (`!commands`, each documented in the lesson that
 introduces it with its in-driver equivalent): `!process`, `!drivers`,
-`!drvobj`, `!dh`, `!pcr`/`!prcb`/`!thread`, `!analyze`, `!irql`, `!dpcs`,
-`!dpcdrain`, `!hookscan`, `!hooktest`, `!poolfind`, `!poolverify`,
+`!drvobj`, `!dh`, `!pcr`/`!prcb`/`!thread`, `!analyze`, `!irql [-a]`,
+`!dpcs`, `!dpcdrain`, `!dpcpump`, `!dpcstat`, `!dpcwatchdog`, `!pgscan`,
+`!hookscan`, `!hooktest`, `!poolfind`, `!poolverify`,
 `!mmstate`, `!mmrun`, `!funcs`, `!decomp`.
 
 Module image extents are materialized (int3-padded) and pre-mapped in the
 Unicorn address space when a driver joins the module list
 (`NtKernel.materializeModuleRange` + `backend.mapRange`), so `lm`-listed
 modules are fully readable/executable instead of exposing unmapped holes.
+
+## Graphical debugger shell (packages/debugger-ui)
+
+The sogen userland labs and the linux gdb bridge mount a docked shell
+(sogen.dev playground UX, vanilla-JS port): virtualized disassembly with
+breakpoint gutter and branch-following, registers grid, hex memory viewer,
+call stack, breakpoints/threads/modules panels, Monaco pseudocode tab, and
+an embedded console tab — F5/F10/F11/Shift+F11/Ctrl+G hotkeys throughout.
+Every view consumes only the `DebugSession` contract; backends plug in per
+track (sogen static → wasm core, v86 RSP/gdbserver, ntsim kd console).
+
+## GDB bridge for the Linux track
+
+`gdb start /root/lab/app` in a linux-lab console launches gdbserver on the
+guest's second UART (`BR2_PACKAGE_GDB_SERVER` in build-buildroot.sh) and
+attaches `GdbSession` over a JS-side RSP client: real breakpoints,
+single-stepping, register/memory access inside the live v86 guest, driven
+through classic gdb syntax in the shell's Console tab.
 
 ## Quick start
 
@@ -109,6 +148,8 @@ node apps/web/server.mjs # serve on :8080 (+ /api/compile dev bridge)
 # open http://localhost:8080 — WinDbg tab: `!process 0 0`, `dt nt!_EPROCESS`
 # IDE tab: Compile driver; Lab tab: submit lab answers
 cd apps/web && node test/e2e.mjs   # headless browser integration test (legacy branch)
+
+npm run vendor:sogen     # optional: fetch the 90 MB sogen wasm payload
 ```
 
 ## Regenerating struct tables
@@ -154,12 +195,21 @@ so far.
    the EPROCESS pool window for DKOM-hidden processes and classifies an
    unbacked executable pool page against the linked module list
 
-**Module 2 — IRQL & Deferred Procedures** (`irql-dpc`)
+**Module 2 — IRQL & Deferred Procedures** (`irql-dpc`, `irql-attackers`, `irql-hardened`)
 `kfdpc.sys` pins the CPU above DISPATCH_LEVEL and strands a DPC. Read the
 stuck level (`!irql`), record the DeferredRoutine (`!dpcs`), lower and drain
 (`!irql 2`, `!dpcdrain`) to release the secret.
 5. **Defense: KF-Sentinel v2** — compile a watchdog that samples
    `KeGetCurrentIrql`, restores the ladder and releases the stranded DPC.
+6. **Attack workshop (m2.l3)** — compile the four documented kernel
+   techniques against the healthy `kvmdrv.sys` world: WPOFFx64 canary patch
+   inside a raised window, directed-DPC multi-core lockdown, timer-DPC
+   persistence, and in-place `DeferredRoutine` hijack — each audited from
+   the debugger with `!irql -a`, `!dpcstat`, `!dpcwatchdog` and `!pgscan`.
+7. **Defense workshop (m2.l4)** — telemetry sensor on the pinned world,
+   self-watchdog deadline alarm (the anticheat heartbeat pattern), a
+   baseline forensics sweep, and the HVCI ceiling where the same WPOFFx64
+   source dies with modeled bugcheck 0x109.
 
 **Module 3 — Inline Hooks & Control Flow** (`api-hook`, `api-hook-blank`)
 `kfhook.sys` detoured `PsLookupProcessByProcessId` so PID 666 vanishes from
@@ -167,14 +217,14 @@ lookup. Find it (`!hookscan`), probe it (`!hooktest`), repair the prologue
 with `eb`, prove the lookup succeeds again. Then author the detour yourself:
 find the export's address with `x`/`u`/`sym`, paste it into the driver
 template, compile, load — your bytes do the hooking.
-6. **Defense: KF-Sentinel v3** — compile a prologue attestation engine that
+8. **Defense: KF-Sentinel v3** — compile a prologue attestation engine that
    convicts both hooks from ring 0.
 
 **Module 4 — Pool Internals & Corruption** (`pool-corrupt`)
 An upstream overflow smashed one of `kfpooler.sys`'s trailing pool guards.
 Locate the block (`!poolfind KfPb` prints exact guard addresses), rewrite the
 guard with `eb`, verify (`!poolverify`), capture the checksum secret.
-7. **Defense: KF-Sentinel v4** — compile a pool monitor that sweeps guard
+9. **Defense: KF-Sentinel v4** — compile a pool monitor that sweeps guard
    trailers from your own driver and attributes the overflow.
 
 **Track: windows-userland (sogen)**
