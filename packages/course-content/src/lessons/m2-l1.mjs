@@ -38,6 +38,16 @@ has three phases, and the model in this lab mirrors each one:
    (\`_KPRCB.DpcData\`). The routine address is read from the struct at
    insert time — *and again at retire time*, which is exactly what
    DeferredRoutine-hijack attacks abuse (m2.l3).
+
+   > **What is an ISR?** Interrupt Service Routine — the device driver's
+   > hardware-interrupt callback. When a NIC, disk or timer raises an IRQ,
+   > the CPU vectors through the IDT into whatever routine registered for
+   > that device. ISRs run at high IRQL (DIRQL and above) where blocking is
+   > forbidden, so their contract is minimal: acknowledge the hardware, grab
+   > the data, queue a DPC to do the real work at DISPATCH_LEVEL. That
+   > "ISR queues, DPC finishes" split is the pattern this whole module
+   > teaches — and DeferredRoutine hijacking is how attackers redirect the
+   > finishing half.
 2. **Retire** — when the processor's IRQL falls back **to** DISPATCH_LEVEL
    on its way down from something higher, the kernel raises back to 2 and
    runs \`KiRetireDpcList\`: it pops entries and invokes each

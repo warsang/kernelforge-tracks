@@ -6,14 +6,23 @@ An EDR process inventory is not one lookup — it is several independent
 records diffed against each other. When they disagree, something is lying.
 The four records that matter on Windows x64:
 
-| # | source | owned by | survives DKOM? |
+| # | source | owned by | survives a simple \`_EPROCESS\` unlink? |
 |---|---|---|---|
 | 1 | \`ActiveProcessLinks\` | each \`_EPROCESS\` | **no** — it *is* the list |
 | 2 | \`KTHREAD→ApcState.Process\` | every thread | yes |
 | 3 | handle tables (\`ObjectTable\`) | every process | yes |
 | 4 | process-start telemetry | kernel callbacks / ETW | yes |
 
-Attackers hide by editing #1 (**DKOM**). Defenders convict by diffing #1
+Read that last column precisely: it says these records survive **the one
+edit m1.l2 teaches** — rewiring the victim's \`LIST_ENTRY\`. It does *not*
+say they are unattackable. Every row can be tampered with given enough
+privilege and nerve: rewrite each thread's \`ApcState.Process\` back at its
+own \`_EPROCESS\` (row 2), strip your handles out of every other process's
+table (row 3), or unregister the notify callbacks / kill the ETW session
+(row 4). Each escalation is its own move, leaves its own residue, and is
+exactly what later modules make you try — and then detect.
+
+Attackers start by editing #1 (**DKOM**). Defenders convict by diffing #1
 against #2, #3 and #4. This lesson introduces every structure those rows
 name — you will edit them in m1.l2 and detect the edit in m1.l4.
 
@@ -74,12 +83,16 @@ detach:  ApcState.Process = self        SavedApcState = -
 \`\`\`
 
 The caller's \`KAPC_STATE\` buffer receives the saved state so detach can
-restore it. Inspect live state per thread any time:
+restore it. Inspect live state per thread any time (this transcript is from
+the lab world — \`kfsample\` is the canary process, and addressing it by
+name works in every lab world even though PIDs differ between overlays):
 
 \`\`\`
-kd> !process 108 7
-PROCESS ffffb80000001450  ImageFileName: lsass.exe
-    THREAD 0xfffff80000210000  Tid: 408  ApcState->lsass.exe
+kd> !process kfsample 7
+PROCESS 0xffffb80000003350  SessionId: none  Cid: 1312  Peb: 00000000  ParentCid: 0000
+    ImageFileName: kfsample.exe
+    Token: 0xffffa40bc9e78500  ActiveThreads: 1
+    THREAD 0xffffb80004002ea0  Cid 1312.1044  Teb: 000000e441400000  Win32Thread: 00000000  ApcState->kfsample.exe
 kd> !process 0 4            # every process, one THREAD line each
 \`\`\`
 
@@ -168,10 +181,13 @@ Boot the debugger and confirm rows #1–#3 exist in a pristine world:
 \`\`\`
 kd> !process 0 0                  # row 1: the list everyone walks
 kd> !process 0 4                  # row 2: every process has live threads
-kd> !process 108 7                # ...with ApcState pointing home
+kd> !process kfsample 7           # ...with ApcState pointing home
+kd> !handles                      # row 3: who holds handles to whom
+kd> !handles kfsample             # ...filtered to one owner's table
 \`\`\`
 
 Then jump to m1.l2, unlink \`kftarget.exe\`, and watch which rows still
 remember it: \`!process 0 0\` goes quiet while \`!process <eproc> 7\` on the
-carved address still prints its thread, \`ApcState->kftarget.exe\`.
+carved address still prints its thread, \`ApcState->kftarget.exe\` — and
+\`!handles\` still shows kfsample's handle against it.
 `;

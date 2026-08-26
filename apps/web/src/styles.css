@@ -145,6 +145,13 @@ button.tool { width: 100%; text-align: left; margin-bottom: 8px; }
   background: #010409; border: 1px solid var(--border); border-radius: 6px;
   padding: 10px 12px; overflow-x: auto; margin: 10px 0;
 }
+/* Monaco/textarea fences upgraded from ```c blocks — must establish their
+   own clipping box or the editor canvas paints over following content */
+.fence-editor {
+  position: relative; margin: 10px 0; background: #010409;
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+}
+.fence-editor .code-editor { min-height: 320px; }
 .lesson-body pre code { border: none; padding: 0; background: none; }
 .lesson-body table { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
 .lesson-body th, .lesson-body td {

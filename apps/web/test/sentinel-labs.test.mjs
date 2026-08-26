@@ -59,8 +59,8 @@ test("sentinel-m1 world: kftarget unlinked but carveable; grid page unbacked", a
   const { kernel, kind } = await bootScenario("sentinel-m1");
   assert.equal(kind, "sentinel-m1");
   // list no longer references the victim...
-  assert.equal(kernel.findEprocessByPid(666n), null);
-  assert.equal(kernel.listProcesses().some((p) => p.pid === 666n), false);
+  assert.equal(kernel.findEprocessByPid(888n), null);
+  assert.equal(kernel.listProcesses().some((p) => p.pid === 888n), false);
   // ...but its bytes remain in the eproc window
   const victim = kernel.processesByName.get("kftarget.exe");
   assert.ok(victim, "victim EPROCESS must stay addressable for carving");
@@ -75,7 +75,7 @@ for (const be of ["js", "unicorn"]) {
 
     // sensor 1: list walk count (7 procs - 1 hidden = 6) + carve conviction
     assert.match(log, /SENTINEL-V1: process list walk -> 6 linked entries/, `[${be}] count`);
-    assert.match(log, /carve hit 'kftarget\.exe' pid=666/, `[${be}] carve`);
+    assert.match(log, /carve hit 'kftarget\.exe' pid=888/, `[${be}] carve`);
     assert.match(log, /DKOM DETECTED/, `[${be}] verdict`);
 
     // sensor 2: probe page holds code but belongs to no listed module

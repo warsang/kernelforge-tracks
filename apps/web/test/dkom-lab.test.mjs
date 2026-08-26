@@ -24,7 +24,7 @@ const TABLES_DIR = path.join(
 const GOOD_SOURCE = `
 NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg) {
     PEPROCESS target = NULL;
-    NTSTATUS status = PsLookupProcessByProcessId((HANDLE)666, &target);
+    NTSTATUS status = PsLookupProcessByProcessId((HANDLE)888, &target);
     if (!NT_SUCCESS(status)) return status;
 
     PLIST_ENTRY links = (PLIST_ENTRY)((PUCHAR)target + 0x448);

@@ -6,7 +6,7 @@
  * loadCompiledDriver and executed. Their bytes must write an E9 detour over
  * nt!PsLookupProcessByProcessId such that:
  *   - kernel.isDetoured() flips true (what !hookscan reports)
- *   - pid 666 lookups start failing (the model gates on live prologue bytes)
+ *   - pid 888 lookups start failing (the model gates on live prologue bytes)
  *   - the driver's DbgPrint secret lands in the buffer
  *   - the driver shows up under its deterministic lab name
  */
@@ -92,8 +92,8 @@ test("compiled hook driver detours the export; suppression + secret + lm (both b
 
     // behavior: the modeled lookup suppresses exactly the hidden pid
     const out = kernel.allocPool(8, "out");
-    const status = kernel.apiImpls.get("PsLookupProcessByProcessId")(666n, out);
-    assert.equal(status, 0xc000000bn, `[${be}] pid 666 not suppressed`);
+    const status = kernel.apiImpls.get("PsLookupProcessByProcessId")(888n, out);
+    assert.equal(status, 0xc000000bn, `[${be}] pid 888 not suppressed`);
     const okOut = kernel.allocPool(8, "out");
     assert.equal(kernel.apiImpls.get("PsLookupProcessByProcessId")(108n, okOut), 0n,
       `[${be}] unrelated pids must still resolve`);
@@ -122,6 +122,6 @@ test("!hookscan / !hooktest reflect the student-authored detour", async () => {
   assert.match(t, /PsLookupProcessByProcessId/);
 
   lines.length = 0;
-  await exec("!hooktest PsLookupProcessByProcessId 666");
+  await exec("!hooktest PsLookupProcessByProcessId 888");
   assert.match(lines.join("\n"), /STATUS_INVALID_PARAMETER.*PROLOGUE DETOURED/);
 });

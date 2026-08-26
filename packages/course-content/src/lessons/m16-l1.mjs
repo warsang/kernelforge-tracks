@@ -11,12 +11,12 @@ reuses the exact E9-rel32 machinery from module 3.
 ## The lab
 
 1. \`!ssdt\` prints every service with its resolved target and marks
-   inline detours. One service hides pid 666 from \`NtOpenProcess\`.
+   inline detours. One service hides pid 888 from \`NtOpenProcess\`.
 2. Resolve the E9 rel32: \`target = site + 5 + rel32\`. Submit the
    detour target VA inside kfvillain.sys.
 3. Restore the pristine prologue with \`eb\` (!hookscan shows the
    expected bytes), re-run \`!ssdt\` until clean, and prove the lookup
-   succeeds with \`!hooktest NtOpenProcess 666\`.
+   succeeds with \`!hooktest NtOpenProcess 888\`.
 
 ## PatchGuard & HyperGuard
 

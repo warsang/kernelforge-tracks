@@ -43,7 +43,7 @@ test("!process <pid> 7 annotates threads with ApcState->owner", async () => {
   const lines = [];
   createCommands(kernel)["!process"](["108", "7"], (t) => lines.push(t));
   // exact rendering promised by the m1.l0 lesson transcript
-  assert.match(lines.join("\n"), /Tid: 408\s+ApcState->lsass\.exe/);
+  assert.match(lines.join("\n"), /Cid 108\.408.*ApcState->lsass\.exe/);
 });
 
 test("boot seeds every process with an ApcState.Process back-pointer", async () => {

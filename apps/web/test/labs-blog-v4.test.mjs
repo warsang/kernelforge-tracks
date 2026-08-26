@@ -125,5 +125,5 @@ test("m13 ssdt-hook: scan, resolve, repair, clean", async () => {
 
   // behavior gate released: lookup for hidden pid no longer denied
   const impl = t.kernel.apiImpls.get("NtOpenProcess");
-  assert.notEqual(impl(666n, 0n), 0xc0000022n);
+  assert.notEqual(impl(888n, 0n), 0xc0000022n);
 });

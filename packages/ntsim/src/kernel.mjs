@@ -60,8 +60,12 @@ const DEFAULT_PROCESSES = [
   { pid: 96, name: "services.exe", ppl: null },
   { pid: 108, name: "lsass.exe", ppl: { type: "Light", signer: "WinTcb" } }, // PPL!
   { pid: 116, name: "winlogon.exe", ppl: null },
-  { pid: 312, name: "kfsample.exe", ppl: null },
-  { pid: 666, name: "kftarget.exe", ppl: null },
+  // kfsample used to be 312 — that Cid collides with an authentic svchost.exe
+  // in the dump-overlay worlds (!process must never list one Cid twice), so
+  // both worlds agree on 1312. kftarget moved off the taught-but-invalid 666
+  // (Windows Cids are always multiples of 4) onto 888 — free in every world.
+  { pid: 1312, name: "kfsample.exe", ppl: null },
+  { pid: 888, name: "kftarget.exe", ppl: null },
 ];
 
 export class NtKernel {
@@ -379,6 +383,9 @@ export class NtKernel {
     try { tlhOff = t.offsetOf("_EPROCESS", "ThreadListHead"); } catch { /* ring off */ }
     try { atOff = t.offsetOf("_EPROCESS", "ActiveThreads"); } catch { /* counter off */ }
     try { otOff = t.offsetOf("_EPROCESS", "ObjectTable"); } catch { /* table ptr off */ }
+    let tebOff = null, w32Off = null;
+    try { tebOff = BigInt(t.offsetOf("_KTHREAD", "Teb")); } catch { /* optional */ }
+    try { w32Off = BigInt(t.offsetOf("_KTHREAD", "Win32Thread")); } catch { /* optional */ }
     const apcOff = this.apcStateOffset();
 
     const ethreadSize = t.has("_ETHREAD")
@@ -415,13 +422,29 @@ export class NtKernel {
       }
       if (atOff !== null) mem.w32(eproc + atOff, 1);
       if (apcOff !== null) mem.w64(thr + apcOff, eproc); // ApcState.Process
+      if (tebOff !== null) {
+        // deterministic user-mode Teb, same formula as the dump-world seeder
+        const tid = BigInt(0x400 + i * 4);
+        mem.w64(thr + tebOff, 0x000000e400000000n + tid * 0x100000n);
+      }
+      if (w32Off !== null) mem.w64(thr + w32Off, 0n); // non-GUI seed threads
       threadsByPid.set(BigInt(p.pid), thr);
       i++;
     }
     this.threadsByPid = threadsByPid;
     if (!this.currentThread) this.currentThread = threadsByPid.get(4n) ?? null;
 
-    // deterministic cross-process object references (EDR handle cross-check)
+    this.seedHandleRefs();
+  }
+
+  /**
+   * (Re)build the deterministic cross-process object references from
+   * SEED_HANDLE_REFS against the CURRENT processesByName map. Called by
+   * seedProcessThreads at boot and re-invoked by dump-overlay worlds after
+   * populateFromDump() relocates every EPROCESS — stale owner/target
+   * pointers would otherwise point at bootstrap-era blocks.
+   */
+  seedHandleRefs() {
     this.objectHandles.length = 0;
     let h = 0x10n;
     for (const ref of SEED_HANDLE_REFS) {

@@ -248,7 +248,7 @@ test("CR3 shuffle: real DTB findable via self-ref signature scan", async () => {
   void K;
   const kern = lowKernel();
   const pts = new PageTableSpace(kern, { physBase: 0x300000n, selfRefIndex: 0xf });
-  const real = pts.createProcess({ name: "victim", pid: 666 });
+  const real = pts.createProcess({ name: "victim", pid: 668 });
   pts.mapPage(real, joinVa(0x8, 0x8, 0x8, 0x8, 0, false), {});
 
   // decoy DTB whose self-ref sits at a different index — EAC-style shuffle

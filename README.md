@@ -185,7 +185,7 @@ so far.
 **Module 1 — Windows Kernel Fundamentals & Manual Mapping**
 0. Kernel objects primer — the four places a process exists: `ActiveProcessLinks`, `KTHREAD→ApcState.Process`, handle tables (`SystemHandleInformation`), process-start telemetry
 1. Kernel landscape — `lm` reveals `kfprobe.sys`; `!process 0 0` finds
-   `kfsample.exe` PID 312
+   `kfsample.exe` PID 1312
 2. DKOM process hiding — unlink `kftarget.exe` from `PsActiveProcessHead`
    (its seeded thread still shows `ApcState->kftarget.exe`; its
    `kfsample.exe→kftarget.exe` handle stays open — the EDR cross-check)
@@ -212,7 +212,7 @@ stuck level (`!irql`), record the DeferredRoutine (`!dpcs`), lower and drain
    source dies with modeled bugcheck 0x109.
 
 **Module 3 — Inline Hooks & Control Flow** (`api-hook`, `api-hook-blank`)
-`kfhook.sys` detoured `PsLookupProcessByProcessId` so PID 666 vanishes from
+`kfhook.sys` detoured `PsLookupProcessByProcessId` so PID 888 vanishes from
 lookup. Find it (`!hookscan`), probe it (`!hooktest`), repair the prologue
 with `eb`, prove the lookup succeeds again. Then author the detour yourself:
 find the export's address with `x`/`u`/`sym`, paste it into the driver

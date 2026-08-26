@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has nineteen modules / twenty-eight lessons / seventy-nine flags", () => {
+test("catalog v5 has nineteen modules / twenty-eight lessons / eighty-two flags", () => {
   assert.equal(catalog.version, 5);
   assert.equal(catalog.modules.length, 19);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   assert.equal(lessons.length, 28);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 79);
+  assert.equal(flags.length, 82);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -40,11 +40,16 @@ test("every lesson body ships markdown content", () => {
 test("answer hashes verify against expected plaintexts", async () => {
   // instructor-side ground truth; checkFlag normalizes trim+lowercase
   const expect = {
+    "m1.l0.f1": "4",
+    "m1.l0.f2": "apcstate",
+    "m1.l0.f3": "kftarget.exe",
     "m1.l1.f1": "KFPROBE.SYS",
-    "m1.l1.f2": "312",
-    // kftarget.exe EPROCESS @ 0xffffc80000001000 + ActiveProcessLinks offset
+    // 1312 everywhere: the dump overlay carries an authentic svchost.exe at
+    // 312, and Cids must stay unique system-wide (issue #6)
+    "m1.l1.f2": "1312",
+    // kftarget.exe EPROCESS @ 0xffffa40bc9e73dc0 + ActiveProcessLinks offset
     // 0x448 (22h2) — must stay in sync with scenarios.js populateFromDump()
-    "m1.l2.f1": "0xFFFFC80000001448",
+    "m1.l2.f1": "0xffffa40bc9e74208",
     "m1.l3.f1": "kf-manual-map-master",
     "m2.l1.f1": "15",
     "m2.l1.f2": "0xFFFFF8055A401400",
@@ -68,7 +73,7 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m2.l4.f7": "109",
     "m2.l4.f8": "0",
     "m3.l1.f1": "PsLookupProcessByProcessId",
-    "m3.l1.f2": "666",
+    "m3.l1.f2": "888",
     "m3.l1.f3": "STATUS_SUCCESS",
     // m3.l1.lab2: deterministic 4th thunk (bases.thunk + 0x30) + driver secret
     "m3.l1.f4": "0xfffff80100000030",
@@ -149,9 +154,16 @@ test("no flag uses the legacy FLAG{} prompt syntax", () => {
 
 test("lesson progression unlocks l2 after l1 completion", async () => {
   const m1 = catalog.modules[0];
-  // m1.l0 is a reading-only primer (no labs); completion starts at m1.l1
-  const l1 = m1.lessons.find((l) => l.id === "m1.l1");
+  // m1.l0's primer lab completes first (50 + 100 + 100)
+  const l0 = m1.lessons.find((l) => l.id === "m1.l0");
   let p = emptyProgress();
+  for (const flag of l0.labs[0].flags) {
+    p = submitFlagForProgress(p, l0, flag.id, true).progress;
+  }
+  assert.equal(p.completedLessons.includes("m1.l0"), true);
+  assert.equal(p.points, 250);
+  const l1 = m1.lessons.find((l) => l.id === "m1.l1");
+  p = emptyProgress();
   for (const flag of l1.labs[0].flags) {
     p = submitFlagForProgress(p, l1, flag.id, true).progress;
   }

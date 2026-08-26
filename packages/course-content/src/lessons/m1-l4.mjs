@@ -76,6 +76,28 @@ between using tooling and building it.
 - **EDR process inventories** never trust one list: EDRs cross-reference
   ActiveProcessLinks against handle tables, KTHREAD→ApcState references and
   ETW process-start events. Any single-source mismatch raises detection.
+  Those three second opinions deserve unpacking (the m1.l0 primer is the
+  deep dive; here is the field guide):
+  - **KTHREAD→ApcState** — every \`_ETHREAD\` embeds a \`_KTHREAD\`, and its
+    \`ApcState.Process\` field records which address space the thread is
+    currently attached to. For a normal thread that is its own \`_EPROCESS\`.
+    So even if you unlink an \`_EPROCESS\` from the list, every one of its
+    threads still *points at it* from kernel memory the edit never touched.
+    Detectors walk each thread's ring and read that pointer.
+  - **Handle tables** — every \`_EPROCESS\` carries an \`ObjectTable\`: the
+    record of kernel objects *this process holds handles to*, one row per
+    open handle. If any process ever opened a handle to yours (an EDR's
+    own scan, a log collector, your sample's parent), that reference sits
+    in the opener's table — invisible to list edits, enumerable via
+    \`NtQuerySystemInformation(SystemHandleInformation)\` or \`!handles\`
+    here.
+  - **ETW process-start events** — the kernel announces every process
+    creation to registered observers: driver callbacks
+    (\`PsSetCreateProcessNotifyRoutineEx\`) and the ETW
+    Threat-Intelligence providers user-mode sensors subscribe to. The
+    announcement happens at birth, before any hiding can occur, so a
+    process present in telemetry but absent from the list was hidden
+    *after* it started — timestamped evidence no list edit rewrites.
 - **Anticheat integrity roots**: games re-walk PsLoadedModuleList from an
   independent root (often hypervisor-backed) and compare against a signed
   baseline captured at boot. Kernel-mode cheats must then fight the
