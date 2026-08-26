@@ -384,6 +384,13 @@ False disassembly with polymorphic junk bytes, M4rx's custom VM ISA and its
 RE, code virtualization survey, XLAT table decoding, stateless control flow,
 Brainfuck-compiled ROP chains and a metamorphic virus in 440 bytes.
 
+**Module 5 — Tracing & Anti-Tracing** (`anti-trace`)
+`kftrace.sys` arms CPU trap-flag tripwires: passive TF reads
+(`pushfq`/`test 100h`), TF injection into a vectored handler, and the
+mov-ss stall. Map them (`!traceinfo`), attach a simulated tracer and watch
+it starve the driver's VEH (`!trace on`, `!selftest` — count swallowed
+INT 1s), then clear the gate byte with `eb` to release the secret.
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +

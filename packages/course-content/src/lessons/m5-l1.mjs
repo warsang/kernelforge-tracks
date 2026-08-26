@@ -1,64 +1,88 @@
-/** Lesson body: m5.l1 — Userland recon under a userspace emulator (markdown). */
-export default `## From kernel space to process space
+/** Lesson body: m5.l1 — Tracing & anti-tracing (markdown). */
+export default `## The trap flag: hardware single-stepping
 
-Everything so far lived in kernel land: EPROCESS lists, IRQL, pool guards.
-This module drops you **inside a game process** running under a userspace
-emulator (the same model of emulator the sogen project popularizes): no OS
-underneath, just your PE image, the system DLLs it imports from, and an
-emulator that controls every byte.
+A debugger "steps" a program by flipping **one bit** in the CPU: bit 8 of
+EFLAGS/RFLAGS, the **trap flag (TF)**. The dance is pure silicon:
 
-A graphical debugger docks above the console for this track: a disassembly
-view with breakpoint gutter, registers, a hex memory viewer, module list,
-and a pseudocode tab — the same layout you'd find in x64dbg or the sogen
-playground. It reads the same world state your console commands mutate, so
-\`scan\` hits light up in the memory viewer. The kd> console below stays the
-primary interface; the panels are there to build the visual reflexes you
-will need with real tools.
+1. Debugger sets \`TF = 1\` in the thread's flags register.
+2. The CPU executes exactly ONE instruction.
+3. Hardware raises debug exception vector 1 (\`INT 1\`,
+   \`EXCEPTION_SINGLE_STEP\`, NTSTATUS \`STATUS_SINGLE_STEP\`) at the next
+   instruction boundary — and **auto-clears TF** on delivery.
+4. The OS traps the event and hands it to the attached debugger, which
+   refreshes registers/memory in its UI and waits.
 
-Game hacking starts the same way malware analysis does:
+Every register peek, every memory window, every "step over" in WinDbg or
+x64dbg is this loop. Which makes bit 8 a tripwire: software can watch for
+it too.
 
-1. \`lm\` — enumerate loaded modules and their base addresses.
-2. Find the game image (\`sauerbraten.exe\`) and its static layout.
-3. Locate state worth reading: entities, health, positions.
+## Variant A — reading your own trap flag
 
-## Finding the local player
+\`PUSHFQ\`/\`POPFQ\` move the flag register through memory like any value:
 
-The world ships a heap region with a fixed-layout entity array. Each entity:
+    pushfq                  ; live RFLAGS onto the stack (TF = 1 if traced)
+    pop     rax
+    test    rax, 100h       ; bit 8 set?
+    jnz     debugger_found  ; -> crash routine / decoy logic / silent exit
 
-| offset | field | notes |
-|---|---|---|
-| +0x00 | void* vtable | 8 bytes |
-| +0x08 | int type | 0 = bot, 1 = player |
-| +0x0c | int team | |
-| +0x10..0x1b | float x,y,z | position triple |
-| +0x24 | int health | what we want |
-| +0x2c | char name[16] | NUL-padded |
+No API is called, no handle touched — nothing a traditional hook can see.
+The CPU itself is the informant.
 
-You will not be told where the array lives. Use the console to hunt:
+## Variant B — injecting TF to hijack the exception flow
 
-    kd> lm                        # modules; note sauerbraten.exe base
-    kd> scan 0x02100000 0x10000 100 4    # find dword 100 (full health)
-    kd> x 0x<addr>                # hexdump around a hit — look for names
-    kd> !damage 25                # world takes 25 damage; re-scan to filter
+Instead of passively reading TF, protection code *manufactures* the
+exception and checks who answers it:
 
-The two-scan trick is the classic: values that survive both scans while
-neighbors go stale are live state. The entity whose name reads \`kfgamer\`
-is *you*.
+    pushfq
+    or      qword [rsp], 100h   ; arm bit 8 on the stack copy
+    popfq                       ; load it back - TF now really set
+    nop                         ; <- next instruction raises INT 1
+
+- **Running clean:** the program's own vectored exception handler (VEH)
+  catches \`EXCEPTION_SINGLE_STEP\` internally and execution continues
+  seamlessly.
+- **Under a tracer:** the debugger intercepts INT 1 FIRST — it assumes the
+  event is its own single-step machinery firing — swallows it, and the
+  guest VEH never runs. The driver notices its handler starved and you are
+  burned.
+
+## Advanced — MOV SS stalling
+
+A debugger may try to launder the flags before \`pushfq\` reports them. The
+counter-move abuses an ISA rule: loading a segment register suppresses
+interrupts, traps **and debug exceptions** until after the following
+instruction:
+
+    mov     ax, ss
+    mov     ss, ax          ; inhibit window opens
+    pushfq                  ; executes UNMASKED - tf still true on stack
+    pop     rax             ; accurate snapshot before anyone intervenes
+
+The pending single-step exception cannot fire until after \`pushfq\`, so the
+snapshot always sees reality. This exact idiom ships in real packers and
+anti-cheats today.
 
 ## The lab
 
-Boot \`sauer-recon\`, then:
+The world boots \`kftrace.sys\`, a protection driver holding a payload
+secret behind three such tripwires, with \`TraceVeh\` registered as its
+vectored handler and \`g_AntiTraceEnabled\` as the master gate:
 
-1. \`lm\` → submit sauerbraten.exe's image base (full 0x-hex).
-2. Two-scan for the local player entity → submit its address.
-3. Work out the health offset inside the entity (use \`!damage\` +
-   re-scan) → submit it as 0x-prefixed hex.
+1. "!traceinfo" → map the defenses; submit TraceVeh's address. (answer 1)
+2. "!trace on" arms a simulated tracer (TF set, INT 1 intercepted) — run
+   "!selftest" once and count how many EXCEPTION_SINGLE_STEP events were
+   swallowed before TraceVeh ever saw one. (answer 2)
+3. Detach, clear the gate byte with "eb", rerun "!selftest": every check
+   reads clean and the secret prints. Submit it. (answer 3)
 
 ## Defensive framing
 
-Every anti-cheat you will meet later (VAC, EAC, BattlEye) exists because
-this workflow is trivial without them: unsigned memory readers, signature
-scans over .text, entity-list walking. Understanding the offense is the
-prerequisite for designing detection: handle stripping, integrity-checked
-entity arrays, obfuscated/virtualized state layouts.
+Anti-tracing is why "just step through it" fails against hardened binaries:
+detection via variant A/B costs the analyst hours and silently poisons the
+investigation. Defenders reuse the same primitives in reverse — EDRs and
+instrumentation frameworks detect *foreign* VEHs and TF games inside
+protected processes, and hypervisor-based stepping hides the debugger below
+the guest so no guest-visible flag ever flips. Know both directions: the
+bit is only eight dollars of state, but who may read or write it decides
+who is watching whom.
 `;
