@@ -123,10 +123,12 @@ export function renderAnalyzer(main) {
     el("label", { class: "dim", style: "display:flex;gap:4px;align-items:center" }, fuzzTick, " Fuzz"),
     el("span", { class: "dim" }, "iters:"), fuzzIter, fuzzIterVal,
     el("span", { class: "dim" }, "corpus:"), fuzzCorpus, fuzzCorpusVal,
+    el("span", { class: "dim", style:"font-size:10px;color:#b58900", title:"Higher iterations / corpus can take 5–30s. Reduce for quick triage." }, "⚠ may take time"),
     el("label", { class: "dim", style: "display:flex;gap:4px;align-items:center;margin-left:8px" }, concTick, " Concolic"),
     el("span", { class: "dim" }, "sym:"), concSym, concSymVal,
     el("span", { class: "dim" }, "to ms:"), concTo, concToVal,
     el("span", { class: "dim" }, "queries:"), concQ, concQVal,
+    el("span", { class: "dim", style:"font-size:10px;color:#b58900", title:"Concolic solves with Z3 and can take a few seconds per IOCTL, especially with many queries." }, "⚠ may take time"),
   );
 
   const card = el("div", { class: "card" },
