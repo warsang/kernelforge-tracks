@@ -55,7 +55,7 @@ async function freshClang() {
 }
 
 const { ATTACK_IRP_STARTER, SENTINEL_V5_STARTER, ATTACK_ETWTAMPER_STARTER,
-  SENTINEL_V7_STARTER } =
+  SENTINEL_V6_STARTER, SENTINEL_V7_STARTER } =
   await import(new URL(`file://${path.join(root,
     "packages/course-content/src/starters.mjs")}`).href);
 
@@ -68,6 +68,7 @@ const JOBS = [
   ["kfirp.obj", ATTACK_IRP_STARTER],
   ["kfsentinel_v5.obj", SENTINEL_V5_STARTER],
   ["kfetwtamper.obj", ATTACK_ETWTAMPER_STARTER],
+  ["kfsentinel_v6.obj", SENTINEL_V6_STARTER],
   ["kfsentinel_v7.obj", SENTINEL_V7_STARTER],
 ];
 

@@ -409,6 +409,17 @@ COMPILE_TASKS["sentinel-v7"] = {
     ["completion secret", /secret=kf-sentinel-v7-ok/],
   ]),
 };
+
+// --- m25 architectural tasks -------------------------------------------------
+COMPILE_TASKS["sentinel-v6"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["LSTAR read", /SENTINEL-V6: IA32_LSTAR = fffff8055a760800/],
+    ["redirect convicted", /LSTAR REDIRECTED -> foreign handler fffff8055a760800/],
+    ["attribution", /attributed to kfarch\.sys\+0x800/],
+    ["completion secret", /secret=kf-sentinel-v6-ok/],
+  ]),
+};
 COMPILE_TASKS["sentinel-telemetry"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([

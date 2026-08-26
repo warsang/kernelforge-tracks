@@ -49,7 +49,7 @@ import {
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
   ATTACK_HIJACK_STARTER, ATTACK_IRP_STARTER, ATTACK_ETWTAMPER_STARTER,
   SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
-  SENTINEL_V7_STARTER, INJECT_STARTER,
+  SENTINEL_V6_STARTER, SENTINEL_V7_STARTER, INJECT_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -68,11 +68,14 @@ import m22l2Body from "./lessons/m22-l2.mjs";
 import m23l1Body from "./lessons/m23-l1.mjs";
 import m24l1Body from "./lessons/m24-l1.mjs";
 import m24l2Body from "./lessons/m24-l2.mjs";
+import m25l1Body from "./lessons/m25-l1.mjs";
+import m25l2Body from "./lessons/m25-l2.mjs";
 import m26l1Body from "./lessons/m26-l1.mjs";
 import m26l2Body from "./lessons/m26-l2.mjs";
 import m26l3Body from "./lessons/m26-l3.mjs";
 import m27l1Body from "./lessons/m27-l1.mjs";
 import m27l2Body from "./lessons/m27-l2.mjs";
+import m28l1Body from "./lessons/m28-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -204,6 +207,20 @@ const F = {
   m24l2f1: "0dc578f12279fd05ac3f591638c7e06c8d953cb083271754656c80c2f1b267cd", // convicted owner module
   m24l2f2: "b0f6136292266f5a55b41125b55ec719c33ab9547b5a6ef3f1fa2d51661e4ea3", // MajorFunction table offset
   m24l2f3: "ee5a5019da01e4e784c917c469a277e7004414bdaa0b6fb5ce239bae1f1448c6", // sentinel v5 secret
+
+  // --- m25 architectural hooks: MSR / IDT / GDT ---
+  m25l1f1: "97073e70a7441b95565309d06545086696ba0b5c0189798e396ba0008db680d9", // IA32_LSTAR address
+  m25l1f2: "9040ff84b09771c5a1447f1e2d075bca26211b5304b6f198db6af971c39c814b", // foreign status
+  m25l1f3: "bd8f945a45101b5c56f739155c929da6ec5dae6f4489ea6e574c29884bcbc2bd", // hijack payoff
+  m25l1f4: "0fd42b3f73c448b34940b339f87d07adf116b05c0227aad72e8f0ee90533e699", // hardened bugcheck
+  m25l1f5: "12d77c098e13db035e343b90793417302a26064178cf84329e4314834afa7222", // refusing mechanism
+  m25l2f1: "684877c5f0af2efa3ab7b79364ed0eddbda10a22276f47bc9aa85d2ccbe97d57", // redirected VA
+  m25l2f2: "e22c9a1c1e5f05b67ea23507a5e44f2de8e48c92e6b24853f2e909d9f5993575", // attributed module
+  m25l2f3: "b360a9d6ea90de0011c1d5237b2df7a2fa99ac9e8a573da91ac9a3c9fccf3aa2", // sentinel v6 secret
+
+  // --- m28 VM-exit MSR interception ---
+  m28l1f1: "97073e70a7441b95565309d06545086696ba0b5c0189798e396ba0008db680d9", // 0xc0000082
+  m28l1f2: "be982125d67de52ef67480b71e8953f67b493eb5de024276a9bd2e8e4ec68c1f", // kf-vmexit-detected
 
   // --- m26 ETW blindfolding (userland + kernel split) ---
   m26l1f1: "f38dbeba4c18003d1e329b6f585fb2e213b7104803e8334bbeea0d91500122e9", // wrapper VA
@@ -2345,7 +2362,7 @@ export const module26 = {
       id: "m26.l1",
       title: "ETW architecture & the user-mode blindfold",
       body: m26l1Body,
-      requires: ["m24.l2"],
+      requires: ["m25.l2"],
       labs: [
         {
           id: "m26.l1.lab1",
@@ -2650,7 +2667,187 @@ export const module27 = {
   ],
 };
 
+export const module25 = {
+  id: "m25",
+  title: "Architectural Hooks: MSR / IDT / GDT",
+  track: "windows-kernel",
+  summary:
+    "Hooks below every table: redirect IA32_LSTAR and own the syscall " +
+    "boundary — then meet the two regimes that kill it on modern x64 " +
+    "(mini-PatchGuard sweeps and HVCI write refusal), and build the " +
+    "rdmsr attestation sensor.",
+  lessons: [
+    {
+      id: "m25.l1",
+      title: "LSTAR redirects vs the verifier regimes",
+      body: m25l1Body,
+      requires: ["m24.l2"],
+      labs: [
+        {
+          id: "m25.l1.lab1",
+          kind: "windbg",
+          title: "Redirect LSTAR, prove it, get caught",
+          brief:
+            "Legacy regime: point IA32_LSTAR at kfarch.sys's handler, " +
+            "prove syscalls reroute with !syscalltest — then cross a " +
+            "PatchGuard sweep.",
+          scenario: "arch-hooks",
+          flags: [
+            {
+              id: "m25.l1.f1",
+              sha256: F.m25l1f1,
+              prompt:
+                "!msr lstar names the register you are about to rewrite. " +
+                "Submit its MSR address as 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m25.l1.f2",
+              sha256: F.m25l1f2,
+              prompt:
+                "After !msr lstar 0xfffff8055a768000, !syscalltest completes " +
+                "with a magic status. Submit it as 0x-prefixed 8-digit hex.",
+              points: 150,
+            },
+            {
+              id: "m25.l1.f3",
+              sha256: F.m25l1f3,
+              prompt:
+                "The first redirected syscall releases a payoff secret " +
+                "(!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+            {
+              id: "m25.l1.f4",
+              sha256: F.m25l1f4,
+              prompt:
+                "Leave the redirect installed and !dpcpump past a sweep. " +
+                "Which STOP code fires? Decimal (no 0x).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m25.l1.lab2",
+          kind: "windbg",
+          title: "The HVCI ceiling",
+          brief:
+            "Same redirect attempt on arch-hardened: the WRMSR is refused " +
+            "before it lands. Confirm via !analyze -v and !pgscan.",
+          scenario: "arch-hardened",
+          flags: [
+            {
+              id: "m25.l1.f5",
+              sha256: F.m25l1f5,
+              prompt:
+                "Which mechanism refuses the write on this world? Submit " +
+                "the four-letter acronym (lowercase).",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m25.l2",
+      title: "Defense: KF-Sentinel v6 — rdmsr attestation engine",
+      body: m25l2Body,
+      requires: ["m25.l1"],
+      labs: [
+        {
+          id: "m25.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v6: attest the syscall entry from ring 0",
+          brief:
+            "Compile a sensor that reads IA32_LSTAR through the modeled " +
+            "__readmsr shim, convicts any target outside ntoskrnl, and " +
+            "attributes the redirect to its module.",
+          scenario: "arch-hooks",
+          compileTask: "sentinel-v6",
+          starterFiles: [
+            { path: "driver/kfsentinel_v6.c", content: SENTINEL_V6_STARTER },
+          ],
+          flags: [
+            {
+              id: "m25.l2.f1",
+              sha256: F.m25l2f1,
+              prompt:
+                "Your sensor prints the live LSTAR. Submit the foreign " +
+                "handler VA as full 16-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m25.l2.f2",
+              sha256: F.m25l2f2,
+              prompt:
+                "The attribution line names one module. Submit its exact " +
+                "image name (with .sys).",
+              points: 100,
+            },
+            {
+              id: "m25.l2.f3",
+              sha256: F.m25l2f3,
+              prompt:
+                "On conviction the sensor prints its completion secret. " +
+                "Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module28 = {
+  id: "m28",
+  title: "Hypervisor Escape Hatch: VM-Exit MSR Interception",
+  track: "windows-kernel",
+  summary:
+    "The only way to hook syscall flow without PatchGuard: own layer two, " +
+    "intercept RDMSR/WRMSR via VM-exit, fake success. The guest never knows " +
+    "the hypervisor owns the MSR. Detection via timing divergence and " +
+    "consistency checks.",
+  lessons: [
+    {
+      id: "m28.l1",
+      title: "VM-exit MSR interception: the final layer",
+      body: m28l1Body,
+      requires: ["m27.l2"],
+      labs: [
+        {
+          id: "m28.l1.lab1",
+          kind: "windbg",
+          title: "Install a redirect, detect the hypervisor",
+          brief:
+            "kfhyp.sys intercepts LSTAR writes via VM-exit. Install a redirect " +
+            "with !msr lstar, prove it with !syscalltest, then detect the " +
+            "hypervisor with !vmexit.",
+          scenario: "msr-exit",
+          flags: [
+            {
+              id: "m28.l1.f1",
+              sha256: F.m28l1f1,
+              prompt:
+                "Which MSR decides where every syscall lands? Submit its " +
+                "address as 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m28.l1.f2",
+              sha256: F.m28l1f2,
+              prompt:
+                "!vmexit prints a secret when it shows the trap log. Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 6,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module26, module27],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module25, module26, module27, module28],
 };

@@ -327,3 +327,11 @@ Worlds (sogen-runtime uchooks.mjs, one model three modes):
 Instructor answers: m27.l1 = 0x02100800 / 0x0046f020 /
 kf-vtable-restored / 0x00452060 / 5 / kf-hotpatch-restored / 16 /
 flagged / kf-drx-clean; m27.l2 quiz = vmt / mov edi,edi.
+
+### M28 — Hypervisor Escape Hatch: VM-Exit MSR Interception (shipped)
+
+World: `msr-exit` extends arch-hooks with hypervisor MSR interception.
+Engine: ntsim kernel.mjs adds msrIntercepts Map + vmExitLog array;
+msr.mjs wrmsr/rdmsr check for intercepts and log to vmExitLog.
+Debugger: !vmexit command shows trap log with tick counts.
+Instructor answers: m28.l1 = 0xc0000082 / kf-vmexit-detected.

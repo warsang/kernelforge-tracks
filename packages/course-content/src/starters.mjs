@@ -840,3 +840,52 @@ NTSTATUS DriverEntry(
     return STATUS_SUCCESS;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// m25.l2.lab1 — KF-Sentinel v6: rdmsr attestation of the syscall entry
+export const SENTINEL_V6_STARTER = `// KF-Sentinel v6 - MSR attestation engine (m25.l2)
+//
+// IA32_LSTAR decides where EVERY syscall lands. A healthy value points
+// into ntoskrnl's image; anything else is a redirect. PatchGuard catches
+// drift on its clock - this sensor convicts on YOURS, from inside the
+// kernel, via the modeled __readmsr shim.
+
+#include <ntddk.h>
+
+#define IA32_LSTAR       0xC0000082ULL
+#define BASELINE_LSTAR   0xfffff80100001380ULL  // KiSystemCallHandler thunk
+#define KFARCH_BASE      0xfffff8055a760000ULL
+#define KFARCH_SIZE      0x4000ULL
+
+/* Wraparound delta: (va - base) is tiny iff va sits in [base, base+size).
+ * Unsigned arithmetic, no magnitude compares on canonical addresses. */
+static int inRange(unsigned long long va,
+                   unsigned long long base, unsigned long long size)
+{
+    return (va - base) < size;
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    unsigned long long lstar = __readmsr(IA32_LSTAR);
+    DbgPrint("SENTINEL-V6: IA32_LSTAR = %p\\n", (PVOID)lstar);
+
+    if (lstar == BASELINE_LSTAR) {
+        DbgPrint("SENTINEL-V6: syscall entry matches boot baseline\\n");
+        return STATUS_SUCCESS;
+    }
+
+    DbgPrint("SENTINEL-V6: LSTAR REDIRECTED -> foreign handler %p\\n",
+             (PVOID)lstar);
+    if (inRange(lstar, KFARCH_BASE, KFARCH_SIZE)) {
+        DbgPrint("SENTINEL-V6: attributed to kfarch.sys+0x800\\n");
+    }
+    DbgPrint("SENTINEL-V6: secret=kf-sentinel-v6-ok\\n");
+    return STATUS_SUCCESS;
+}
+`;

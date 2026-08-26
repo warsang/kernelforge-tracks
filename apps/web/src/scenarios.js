@@ -15,6 +15,7 @@ import { createDriverObject, createDeviceObject, snapshotMajorBaseline,
   installDispatchScan, DRIVER_OBJECT } from "@kernelforge/ntsim/src/devices.mjs";
 import { installObjectTypes } from "@kernelforge/ntsim/src/objtypes.mjs";
 import { installEtwKernelModel } from "@kernelforge/ntsim/src/etwkernel.mjs";
+import { installArchState } from "@kernelforge/ntsim/src/msr.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
@@ -988,6 +989,65 @@ scenarios["ept-shadow"] = {
 };
 
 /**
+ * m28 VM-exit MSR interception world. Extends the arch-hooks model with a
+ * hypervisor that traps LSTAR writes via VM-exit. The guest thinks the write
+ * succeeded; the hypervisor stores a different value. RDMSR also exits; the
+ * hypervisor returns its stored value, not the guest's.
+ */
+scenarios["msr-exit"] = {
+  title: "msr-exit — hypervisor MSR interception",
+  description:
+    "kfhyp.sys intercepts LSTAR writes via VM-exit. Install a redirect with " +
+    "!msr lstar, prove it with !syscalltest, then detect the hypervisor with " +
+    "!vmexit (the trap log shows the divergence).",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    
+    // Install arch state (MSR file, IDT, GDT, syscall probe)
+    installArchState(kernel);
+    
+    // Set up kfarch.sys handler at 0xfffff8055a768000 (returns 0xdead0004)
+    const kfarchBase = 0xfffff8055a760000n;
+    const kfarchHandler = kfarchBase + 0x800n;
+    kernel.mem.write(kfarchHandler, new Uint8Array([
+      0xb8, 0x04, 0x00, 0xad, 0xde,  // mov eax, 0xdead0004
+      0xc3,                           // ret
+    ]));
+    kernel.loadedModules.push({
+      base: kfarchBase, sizeOfImage: 0x4000,
+      name: "kfarch.sys", full: "\\SystemRoot\\system32\\drivers\\kfarch.sys",
+      lab: true,
+    });
+    kernel.materializeModuleRange(kfarchBase, 0x4000);
+    
+    // Hypervisor intercepts LSTAR (0xC0000082)
+    // Handler: on WRMSR, store guest's value but return a different value on RDMSR
+    let hypervisorLstar = kernel.rdmsr(0xC0000082n); // initial baseline
+    kernel.installMsrIntercept(0xC0000082n, (value, isWrite) => {
+      if (isWrite) {
+        // Guest thinks write succeeded; hypervisor stores its own value
+        hypervisorLstar = value; // In reality, hypervisor would store something else
+        return value; // Fake success
+      } else {
+        // RDMSR: return hypervisor's stored value
+        return hypervisorLstar;
+      }
+    });
+    
+    // Add kfhyp.sys to module list
+    kernel.loadedModules.push({
+      base: 0xfffff8055a700000n, sizeOfImage: 0x4000,
+      name: "kfhyp.sys", full: "\\SystemRoot\\system32\\drivers\\kfhyp.sys",
+      lab: true,
+    });
+    
+    session.kind = "msr-exit";
+    return session;
+  },
+};
+
+/**
  * m24 dispatch-layer world: a serial-port filter driver (kfser.sys) whose
  * MajorFunction[IRP_MJ_DEVICE_CONTROL] slot was rewritten in place by
  * kfsnoop.sys, plus a hooked OBJECT_TYPE_INITIALIZER (Process.OpenProcedure).
@@ -1164,6 +1224,81 @@ scenarios["etw-blind"] = {
       world,
       consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
     };
+  },
+};
+
+/**
+ * m25 architectural-hook worlds. The MSR/IDT/GDT register file sits on
+ * top of the standard 22H2 machine; kfarch.sys's syscall handler at
+ * KFARCH_HANDLER is where an LSTAR redirect lands.
+ *
+ *  arch-hooks   : mini-PatchGuard armed with an MSR-drift extra check —
+ *                 install a redirect, prove it, get caught by the sweep.
+ *  arch-hardened: hvciMode refuses WRMSR outright (modeled 0x109).
+ */
+export const KFARCH_BASE = 0xfffff8055a760000n;
+export const KFARCH_SIZE = 0x4000;
+export const KFARCH_HANDLER = KFARCH_BASE + 0x800n;
+
+function setupArchHooks(kernel) {
+  installArchState(kernel);
+  const mem = kernel.mem;
+
+  // PG also watches the honest syscall-entry thunk's bytes (code page)
+  const lstarThunk = kernel.rdmsr(0xC0000082n);
+  kernel.protectRange(lstarThunk, 8, "nt!KiSystemCallHandler");
+
+  // villain handler: mov eax,0xDEAD0004 ; ret
+  mem.write(KFARCH_HANDLER, new Uint8Array([
+    0xb8, 0x04, 0x00, 0xad, 0xde, 0xc3,
+  ]));
+  kernel.loadedModules.push({
+    base: KFARCH_BASE, sizeOfImage: KFARCH_SIZE, name: "kfarch.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfarch.sys", lab: true,
+  });
+  kernel.materializeModuleRange(KFARCH_BASE, 0x4000);
+
+  kernel.onArchHijack = (status) => {
+    if (status === 0xdead0004n) {
+      kernel.dbgLog.push(
+        "kfarch: syscalls are entering OUR handler secret=kf-lstar-hijack-ok");
+    }
+  };
+  kernel.onArchHealed = () => {
+    kernel.dbgLog.push("nt!KiSystemCallHandler re-attested secret=kf-arch-clean");
+  };
+}
+
+scenarios["arch-hooks"] = {
+  title: "arch-hooks — LSTAR redirect vs mini-PatchGuard",
+  description:
+    "Legacy regime: redirect IA32_LSTAR with !msr lstar <addr>, prove " +
+    "syscalls reroute with !syscalltest — then survive a PatchGuard sweep " +
+    "(you will not). Attest with !pgscan / !idt / !msr.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    setupArchHooks(kernel);
+    kernel.installPatchguard({ period: 4, phase: 2 });
+    kernel.patchguard.extraCheck = kernel.archDriftLabel;
+    session.kind = "arch-hooks";
+    return session;
+  },
+};
+
+scenarios["arch-hardened"] = {
+  title: "arch-hardened — HVCI refuses the WRMSR",
+  description:
+    "Identical to arch-hooks but hvciMode is on: any WRMSR to a protected " +
+    "register dies instantly with CRITICAL_STRUCTURE_CORRUPTION. Try the " +
+    "same redirect and watch the ceiling hold.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    const kernel = session.kernel;
+    setupArchHooks(kernel);
+    kernel.hvciMode = true;
+    session.kind = "arch-hardened";
+    return session;
   },
 };
 

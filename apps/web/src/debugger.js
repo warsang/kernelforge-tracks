@@ -15,6 +15,7 @@
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
 import { DRIVER_OBJECT, IRP_MJ, IRP_MJ_NAMES, sendIrp } from "@kernelforge/ntsim/src/devices.mjs";
 import { OBJ_PROCEDURES, objProcVa } from "@kernelforge/ntsim/src/objtypes.mjs";
+import { MSR_NAMES, IDT_VECTOR_COUNT, GDT_ENTRY_COUNT } from "@kernelforge/ntsim/src/msr.mjs";
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile, loadDecompiler } from "@kernelforge/ghidra-decompiler";
@@ -894,6 +895,7 @@ export function createCommands(kernel) {
       w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
       w("  !pgstatus                 mini-PatchGuard state: sweeps, regions, verdict");
       w("  !eptlist / !eptview <va> / !eptverify   EPT shadow views (m22)");
+      w("  !vmexit                                  VM-exit MSR intercept log (m28)");
       w("  !openprocess <pid> [access]  modeled userland open (PPL enforced)");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
@@ -914,6 +916,9 @@ export function createCommands(kernel) {
       w("  !obopen <name> [access]   modeled ObOpenObjectByPointer via live OpenProcedure");
       w("  !etwloggers               kernel logger contexts + EnableFlags attestation (m26)");
       w("  !etwpump <n>              emit n modeled CKCL events (delivered vs suppressed)");
+      w("  !msr [name|addr] [value]  MSR register file read/write (m25)");
+      w("  !idt / !gdt               interrupt/global descriptor table attestation");
+      w("  !syscalltest              issue a syscall through the live LSTAR");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -1851,6 +1856,100 @@ export function createCommands(kernel) {
       }
     },
 
+    // ------------------------------------------------- m25 architectural labs
+
+    "!msr"(args, w) {
+      if (!kernel.msrFile) return w("!msr: no MSR model in this world", "err");
+      if (!args[0]) {
+        w("MSR register file:", "hdr");
+        for (const [addr, base] of kernel.msrBaseline) {
+          const nm = MSR_NAMES["0x" + addr.toString(16)] ?? `MSR_0x${addr.toString(16)}`;
+          const cur = kernel.rdmsr(addr);
+          const drifted = cur !== base;
+          w(`  ${nm.padEnd(20)} 0x${addr.toString(16)}  live=0x${cur.toString(16).padStart(16, "0")}` +
+            (drifted ? `  DRIFTED (baseline 0x${base.toString(16)})` : ""), drifted ? "err" : "");
+        }
+        w("write: !msr lstar <addr>   read: !msr lstar", "dim");
+        return;
+      }
+      const key = args[0].toLowerCase()
+        .replace(/^ia32_/, "")
+        .replace(/^msr_/, "");
+      const ADDR = key === "lstar" ? 0xC0000082n
+        : key === "sysentereip" ? 0x176n
+        : key === "efer" ? 0xC0000081n
+        : parseAddr(key.replace(/^0x/, ""));
+      if (ADDR === null || ADDR === undefined) return w(`!msr: unknown msr '${args[0]}'`, "err");
+      if (!args[1]) {
+        const v = kernel.rdmsr(ADDR);
+        const base = kernel.msrBaseline.get(BigInt.asUintN(64, ADDR));
+        w(`msr 0x${ADDR.toString(16)} = 0x${v.toString(16).padStart(16, "0")}` +
+          (base !== undefined && base !== v ? `  [DRIFTED from 0x${base.toString(16)}]` : ""),
+          base !== undefined && base !== v ? "err" : "");
+        return;
+      }
+      const val = parseAddr(args[1]);
+      if (val === null) return w(`!msr: bad value '${args[1]}'`, "err");
+      try {
+        kernel.wrmsr(ADDR, val);
+        w(`wrmsr 0x${ADDR.toString(16)} <- 0x${val.toString(16)}`, "warn");
+        if (!kernel.hvciMode && kernel.wrmsrSeenHook === undefined) kernel.wrmsrSeenHook = true;
+      } catch (e) {
+        w(`!msr: ${e.message}`, "err");
+      }
+    },
+
+    "!idt"(args, w) {
+      if (!kernel.archBases) return w("!idt: no IDT model in this world", "err");
+      const { idtBase, idtBaseline } = kernel.archBases;
+      const want = args[0] ? Number.parseInt(args[0], 10) : null;
+      w(`IDT @ ${fmtAddr(idtBase)} (${IDT_VECTOR_COUNT} modeled vectors):`, "hdr");
+      for (let i = 0; i < IDT_VECTOR_COUNT; i++) {
+        if (want !== null && !Number.isNaN(want) && i !== want) continue;
+        const cur = mem.u64(idtBase + BigInt(i * 8));
+        const drift = cur !== idtBaseline[i];
+        if (want === null && !drift && i % 8 !== 0) continue; // compact view
+        w(`  [${i.toString().padStart(2, "0")}] ${fmtAddr(cur)}` +
+          (drift ? "  REWRITTEN" : ""), drift ? "err" : "dim");
+      }
+      const hits = (kernel.scanArchTamper?.() ?? []).filter((h) => h.kind === "idt");
+      w(hits.length ? `${hits.length} rewritten vector(s)` : "all vectors match baseline",
+        hits.length ? "warn" : "good");
+    },
+
+    "!gdt"(args, w) {
+      if (!kernel.archBases) return w("!gdt: no GDT model in this world", "err");
+      const { gdtBase, gdtBaseline } = kernel.archBases;
+      w(`GDT @ ${fmtAddr(gdtBase)}:`, "hdr");
+      for (let i = 0; i < GDT_ENTRY_COUNT; i++) {
+        const cur = mem.u64(gdtBase + BigInt(i * 8));
+        const drift = cur !== gdtBaseline[i];
+        w(`  [${i}] 0x${cur.toString(16).padStart(16, "0")}` +
+          (drift ? "  REWRITTEN" : ""), drift ? "err" : "dim");
+      }
+    },
+
+    "!syscalltest"(args, w) {
+      const num = parseAddr(args[0] ?? "0x29") ?? 0x29n;
+      if (!kernel.probeSyscall) return w("!syscalltest: no syscall model in this world", "err");
+      const r = kernel.probeSyscall(num);
+      const target = kernel.rdmsr(0xC0000082n);
+      w(`syscall 0x${num.toString(16)} via IA32_LSTAR -> 0x${target.toString(16)}:`, "hdr");
+      if (r.honest) {
+        w("  KiSystemCallHandler dispatch — honest completion", "good");
+        if (kernel.onArchHealed && !kernel.archHealedSeen) {
+          kernel.archHealedSeen = true;
+          kernel.onArchHealed();
+        }
+        return;
+      }
+      w(`  status 0x${r.status.toString(16).padStart(8, "0")} — FOREIGN handler executed`, "err");
+      if (kernel.onArchHijack && !kernel.archHijackSeen) {
+        kernel.archHijackSeen = true;
+        kernel.onArchHijack(r.status);
+      }
+    },
+
     db(args, w) {
       let addr = args[0] ? resolveArg(args[0]) : 0n;
       if (addr === null) return w("db: bad address", "err");
@@ -2040,6 +2139,16 @@ export function createCommands(kernel) {
         const wpClears = traces.filter((t) => ((t.old >> 16n) & 1n) === 1n && ((t.new >> 16n) & 1n) === 0n);
         if (wpClears.length) w(`  CR0.WP was cleared ${wpClears.length} time(s) this boot — write-protect tampering`, "warn");
       }
+      if (kernel.msrFile) {
+        const arch = kernel.scanArchTamper();
+        for (const h of arch.slice(0, 4)) {
+          const label = h.kind === "msr"
+            ? `${h.name} DRIFT baseline=0x${h.baseline.toString(16)} live=0x${h.current.toString(16)}`
+            : `${h.name} rewritten -> 0x${h.current.toString(16)}${h.foreign ? " (FOREIGN)" : ""}`;
+          w(`  [arch] ${label}`, "err");
+        }
+        if (!arch.length) w("  MSR/IDT/GDT: all values match boot baselines", "good");
+      }
       const diffs = kernel.scanProtectedRanges?.() ?? [];
       if (!diffs.length) w("  protected ranges: clean");
       for (const d of diffs) {
@@ -2126,6 +2235,22 @@ export function createCommands(kernel) {
         w("A hypervisor is splitting fetches from reads below the kernel.");
         w("secret=kf-ept-detected");
       }
+    },
+
+    "!vmexit"(args, w) {
+      const log = kernel.vmExitLog ?? [];
+      if (!log.length) return w("!vmexit: no VM-exit traps recorded", "err");
+      w(`VM-exit log (${log.length} traps):`, "hdr");
+      for (const [i, e] of log.entries()) {
+        const msrName = MSR_NAMES["0x" + e.msr.toString(16)] ?? `MSR_0x${e.msr.toString(16)}`;
+        if (e.kind === "wrmsr") {
+          w(`  [${i}] WRMSR ${msrName} @ tick ${e.tick}: guest 0x${e.guestValue.toString(16)} -> host 0x${e.hostValue.toString(16)}`);
+        } else {
+          w(`  [${i}] RDMSR ${msrName} @ tick ${e.tick}: host 0x${e.hostValue.toString(16)} -> guest 0x${e.guestValue.toString(16)}`);
+        }
+      }
+      w("The hypervisor owns these MSRs below the kernel.");
+      w("secret=kf-vmexit-detected");
     },
 
     "!openprocess"(args, w) {

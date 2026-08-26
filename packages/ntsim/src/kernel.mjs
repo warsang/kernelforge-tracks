@@ -188,6 +188,8 @@ export class NtKernel {
      *  guest-visible bytes are whatever sits in flat memory; hostBytes are
      *  the "physical" view only the hypervisor (and !eptview) can see. */
     this.eptShadow = [];
+    this.msrIntercepts = new Map();  // MSR address → intercept handler (m28)
+    this.vmExitLog = [];             // VM-exit trap log for !vmexit inspection
 
     // pool
     this.nextPool = this.bases.pool;
@@ -722,9 +724,21 @@ export class NtKernel {
     pg.sweeps++;
     pg.lastSweepTick = this.tickCount ?? 0n;
     const diffs = this.scanProtectedRanges();
-    if (!diffs.length) {
+    // worlds can attach non-byte checks (e.g. MSR/IDT register-file drift)
+    const extraLabel = !diffs.length && pg.extraCheck ? pg.extraCheck.call(this) : null;
+    if (!diffs.length && !extraLabel) {
       pg.nextSweep += pg.period; // clean pass — re-arm down the clock
       return false;
+    }
+
+    if (extraLabel && !diffs.length) {
+      pg.violatedAt = this.tickCount ?? 0n;
+      this.dbgLog.push(
+        `[pg] sweep ${pg.sweeps}: ${extraLabel} -> CRITICAL_STRUCTURE_CORRUPTION`);
+      this.bugcheck = { code: 0x109n, params: [3n, 0n, 0n, 0n] };
+      this.crash = { code: "0x109" };
+      this.cpu.halted = true;
+      return true;
     }
 
     const d = diffs[0];
@@ -777,6 +791,21 @@ export class NtKernel {
     };
     this.eptShadow.push(entry);
     return entry;
+  }
+
+  // ------------------------------------------------------- VM-exit MSR intercepts
+
+  /**
+   * Model hypervisor MSR interception (m28): when a guest executes RDMSR/WRMSR
+   * on an intercepted MSR, the hypervisor traps via VM-exit, can modify the
+   * value or fake success, and the guest never knows. This is the ONLY way
+   * to hook syscall flow (LSTAR) without triggering PatchGuard.
+   *
+   * @param {bigint} msr - MSR address (e.g., 0xC0000082 for IA32_LSTAR)
+   * @param {Function} handler - (value, isWrite) => newValue; for reads, value is ignored
+   */
+  installMsrIntercept(msr, handler) {
+    this.msrIntercepts.set(BigInt(msr), handler);
   }
 
   /** All shadow entries overlapping [va, va+len). */

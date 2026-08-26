@@ -133,6 +133,13 @@ ULONG KeQueryDpcQueueDepth(void);               /* lab extension */
 #define _disable()    KfCli()
 #define _enable()     KfSti()
 
+/* m25 lab extension: modeled MSR access behind the same thunk-export
+ * pattern (rdmsr/wrmsr run through NtKernel's arch-state model). */
+unsigned long long KfReadMsr(unsigned long msr);
+VOID KfWriteMsr(unsigned long msr, unsigned long long Value);
+#define __readmsr(a)  KfReadMsr((a))
+#define __writemsr(a, v) KfWriteMsr((a), (unsigned long long)(v))
+
 /* --- spinlocks -------------------------------------------------------------- */
 
 typedef unsigned long long KSPIN_LOCK, *PKSPIN_LOCK;
