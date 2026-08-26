@@ -20,3 +20,6 @@ apps/web/public/vendor/artifacts/
 # ghidra decompiler wasm (pyre pipeline output — rebuild via `npm run vendor:ghidra`,
 # see packages/ghidra-decompiler/vendor/README.md; the shim itself IS committed)
 apps/web/public/vendor/ghidra/
+
+# tmpout research cache (scrape via `node tools/scrape-tmpout.mjs`)
+.cache/
