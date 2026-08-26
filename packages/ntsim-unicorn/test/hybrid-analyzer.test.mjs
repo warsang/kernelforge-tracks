@@ -108,10 +108,10 @@ test("[hybrid] analyzeDriver end-to-end: modeled import + SSE handoff rescue", a
 test("[hybrid] unsupported int imm8 degrades to a clean fault (no TypeError)", async () => {
   // TBMKD-shaped: cd 29 (int 29h) — interpreter refuses the fetch, unicorn
   // raises it as an unhandled CPU exception. Either way the analyzer must
-  // surface a proper fault report, not a JS null-dereference crash.
+  // surface a proper fault report, not a JS null-dereference crash. The
+  // backend sniffs opcode bytes at RIP so the message names the fastfail.
   const { img } = imageWithText(0x20, [0xcd, 0x29, 0x31, 0xc0, 0xc3]);
   const r = await analyzeDriver(img, await hybridOpts());
   assert.equal(r.entry.status, "fault");
-  assert.match(String(r.entry.error), /exception|opcode|error/i);
-  assert.equal(r.__session.kernel.cpu.handoffs.length, 1);
+  assert.match(String(r.entry.error), /int 0x29 fastfail/i);
 });

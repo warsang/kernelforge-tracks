@@ -436,6 +436,22 @@ export class JsInterpreter {
         this.ripAfterInt3 = (this.opcodeStart ?? this.rip) + 1n;
         return;
       }
+      case p === 0xcd: { // INT imm8
+        const vec = Number(this.fetch8());
+        if (vec === 0x03 || vec === 0x2d) {
+          // int3 / int 2d (DbgBreakPointWithStatus): debugger-style stop,
+          // execution resumes after the two-byte instruction.
+          this.pendingBreak = true;
+          this.ripAfterInt3 = (this.opcodeStart ?? this.rip) + 2n;
+        } else if (vec === 0x29) {
+          // __fastfail: GS-cookie / control-flow-guard termination. Not
+          // catchable via SEH in Windows — surface a classified fault.
+          throw new CpuError("int 0x29 fastfail (__fastfail / GS failure)", this.opcodeStart ?? this.rip);
+        } else {
+          throw new CpuError(`unmodeled software interrupt 0x${vec.toString(16)}`, this.opcodeStart ?? this.rip);
+        }
+        return;
+      }
       case p === 0xf4: this.halted = true; return;
       case p === 0xe4 || p === 0xe5: { // in al/eax, imm8
         const port = Number(this.fetch8());

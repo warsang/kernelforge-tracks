@@ -23,7 +23,10 @@ export const STATUS_SUCCESS = 0x00000000n;
 /** Fault classes we can recognize from backend errors. */
 export function classifyFault(error) {
   const msg = String(error?.message ?? error ?? "");
-  if (/unimplemented opcode|invalid alu form|unimplemented grp|unimplemented 0f opcode/.test(msg)) {
+  if (/fastfail/i.test(msg)) {
+    return { code: 0xc0000409n, name: "STATUS_STACK_BUFFER_OVERRUN", kind: "#FASTFAIL" };
+  }
+  if (/unimplemented opcode|invalid alu form|unimplemented grp|unimplemented 0f opcode|software interrupt/.test(msg)) {
     return { code: 0xc0000005n, name: "STATUS_ILLEGAL_INSTRUCTION", kind: "#UD" };
   }
   if (/unmapped memory|fetch from unmapped|read of unmapped|write to unmapped|bad mapping/.test(msg)) {

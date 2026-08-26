@@ -444,7 +444,31 @@ export class UnicornCpuBackend {
       21: "unhandled CPU exception",
     };
     const what = names[rc] ?? `unicorn error ${rc}`;
-    return new CpuError(`${what} @ rip=0x${toU64(this.regs.rip).toString(16)}`, toU64(this.regs.rip));
+    const rip = toU64(this.regs.rip);
+    return new CpuError(`${what}${this.#sniffInt(what, rip)} @ rip=0x${rip.toString(16)}`, rip);
+  }
+
+  /**
+   * Unicorn reports software interrupts as a generic "unhandled CPU
+   * exception" with RIP on the instruction. Sniff the opcode bytes so the
+   * shared SEH classifier can tell int3/int2d breaks and int29h __fastfail
+   * apart from genuine faults.
+   */
+  #sniffInt(what, rip) {
+    if (what !== "unhandled CPU exception" || !this.mem?.read) return "";
+    try {
+      const b = this.mem.read(rip, 2);
+      if (b?.[0] === 0xcd) {
+        const vec = b[1];
+        if (vec === 0x29) return " — int 0x29 fastfail (__fastfail / GS failure)";
+        if (vec === 0x03 || vec === 0x2d) return ` — breakpoint (int 0x${vec.toString(16)})`;
+        return ` — software interrupt 0x${vec.toString(16)}`;
+      }
+      if (b?.[0] === 0xcc) return " — breakpoint (int3)";
+    } catch {
+      /* unmapped or host-view miss — keep generic message */
+    }
+    return "";
   }
 
   /** Run until halted/budget — mirrors JsInterpreter.run() semantics. */
