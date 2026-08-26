@@ -61,6 +61,7 @@ export function renderAnalyzer(main) {
   const engineSel = el("select", {},
     el("option", { value: "js" }, "JsInterpreter (deterministic)"),
     el("option", { value: "hybrid" }, "Hybrid (JS + Unicorn fallback)"),
+    el("option", { value: "unicorn" }, "Unicorn (WASM-only)"),
   );
   const nameInput = el("input", { type: "text", placeholder: "uploaded.sys", value: "uploaded.sys", title: "Driver name — seeds DriverName and the Services\\<key> registry path. Auto-filled from the uploaded file." });
   fileInput.addEventListener("change", () => {
@@ -258,6 +259,25 @@ export function renderAnalyzer(main) {
           const { HybridCpuBackend } = await import("@kernelforge/ntsim-unicorn/src/hybrid.mjs");
           const b = await HybridCpuBackend.create(null);
           return b;
+        };
+      } else if (engineSel.value === "unicorn") {
+        opts.makeBackend = async () => {
+          // pure Unicorn — high ISA coverage, WASM bundle lazy-loaded only here
+          let mod;
+          try {
+            mod = await import("@kernelforge/ntsim-unicorn");
+          } catch (e) {
+            try { mod = await import("@kernelforge/ntsim-unicorn/src/backend.mjs"); } catch (_) { throw e; }
+          }
+          const createUnicornBackend =
+            mod.createUnicornBackend ??
+            mod.default?.createUnicornBackend ??
+            mod.default ??
+            mod.create;
+          if (typeof createUnicornBackend !== "function") {
+            throw new Error(`ntsim-unicorn: createUnicornBackend factory not found (exports: ${Object.keys(mod).join(", ")})`);
+          }
+          return await createUnicornBackend(null);
         };
       }
       const report = await analyzeDriver(bytes, opts);

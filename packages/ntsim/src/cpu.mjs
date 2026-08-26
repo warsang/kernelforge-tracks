@@ -750,7 +750,7 @@ export class JsInterpreter {
           this.storeOp(rm, size, r);
           return;
         }
-        default: throw new CpuError(`unimplemented grp3 op ${reg}`, startRip);
+        default: throw new CpuError(`unimplemented grp3 op ${reg}`, this.opcodeStart ?? this.rip);
       }
     }
 
@@ -872,9 +872,9 @@ export class JsInterpreter {
         this.writeReg(reg, opsize, v & ((1n << BigInt(opsize * 8)) - 1n));
         return;
       }
-      case 0x05: throw new CpuError("syscall reached interpreter — kernel hook layer must intercept", startRip);
+      case 0x05: throw new CpuError("syscall reached interpreter — kernel hook layer must intercept", this.opcodeStart ?? this.rip);
       default:
-        throw new CpuError(`unimplemented 0f opcode 0x${op.toString(16)}`, startRip);    }
+        throw new CpuError(`unimplemented 0f opcode 0x${op.toString(16)}`, this.opcodeStart ?? this.rip);    }
   }
 
   pushVal(v) {
