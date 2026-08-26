@@ -48,7 +48,7 @@ import {
   SENTINEL_V4_STARTER,
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
   ATTACK_HIJACK_STARTER, SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
-  INJECT_STARTER,
+  INJECT_STARTER, SMM_VAULT_STARTER, SMM_RELOC_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -1415,8 +1415,9 @@ export const module12 = {
             "Compile your ring-0 exploit in the IDE, load it into the smm-vault " +
             "world, and let the modeled SMI run YOUR handler below ring 0.",
           scenario: "smm-vault",
+          compileTask: "smm-vault",
           starterFiles: [
-            { path: "driver/smm_vault.c", content: "" },
+            { path: "driver/smm_vault.c", content: SMM_VAULT_STARTER },
             { path: "driver/ntddk_subset.h", content: "" },
             { path: "Makefile", content: "" },
           ],
@@ -1468,8 +1469,9 @@ export const module13 = {
             "plant a stub at the new base. The lab fires two SMIs; the second one " +
             "is yours.",
           scenario: "smm-reloc",
+          compileTask: "smm-reloc",
           starterFiles: [
-            { path: "driver/smm_reloc.c", content: "" },
+            { path: "driver/smm_reloc.c", content: SMM_RELOC_STARTER },
             { path: "driver/ntddk_subset.h", content: "" },
             { path: "Makefile", content: "" },
           ],
