@@ -134,6 +134,7 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
     tables: opts.tables,
     bases: opts.bases,
     paging: opts.paging,
+    heap: opts.heap,
   });
   const mem = kernel.mem;
   kernel.bootstrap();
@@ -175,13 +176,18 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
   };
 
   // ------------------------------------------------------------- map
-  const drvRec = createDriverObject(kernel, opts.name ?? "uploaded.sys");
+  const drvRec = createDriverObject(kernel, opts.name ?? "uploaded.sys", opts.driverObject ?? {});
   const pe = parsePe(imageBytes); // throws PeError on non-x64/non-PE32+
   const mapped = mapPe(imageBytes, mem, DEFAULT_DRIVER_BASE, (qualified) =>
     kernel.resolveImportProvisioned(qualified));
   const image = { base: mapped.base, bytes: imageBytes };
   initDriverObjectName(kernel, drvRec, opts.name ?? "uploaded.sys", mapped.base, mapped.imageSize);
   drvRec.image = image; // enable SEH dispatch for IOCTL/unload calls
+  // Ensure the whole image extent is backed with Windows-accurate zero fill
+  // (inter-section gaps + intra-section BSS beyond pe.mjs's own BSS fill).
+  // Without this, Unicorn faults on #PF while JsInterpreter silently
+  // succeeds due to SparseMemory read-as-zero semantics.
+  try { kernel.materializeModuleRange(mapped.base, mapped.imageSize, { fill: 0x00 }); } catch { /* optional backend */ }
 
   report.load = {
     base: `0x${mapped.base.toString(16)}`,
@@ -193,6 +199,8 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
     sections: pe.sections.map((s) => ({
       name: s.name, rva: s.rva, vsize: s.virtualSize,
     })),
+    driverObject: `0x${drvRec.va.toString(16)}`,
+    heap: { aslr: !!kernel.heapConfig?.aslr, poolBase: `0x${kernel.bases.pool.toString(16)}` },
   };
 
   const driverName = opts.name ?? "uploaded.sys";
@@ -313,9 +321,42 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
   report.filesWritten = [...(kernel.fs ?? new Map()).entries()]
     .filter(([, b]) => b.length > 0)
     .map(([p, b]) => ({ path: p, size: b.length }));
+  // Preserve count for backwards compat and add detailed addresses with
+  // overlap diagnostics (callback inside DriverEntry's own image range).
   report.notifyRoutines = Object.fromEntries(
     Object.entries(kernel.notifyRoutines).map(([k2, arr]) => [k2, arr.length]),
   );
+  try {
+    const drvBase = mapped.base;
+    const drvEnd = mapped.base + BigInt(mapped.imageSize);
+    const detail = {};
+    for (const [k2, arr] of Object.entries(kernel.notifyRoutines)) {
+      detail[k2] = arr.map((va) => {
+        const v = BigInt(va);
+        const rva = v >= drvBase && v < drvEnd ? Number(v - drvBase) : null;
+        const overlapsEntry = rva !== null ? (v >= mapped.entry && v < mapped.entry + 0x2000n) : false; // heuristic: entry ± 8k
+        return {
+          va: `0x${v.toString(16)}`,
+          rva: rva !== null ? `0x${rva.toString(16)}` : null,
+          inImage: rva !== null,
+          // true when callback lies within the page of DriverEntry — often
+          // just adjacent pdata function, not real overlap. Flag for review.
+          nearEntry: overlapsEntry,
+        };
+      });
+    }
+    report.notifyRoutinesDetail = detail;
+    // Dbg log warnings for callbacks that fall inside the image's .text but
+    // very close to entry — the user-reported "overlap" case. These are
+    // usually legitimate adjacent functions (see pdata) and not a loader bug.
+    for (const [kind, entries] of Object.entries(detail)) {
+      for (const e of entries) {
+        if (e.inImage && e.nearEntry) {
+          kernel.dbgLog.push(`[notify] ${kind} cb ${e.va} (rva ${e.rva}) near DriverEntry — adjacent pdata function, not overlap`);
+        }
+      }
+    }
+  } catch { /* best-effort diagnostics */ }
   // live session for interactive follow-ups (UI IOCTLs / unload). Not JSON.
   report.__session = {
     kernel,

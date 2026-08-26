@@ -103,6 +103,18 @@ export function mapPe(bytes, mem, baseAddr, resolveImport) {
     mem.write(base + BigInt(s.rva), bytes.subarray(s.rawPtr, s.rawPtr + s.rawSize));
   }
 
+  // 1a. zero-fill BSS: virtualSize > rawSize (Windows accurate 0x00 fill).
+  // SparseMemory returns zeros on read-but-unmapped, but Unicorn needs real
+  // pages materialized or it faults with UC_ERR 7 (write to unmapped).
+  for (const s of pe.sections) {
+    if (s.virtualSize > s.rawSize) {
+      const gap = s.virtualSize - s.rawSize;
+      const bssStart = base + BigInt(s.rva + s.rawSize);
+      // SparseMemory.write on unwritten region creates pages on demand
+      mem.write(bssStart, new Uint8Array(gap));
+    }
+  }
+
   // 1b. map the PE headers like a real loader: drivers legitimately read their
   // own DOS/NT headers (self-base scans for 'MZ', checksum verification,
   // export walking) and fault on unmapped header pages otherwise.

@@ -194,7 +194,16 @@ export class NtKernel {
     this.msrIntercepts = new Map();  // MSR address → intercept handler (m28)
     this.vmExitLog = [];             // VM-exit trap log for !vmexit inspection
 
-    // pool
+    // pool — full mock heap (ExAllocatePoolWithTag family)
+    // opts.heap: {aslr?: boolean, seed?: number|bigint} — ASLR disabled by
+    // default for deterministic CI; enable to randomize inter-allocation
+    // padding and make synthetic VAs less round (drv=0xfffff9… not 0x…00000).
+    this.heapConfig = {
+      aslr: !!opts.heap?.aslr,
+      seed: BigInt(opts.heap?.seed ?? 0x9e3779b1n) & 0xffffffffn,
+    };
+    // xorshift32 state for deterministic jitter
+    this._heapPrng = Number(this.heapConfig.seed & 0xffffffffn) || 0x9e3779b1;
     this.nextPool = this.bases.pool;
     /** @type {Array<{addr:bigint,size:number,tag:string,freed:boolean}>} */
     this.poolAllocs = [];
@@ -527,17 +536,41 @@ export class NtKernel {
 
   // -------------------------------------------------------------- pool
 
+  /** xorshift32 step for heap jitter (deterministic, fast). */
+  _heapNextJitter() {
+    let x = this._heapPrng >>> 0;
+    x ^= (x << 13) >>> 0;
+    x ^= x >>> 17;
+    x ^= (x << 5) >>> 0;
+    this._heapPrng = x >>> 0;
+    // 0..255 * 16 = 0..4080, 16-byte aligned, keeps low 4 bits non-zero
+    return (x & 0xff) * 16;
+  }
+
   /**
    * Layout per allocation (32 bytes of bookkeeping around the payload):
    *   [hdr magic u64 @ addr-16][pad 8][payload size bytes @ addr][guard 16B]
    * The guard lets !poolverify catch out-of-bounds writes before they turn
    * into distant, unrelated bugchecks.
+   *
+   * When heapConfig.aslr is true, a small deterministic jitter (16-byte
+   * steps up to 4080) is added between allocations so synthetic VAs are
+   * not suspiciously round (e.g. drv != 0xfffff80200000000). Disabled by
+   * default for CI determinism — enable via `new NtKernel({heap:{aslr:true}})`.
    */
   allocPool(size, tag = "ntsm") {
     const aligned = (size + 15) & ~15;
-    const hdr = this.nextPool;
+    // Insert ASLR padding before the header when enabled
+    let hdr = this.nextPool;
+    if (this.heapConfig?.aslr) {
+      const jitter = this._heapNextJitter();
+      hdr += BigInt(jitter);
+    }
     const addr = hdr + 16n;
-    this.nextPool += BigInt(aligned) + 32n; // header(16) + guard(16) + payload
+    this.nextPool = hdr + BigInt(aligned) + 32n;
+    // Reserve one extra guard bump when ASLR is on so the next allocation
+    // does not accidentally start on the previous guard's page tail.
+    if (this.heapConfig?.aslr) this.nextPool += 16n;
     this.mem.w64(hdr, POOL_MAGIC);
     this._writeGuard(addr, size);
     // Backing discipline: an allocation implies its whole span exists.
@@ -1444,30 +1477,33 @@ export class NtKernel {
   // ------------------------------------------------------------ introspection
 
   /**
-   * Materialize zero-filled backing for the module image range
-   * [base, base+size) so debugger reads (db/dq/s/!dh/u) and guest fetches
-   * see a fully mapped region instead of "unmapped" holes between the few
-   * evidence pages a scenario wrote. Idempotent per page. When the CPU
-   * backend exposes mapRange() (Unicorn), the same span is pre-mapped in
-   * the emulator's address space so `lm`-listed modules are executable and
-   * readable without waiting for a run's demand sync.
+   * Materialize backing for the module image range [base, base+size) so
+   * debugger reads (db/dq/s/!dh/u) and guest fetches see a fully mapped
+   * region instead of "unmapped" holes between evidence pages.
+   * Idempotent per page. When the CPU backend exposes mapRange() (Unicorn),
+   * the same span is pre-mapped in the emulator's address space so
+   * `lm`-listed modules are executable/readable without waiting for a run's
+   * demand sync.
    *
    * Callers should invoke this whenever a module is appended to
    * loadedModules. Real dump modules are deliberately NOT materialized —
    * their non-resident ranges are pedagogically meaningful.
+   * @param {bigint} base
+   * @param {bigint|number} size
+   * @param {{fill?: number}} [opts] fill byte for newly materialized pages (default 0xCC for debugger trap; analyzer uses 0x00 for Windows-accurate BSS/inter-section gaps)
    * @returns {number} pages materialized (0 when everything was backed)
    */
-  materializeModuleRange(base, size) {
+  materializeModuleRange(base, size, opts = {}) {
+    const fill = opts.fill !== undefined ? (opts.fill & 0xff) : 0xcc;
     const start = BigInt(base) & ~0xfffn;
     const end = BigInt(base) + BigInt(size);
     if (end <= start) return 0;
     let fresh = 0;
     for (let p = start; p < end; p += 0x1000n) {
       if (!this.mem.hasPage(p)) {
-        // int3 padding rather than zeros: real .text alignment padding is
-        // 0xCC-filled, static analysis treats CC as a boundary edge, and
-        // stray execution of an unmapped-in-reality page halts loudly
-        this.mem.write(p, new Uint8Array(0x1000).fill(0xcc));
+        // Windows loader zero-fills BSS; debugger scenarios historically used
+        // int3 (0xCC) so stray execution halts loudly. Caller chooses.
+        this.mem.write(p, new Uint8Array(0x1000).fill(fill));
         fresh++;
       }
     }

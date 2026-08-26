@@ -135,15 +135,46 @@ export const IO_STACK_LOCATION = {
  * thunk whose impl completes any IRP with STATUS_SUCCESS) so unhandled MJ
  * codes behave like a lazy real driver instead of crashing.
  *
+ * Pool-backed by default: allocations go through `kernel.allocPool` (full
+ * mock heap) so VAs are not suspiciously round (e.g. `0xfffff80200000000`).
+ * Pass `opts.va` for a fixed placement (tests / carve-overlay worlds) or
+ * `opts.usePool=false` to force the legacy base. ASLR jitter is controlled
+ * by `kernel.heapConfig.aslr` (`new NtKernel({heap:{aslr:true}})`).
+ *
  * @returns {{va: bigint, name: string}}
  */
 export function createDriverObject(kernel, name, opts = {}) {
   const mem = kernel.mem;
-  const va = opts.va ?? kernel.bases.driver ?? 0xfffff80200000000n;
+  let va;
+  if (opts.va !== undefined && opts.va !== null) {
+    va = BigInt(opts.va);
+  } else if (opts.usePool === false) {
+    va = kernel.bases.driver ?? 0xfffff80200000000n;
+  } else {
+    // Pool-allocated DRIVER_OBJECT: non-round, heap-tracked, debuggable
+    va = kernel.allocPool(DRIVER_OBJECT.SIZE, "DrvO");
+    // allocPool already created backing + guard; just ensure struct zeroed
+    // (it is, but keep idempotent clear for fixed-pool reuse edge cases)
+    mem.write(va, new Uint8Array(DRIVER_OBJECT.SIZE));
+  }
   const existing = kernel.driverObjects?.get(va);
-  if (existing) return existing;
+  if (existing) {
+    // If we prematurely allocated a pool slot before discovering the existing
+    // fixed-VA mapping, leak is harmless but note it for diagnostics.
+    if (opts.va === undefined && opts.usePool !== false) {
+      // pool slot was wasted; return existing mapping instead
+      // (no freePool — pool leak mirrors real kernel's object retention)
+    }
+    return existing;
+  }
 
-  mem.write(va, new Uint8Array(DRIVER_OBJECT.SIZE));
+  // Fresh DRIVER_OBJECT: ensure zeroed backing for the struct itself.
+  // Pool-allocated path already wrote zeros; fixed-VA path needs explicit
+  // materialization (may be virgin page).
+  if (opts.va !== undefined || opts.usePool === false) {
+    if (!mem.hasPage(va & ~0xfffn)) mem.write(va & ~0xfffn, new Uint8Array(0x1000));
+    mem.write(va, new Uint8Array(DRIVER_OBJECT.SIZE));
+  }
   mem.w32(va + BigInt(DRIVER_OBJECT.TYPE), 0x00040004); // Type=DRIVER_OBJECT(4),Size
   const defaultMj = opts.defaultMajorThunk
     ?? kernel.defineApi("IopInvalidDeviceRequest", function () {
@@ -170,7 +201,19 @@ export function createDriverObject(kernel, name, opts = {}) {
 /** Write DriverName UNICODE_STRING + image linkage after mapPe. */
 export function initDriverObjectName(kernel, drvRec, name, imageBase, imageSize) {
   const mem = kernel.mem;
-  const bufVa = drvRec.va + 0x200n; // scratch area behind the struct
+  // Prefer a dedicated pool allocation for the name buffer so we never
+  // clobber the guard bytes of a pool-allocated DRIVER_OBJECT (which is
+  // sized exactly DRIVER_OBJECT.SIZE). Fixed-VA drivers historically used
+  // va+0x200 scratch; we keep that fast-path for non-pool objects but
+  // allocate fresh for heap-backed ones to stay guard-clean.
+  const isPoolDrv = kernel.poolAllocs?.some((a) => a.addr === drvRec.va && a.tag === "DrvO");
+  let bufVa;
+  if (isPoolDrv) {
+    bufVa = kernel.allocPool((name.length + 1) * 2, "DrvN");
+  } else {
+    bufVa = drvRec.va + 0x200n; // legacy scratch behind fixed struct
+    if (!mem.hasPage(bufVa & ~0xfffn)) mem.write(bufVa & ~0xfffn, new Uint8Array(0x1000));
+  }
   const nameOff = drvRec.va + BigInt(DRIVER_OBJECT.DRIVER_NAME);
   mem.writeUtf16(bufVa, name);
   mem.w16(nameOff, name.length * 2);
