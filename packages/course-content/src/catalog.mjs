@@ -45,9 +45,10 @@ import m9l1Body from "./lessons/m9-l1.mjs";
 import m10l1Body from "./lessons/m10-l1.mjs";
 import {
   SENTINEL_V1_STARTER, SENTINEL_V2_STARTER, SENTINEL_V3_STARTER,
-  SENTINEL_V4_STARTER,
+  SENTINEL_V4_STARTER, SENTINEL_V5_STARTER,
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
-  ATTACK_HIJACK_STARTER, SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
+  ATTACK_HIJACK_STARTER, ATTACK_IRP_STARTER,
+  SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
   INJECT_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
@@ -65,6 +66,8 @@ import m21l1Body from "./lessons/m21-l1.mjs";
 import m22l1Body from "./lessons/m22-l1.mjs";
 import m22l2Body from "./lessons/m22-l2.mjs";
 import m23l1Body from "./lessons/m23-l1.mjs";
+import m24l1Body from "./lessons/m24-l1.mjs";
+import m24l2Body from "./lessons/m24-l2.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -185,6 +188,17 @@ const F = {
   m23l1f3: "86edefad6b6e2d7df966ecd7a6b3e3770f155745ac13d99bca4dc99c794d524c", // PPL-off secret
   m23l1f4: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // Cid-0004 count after spoof
   m23l1f5: "a8bf30486af1378d6b0a7786939cf0f899da48bae84755112dc814683aeafbee", // identity cross-ref
+
+  // --- m24 dispatch-layer hooks (IRP MajorFunction + object types) ---
+  m24l1f1: "9c063ac12a9ab043c2d0bb0bbc326aba40c339d1b772597fc6ce98960ad71f90", // convicted major code
+  m24l1f2: "9e108b27d758167032495b18021f478556a1ec8056a11433008edee2a7b273e6", // foreign handler VA
+  m24l1f3: "0bb58a8c61d1fa91d5b29d17e1a962f07f153bbb565f7497915c2829a567c596", // dispatch heal secret
+  m24l1f4: "b58b65585cf50ae2be2815b488702fa838379143196c1e4e80f49fb84ff49005", // objtype heal secret
+  m24l1f5: "8d7b6f511bf19096751ff856df44686c5aa49f1daf3b2a88d467b17f5e962cbc", // attack magic status
+  m24l1f6: "4caeec510c4a535a295bcab9e2038c16c38f55e9954fc9e95d6cd0f432ea9d31", // attack payoff secret
+  m24l2f1: "0dc578f12279fd05ac3f591638c7e06c8d953cb083271754656c80c2f1b267cd", // convicted owner module
+  m24l2f2: "b0f6136292266f5a55b41125b55ec719c33ab9547b5a6ef3f1fa2d51661e4ea3", // MajorFunction table offset
+  m24l2f3: "ee5a5019da01e4e784c917c469a277e7004414bdaa0b6fb5ce239bae1f1448c6", // sentinel v5 secret
 
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -2142,7 +2156,153 @@ export const module23 = {
   ],
 };
 
+export const module24 = {
+  id: "m24",
+  title: "Dispatch-Layer Hooks: IRP & Object Types",
+  track: "windows-kernel",
+  summary:
+    "The hooks PatchGuard ignores: MajorFunction table rewrites and " +
+    "OBJECT_TYPE_INITIALIZER procedures — attack, behavioral proof, and " +
+    "the baseline-containment sensor that convicts them.",
+  lessons: [
+    {
+      id: "m24.l1",
+      title: "IRP + object-type hooks: attack & forensics",
+      body: m24l1Body,
+      requires: ["m23.l1"],
+      labs: [
+        {
+          id: "m24.l1.lab1",
+          kind: "windbg",
+          title: "Attest the tables, repair the dispatch",
+          brief:
+            "kfsnoop.sys rewrote kfser.sys's DEVICE_CONTROL slot and the " +
+            "Process type's OpenProcedure. Prove both with !dispatchscan / " +
+            "!ioctltest / !obopen / !objtype, then eb-repair until clean.",
+          scenario: "dispatch-hook",
+          flags: [
+            {
+              id: "m24.l1.f1",
+              sha256: F.m24l1f1,
+              prompt:
+                "!dispatchscan convicts exactly one wired slot. Submit that " +
+                "IRP major code name exactly (e.g. IRP_MJ_CREATE style).",
+              points: 100,
+            },
+            {
+              id: "m24.l1.f2",
+              sha256: F.m24l1f2,
+              prompt:
+                "Submit the foreign handler's VA as full 16-digit hex with " +
+                "0x prefix (as printed by !dispatchscan / !ioctltest).",
+              points: 150,
+            },
+            {
+              id: "m24.l1.f3",
+              sha256: F.m24l1f3,
+              prompt:
+                "Repair the convicted slot with the printed eb line, prove " +
+                "the honest completion with !ioctltest, and submit the " +
+                "secret the clean attestation prints (!analyze -v).",
+              points: 250,
+            },
+            {
+              id: "m24.l1.f4",
+              sha256: F.m24l1f4,
+              prompt:
+                "!objtype shows one HOOKED initializer procedure. Repair it " +
+                "(eb), confirm !obopen grants again, and submit the secret " +
+                "from the clean sweep.",
+              points: 200,
+            },
+          ],
+        },
+        {
+          id: "m24.l1.lab2",
+          kind: "compiler",
+          title: "Author your own IRP hook",
+          brief:
+            "Flip sides: compile a driver that rewrites kfser's " +
+            "DEVICE_CONTROL slot onto the seeded trampoline, then watch " +
+            "!ioctltest complete with your magic status.",
+          scenario: "dispatch-hook",
+          compileTask: "attack-irp",
+          starterFiles: [
+            { path: "driver/kfirp.c", content: ATTACK_IRP_STARTER },
+          ],
+          flags: [
+            {
+              id: "m24.l1.f5",
+              sha256: F.m24l1f5,
+              prompt:
+                "After your driver loads, !ioctltest kfser completes with " +
+                "a magic status. Submit it as 0x-prefixed 8-digit hex.",
+              points: 150,
+            },
+            {
+              id: "m24.l1.f6",
+              sha256: F.m24l1f6,
+              prompt:
+                "The hijack payoff prints a secret to the DbgPrint buffer " +
+                "(!analyze -v). Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m24.l2",
+      title: "Defense: KF-Sentinel v5 — table attestation engine",
+      body: m24l2Body,
+      requires: ["m24.l1"],
+      labs: [
+        {
+          id: "m24.l2.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v5: convict foreign dispatch from ring 0",
+          brief:
+            "Compile the containment sensor: walk all 28 MajorFunction " +
+            "slots plus the Process type's OpenProcedure and convict " +
+            "anything pointing into kfsnoop.sys.",
+          scenario: "dispatch-hook",
+          compileTask: "sentinel-v5",
+          starterFiles: [
+            { path: "driver/kfsentinel_v5.c", content: SENTINEL_V5_STARTER },
+          ],
+          flags: [
+            {
+              id: "m24.l2.f1",
+              sha256: F.m24l2f1,
+              prompt:
+                "Both convictions attribute to one loaded module. Submit " +
+                "its exact image name (with .sys).",
+              points: 100,
+            },
+            {
+              id: "m24.l2.f2",
+              sha256: F.m24l2f2,
+              prompt:
+                "The sensor indexes MajorFunction at _DRIVER_OBJECT+0x??. " +
+                "Submit that offset as short 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m24.l2.f3",
+              sha256: F.m24l2f3,
+              prompt:
+                "On conviction the sensor prints its completion secret. " +
+                "Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23],
+  version: 6,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24],
 };

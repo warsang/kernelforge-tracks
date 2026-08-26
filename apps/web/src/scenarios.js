@@ -11,6 +11,9 @@ import { NtKernel } from "@kernelforge/ntsim/src/kernel.mjs";
 import { StructRef } from "@kernelforge/ntsim/src/structs.mjs";
 import { PageTableSpace, joinVa } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
+import { createDriverObject, createDeviceObject, snapshotMajorBaseline,
+  installDispatchScan, DRIVER_OBJECT } from "@kernelforge/ntsim/src/devices.mjs";
+import { installObjectTypes } from "@kernelforge/ntsim/src/objtypes.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
@@ -979,6 +982,121 @@ scenarios["ept-shadow"] = {
       lab: true,
     });
     session.kind = "ept-shadow";
+    return session;
+  },
+};
+
+/**
+ * m24 dispatch-layer world: a serial-port filter driver (kfser.sys) whose
+ * MajorFunction[IRP_MJ_DEVICE_CONTROL] slot was rewritten in place by
+ * kfsnoop.sys, plus a hooked OBJECT_TYPE_INITIALIZER (Process.OpenProcedure).
+ * Neither structure is PatchGuard-protected — the module's whole point.
+ */
+export const KFDSP_BASE = 0xfffff8055a710000n;   // kfser.sys image base
+export const KFDSP_DRV = KFDSP_BASE;
+export const KFDSP_DRV_SIZE = 0x4000;
+export const KFDSP_SNOOP = 0xfffff8055a720000n;  // kfsnoop.sys image base
+export const KFDSP_SNOOP_SIZE = 0x4000;
+/** Foreign MJ handler kfsnoop wrote into kfser's DEVICE_CONTROL slot. */
+export const KFDSP_FOREIGN_MJ = KFDSP_SNOOP + 0x800n;
+/** kfsnoop's OpenProcedure stub (denies every open with 0xDEAD0002). */
+export const KFDSP_OPENPROC = KFDSP_SNOOP + 0x900n;
+/** Attack-lab trampoline page the compiled student driver redirects to. */
+export const KFDSP_TRAMP = 0xfffff8055a730000n;
+/** &kfser!MajorFunction[IRP_MJ_DEVICE_CONTROL] (0x70 + 14*8). */
+export const KFDSP_SLOT = KFDSP_DRV + 0xe0n;
+/** Honest in-image handler kfser registered during its DriverEntry. */
+const KFDSP_HONEST_MJ = KFDSP_DRV + 0x800n;
+export const KFDSP_OT_PROCESS = 0xfffff8055a728000n;
+export const KFDSP_OT_FILE = 0xfffff8055a72c000n;
+
+/** mov dword ptr [rdx+0x30], imm32 ; xor eax,eax ; ret  (rcx=dev, rdx=irp) */
+function irpStatusStub(status) {
+  return new Uint8Array([
+    0xc7, 0x42, 0x30,
+    status & 0xff, (status >> 8) & 0xff, (status >> 16) & 0xff, (status >> 24) & 0xff,
+    0x31, 0xc0, 0xc3,
+  ]);
+}
+
+function setupDispatchHook(kernel) {
+  installDispatchScan(kernel);
+  installObjectTypes(kernel);
+  const mem = kernel.mem;
+
+  // ---- victim: kfser.sys, an honest serial filter driver -----------------
+  const drvRec = createDriverObject(kernel, "kfser", { va: KFDSP_DRV });
+  mem.w64(KFDSP_DRV + BigInt(DRIVER_OBJECT.DRIVER_START), KFDSP_DRV);
+  mem.w64(KFDSP_DRV + BigInt(DRIVER_OBJECT.DRIVER_SIZE), BigInt(KFDSP_DRV_SIZE));
+  // honest in-image IOCTL completion: Information=4, Status=SUCCESS
+  mem.write(KFDSP_HONEST_MJ, new Uint8Array([
+    0xc7, 0x42, 0x38, 0x04, 0x00, 0x00, 0x00, // mov dword [rdx+0x38], 4
+    0x31, 0xc0,                               // xor eax, eax
+    0xc3,
+  ]));
+  mem.w64(KFDSP_SLOT, KFDSP_HONEST_MJ);
+  createDeviceObject(kernel, drvRec, { extensionSize: 0x40 });
+  snapshotMajorBaseline(kernel, drvRec); // AFTER legitimate wiring
+
+  // ---- the crime: kfsnoop rewrote the DEVICE_CONTROL slot in place --------
+  mem.w64(KFDSP_SLOT, KFDSP_FOREIGN_MJ);
+  kernel.dbgLog.push(
+    `kfser: DriverEntry wired MajorFunction[DEVICE_CONTROL] -> ${KFDSP_HONEST_MJ.toString(16)}`);
+
+  // ---- villain: kfsnoop.sys, resident but unlinked from dispatch honesty --
+  mem.write(KFDSP_FOREIGN_MJ, irpStatusStub(0xdead0001)); // IRP hijack payoff
+  // OpenProcedure stub: mov eax,0xDEAD0002 ; ret (ignores name/access args)
+  mem.write(KFDSP_OPENPROC, new Uint8Array([
+    0xb8, 0x02, 0x00, 0xad, 0xde, 0xc3,
+  ]));
+
+  kernel.loadedModules.push(
+    { base: KFDSP_DRV, sizeOfImage: KFDSP_DRV_SIZE, name: "kfser.sys",
+      full: "\\SystemRoot\\system32\\drivers\\kfser.sys", lab: true },
+    { base: KFDSP_SNOOP, sizeOfImage: KFDSP_SNOOP_SIZE, name: "kfsnoop.sys",
+      full: "\\SystemRoot\\system32\\drivers\\kfsnoop.sys", lab: true },
+  );
+  kernel.materializeModuleRange(KFDSP_BASE, 0x30000);
+
+  // ---- object types: Process hooked, File clean (control sample) ----------
+  const tProc = kernel.defineObjectType("Process", { va: KFDSP_OT_PROCESS });
+  const tFile = kernel.defineObjectType("File", { va: KFDSP_OT_FILE });
+  kernel.setObjectTypeProc(tProc, "OpenProcedure", KFDSP_OPENPROC);
+
+  // heal payoffs (printed once each, guarded by the command layer)
+  kernel.onDispatchHealed = () => {
+    kernel.dbgLog.push("kfser: MajorFunction table attested clean secret=kf-dispatch-clean");
+  };
+  kernel.onObTypeHealed = () => {
+    kernel.dbgLog.push("nt!ObInit: object type initializers attested secret=kf-obtype-clean");
+  };
+  kernel.onIoctlHealed = () => {
+    kernel.dbgLog.push("kfser: honest IOCTL completion restored secret=kf-ioctl-honest");
+  };
+  kernel.onIrpHijacked = (status) => {
+    kernel.dbgLog.push(
+      `kfsnoop: IOCTL completion hijacked (status 0x${status.toString(16)}) — dispatch redirect observed`);
+    if (status === 0xdead0003n) {
+      kernel.dbgLog.push("kfsnoop: your trampoline owns the IOCTL path secret=kf-irp-hijack-ok");
+    }
+  };
+  // attack lab (m24.l1.lab2) payoff: the compiled driver redirects the slot
+  // to the seeded KFDSP_TRAMP stub; !ioctltest then completes 0xDEAD0003.
+  kernel.mem.write(KFDSP_TRAMP, irpStatusStub(0xdead0003));
+  void tFile;
+}
+
+scenarios["dispatch-hook"] = {
+  title: "dispatch-hook — IRP + object-type hook forensics",
+  description:
+    "kfsnoop.sys rewrote kfser.sys's MajorFunction[IRP_MJ_DEVICE_CONTROL] " +
+    "and the Process type's OpenProcedure. Attest with !dispatchscan / " +
+    "!objtype, prove behavior with !ioctltest / !obopen, repair with eb. " +
+    "None of this is PatchGuard-protected — EDR table baselines are what catch it.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupDispatchHook(session.kernel);
+    session.kind = "dispatch-hook";
     return session;
   },
 };

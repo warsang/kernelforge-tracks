@@ -13,7 +13,8 @@
  */
 
 import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
-import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs";
+import { DRIVER_OBJECT, IRP_MJ, IRP_MJ_NAMES, sendIrp } from "@kernelforge/ntsim/src/devices.mjs";
+import { OBJ_PROCEDURES, objProcVa } from "@kernelforge/ntsim/src/objtypes.mjs";
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { analyzeExtent, resolveRel32, decompile as ghidraDecompile, loadDecompiler } from "@kernelforge/ghidra-decompiler";
@@ -907,6 +908,10 @@ export function createCommands(kernel) {
       w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
       w("  !ssdt [module]            system service table + inline-hook scan");
       w("  !pseudocode <addr>        Ghidra pseudocode (fixture fallback without the wasm)");
+      w("  !dispatchscan             attest every DRIVER_OBJECT MajorFunction table (m24)");
+      w("  !ioctltest <drv> [ioctl]  send one IRP_MJ_DEVICE_CONTROL through the live slot");
+      w("  !objtype [name]           OBJECT_TYPE_INITIALIZER procedure attestation (m24)");
+      w("  !obopen <name> [access]   modeled ObOpenObjectByPointer via live OpenProcedure");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -1603,6 +1608,193 @@ export function createCommands(kernel) {
       }
     },
     "!drivobj"(args, w) { commands["!drvobj"](args, w); }, // alias (both spellings seen in the wild)
+
+    // ------------------------------------------------- m24 dispatch-layer labs
+
+    "!dispatchscan"(args, w) {
+      const foreign = kernel.scanForeignDispatch?.() ?? [];
+      const recs = [...(kernel.driverObjects ?? new Map()).values()];
+      if (!recs.length) return w("!dispatchscan: no DRIVER_OBJECTs exist yet", "err");
+      w("MajorFunction attestation (baseline vs live, containment vs own image):", "hdr");
+      let convicted = 0;
+      for (const rec of recs) {
+        const rd = (off) => mem.u64(rec.va + off);
+        const start = rd(BigInt(DRIVER_OBJECT.DRIVER_START));
+        const size = rd(BigInt(DRIVER_OBJECT.DRIVER_SIZE));
+        w(`  ${rec.name}  ${fmtAddr(rec.va)}  image ${fmtAddr(start)}+0x${size.toString(16)}`,
+          "hdr");
+        for (const [code, name] of Object.entries(IRP_MJ_NAMES)) {
+          const slotVa = rec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) +
+            BigInt(Number(code) * 8);
+          const fn = rd(BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) + BigInt(Number(code) * 8));
+          const isDefault = fn === rec.defaultMajorThunk;
+          if (isDefault) continue; // lazy default: nothing to attest
+          const bad = foreign.find((f) => f.drvRec === rec && f.code === Number(code));
+          const baseQword = rec.majorBaseline
+            ? (() => { const o = Number(code) * 8;
+                let v = 0n;
+                for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(rec.majorBaseline[o + i]);
+                return v; })()
+            : null;
+          if (bad) {
+            convicted++;
+            w(`    [+0x${slotVa.toString(16).slice(-3)}] IRP_MJ_${name.padEnd(22)} ${fmtAddr(fn)}  FOREIGN -> ${bad.owner ?? "unbacked memory"}`, "err");
+            if (baseQword !== null && baseQword !== 0n) {
+              const le = [...new Uint8Array(new BigUint64Array([baseQword]).buffer)]
+                .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+              w(`        repair: eb ${fmtAddr(slotVa)} ${le}`, "dim");
+            }
+          } else {
+            w(`    [+0x${slotVa.toString(16).slice(-3)}] IRP_MJ_${name.padEnd(22)} ${fmtAddr(fn)}${baseQword !== null && baseQword !== fn ? "  (rewritten since baseline)" : ""}`);
+          }
+        }
+      }
+      if (!convicted) {
+        w("all wired MajorFunction slots resolve inside their owning image", "good");
+        if (kernel.onDispatchHealed && !kernel.dispatchHealedSeen) {
+          kernel.dispatchHealedSeen = true;
+          kernel.onDispatchHealed();
+        }
+        return;
+      }
+      w(`${convicted} foreign dispatch handler(s) — classic IRP-hook signature`, "warn");
+    },
+
+    async "!ioctltest"(args, w) {
+      if (!args[0]) {
+        return w("usage: !ioctltest <driver> [ioctl-hex]   e.g. !ioctltest kfser 0x222000", "err");
+      }
+      const target = unquote(args[0]);
+      let rec = null;
+      const va = parseAddr(target);
+      if (va !== null) rec = (kernel.driverObjects ?? new Map()).get(va);
+      if (!rec) {
+        rec = [...(kernel.driverObjects ?? new Map()).values()]
+          .find((r) => r.name.toLowerCase() === target.toLowerCase().replace(/\.sys$/, "")
+            || `${r.name}`.toLowerCase() === target.toLowerCase());
+      }
+      if (!rec) return w(`!ioctltest: no DRIVER_OBJECT for '${target}'`, "err");
+      const dev = rec.deviceList?.[0];
+      if (!dev) return w(`!ioctltest: ${rec.name} has no DEVICE_OBJECT to target`, "err");
+
+      let ioctl = 0x222000n;
+      if (args[1]) {
+        const p = parseAddr(args[1]);
+        if (p === null) return w(`!ioctltest: bad ioctl '${args[1]}'`, "err");
+        ioctl = p;
+      }
+      let r;
+      try {
+        r = await sendIrp(kernel, dev, {
+          major: IRP_MJ.DEVICE_CONTROL,
+          ioctl,
+          outputLen: 8,
+        });
+      } catch (e) {
+        return w(`!ioctltest: ${e.message}`, "err");
+      }
+      if (r.status !== "ok") {
+        return w(`!ioctltest: dispatch faulted (${r.status}${r.error ? `: ${r.error.message}` : ""})`, "err");
+      }
+      const handler = mem.u64(rec.va + BigInt(DRIVER_OBJECT.MAJOR_FUNCTION) +
+        BigInt(IRP_MJ.DEVICE_CONTROL * 8));
+      w(`IOCTL 0x${ioctl.toString(16)} -> ${rec.name}!MajorFunction[DEVICE_CONTROL] @ ${fmtAddr(handler)}`,
+        "hdr");
+      w(`  IoStatus.Status      : 0x${r.ntstatus.toString(16).padStart(8, "0")} (${statusName(r.ntstatus)})`);
+      w(`  IoStatus.Information : 0x${r.information.toString(16)}`);
+      if (r.ntstatus === 0xdead0001n || r.ntstatus === 0xdead0003n) {
+        w("  completion does NOT match this driver's honest contract", "warn");
+        if (kernel.onIrpHijacked && !kernel.irpHijackSeen) {
+          kernel.irpHijackSeen = true;
+          kernel.onIrpHijacked(r.ntstatus);
+        }
+      }
+      if (rec.majorBaseline) {
+        const o = IRP_MJ.DEVICE_CONTROL * 8;
+        let baseQword = 0n;
+        for (let i = 7; i >= 0; i--) baseQword = (baseQword << 8n) | BigInt(rec.majorBaseline[o + i]);
+        if (handler === baseQword && r.ntstatus !== 0xdead0001n && r.ntstatus !== 0xdead0003n) {
+          w("  slot matches load-time baseline — honest completion", "good");
+          if (kernel.onIoctlHealed && !kernel.ioctlHealedSeen) {
+            kernel.ioctlHealedSeen = true;
+            kernel.onIoctlHealed();
+          }
+        }
+      }
+    },
+    "!objtype"(args, w) {
+      if (!kernel.objectTypes?.length) {
+        return w("!objtype: no OBJECT_TYPEs registered in this world", "err");
+      }
+      const want = args[0] ? args[0].toLowerCase() : null;
+      const hooks = kernel.scanObjectTypeHooks?.() ?? [];
+      w("OBJECT_TYPE_INITIALIZER attestation:", "hdr");
+      let convicted = 0;
+      for (const t of kernel.objectTypes) {
+        if (want && t.name.toLowerCase() !== want) continue;
+        w(`  ${t.name}  ${fmtAddr(t.va)}`, "hdr");
+        for (const p of OBJ_PROCEDURES) {
+          const procVa = objProcVa(t.va, p);
+          const cur = mem.u64(procVa);
+          const base = t.baseline.get(p) ?? 0n;
+          if (cur === 0n && base === 0n) continue; // unset and never set
+          const bad = hooks.find((h) => h.typeRec === t && h.procName === p);
+          if (bad) {
+            convicted++;
+            const ownerTxt = cur === base ? "" :
+              `  HOOKED -> ${fmtAddr(cur)}${bad.owner ? ` (${bad.owner})` : " (unbacked)"}`;
+            w(`    OpenProcedure-style ${p.padEnd(20)} ${cur === 0n ? "(none)" : fmtAddr(cur)}${ownerTxt}`, "err");
+            const le = [...new Uint8Array(new BigUint64Array([base]).buffer)]
+              .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+            w(`        repair: eb ${fmtAddr(procVa)} ${le}`, "dim");
+          } else {
+            w(`    ${p.padEnd(24)} ${cur === 0n ? "(none)" : fmtAddr(cur)}`);
+          }
+        }
+      }
+      if (!convicted && hooks.filter((h) => !want || h.typeRec.name.toLowerCase() === want).length === 0) {
+        w("all initializer procedures match their baselines", "good");
+        if (kernel.onObTypeHealed && !kernel.obTypeHealedSeen) {
+          kernel.obTypeHealedSeen = true;
+          kernel.onObTypeHealed();
+        }
+      }
+    },
+
+    "!obopen"(args, w) {
+      if (!args[0]) {
+        return w("usage: !obopen <object-name> [access-hex]   e.g. !obopen kftarget.exe 0x143a", "err");
+      }
+      const name = args[0];
+      const access = parseAddr(args[1] ?? "0x143a") ?? 0x143an;
+      const typeRec = (kernel.objectTypes ?? []).find((t) => t.name === "Process")
+        ?? (kernel.objectTypes ?? [])[0];
+      if (!typeRec) return w("!obopen: no Process object type modeled", "err");
+      const usName = kernel.allocPool(16);
+      const bufName = kernel.allocPool((name.length + 1) * 2);
+      mem.w16(usName, name.length * 2);
+      mem.w16(usName + 2n, (name.length + 1) * 2);
+      mem.w64(usName + 8n, bufName);
+      mem.writeUtf16(bufName, name);
+      const openProc = mem.u64(objProcVa(typeRec.va, "OpenProcedure"));
+      if (!openProc) {
+        w(`ObOpen by name "${name}" (access 0x${access.toString(16)}):`, "hdr");
+        w(`  ${typeRec.name}.OpenProcedure not registered — default grant path`, "dim");
+        w(`  -> handle granted (modeled)`);
+        return;
+      }
+      w(`ObOpen by name "${name}" (access 0x${access.toString(16)}):`, "hdr");
+      w(`  dispatching ${typeRec.name}.OpenProcedure @ ${fmtAddr(openProc)}`);
+      let r;
+      try {
+        r = kernel.cpu.callFunction(openProc, [usName, access]);
+      } catch (e) {
+        return w(`  OpenProcedure faulted: ${e.message}`, "err");
+      }
+      const status = BigInt.asUintN(32, BigInt(r.retval ?? 0n));
+      w(`  -> 0x${status.toString(16).padStart(8, "0")} (${statusName(status)})`,
+        status === 0n ? "good" : "warn");
+    },
 
     db(args, w) {
       let addr = args[0] ? resolveArg(args[0]) : 0n;

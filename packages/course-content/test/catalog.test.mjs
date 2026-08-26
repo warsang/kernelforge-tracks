@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-three modules / thirty-four lessons / ninety-eight flags", () => {
-  assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 23);
+test("catalog v6 has twenty-four modules / thirty-six lessons / one-hundred-seven flags", () => {
+  assert.equal(catalog.version, 6);
+  assert.equal(catalog.modules.length, 24);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 34);
+  assert.equal(lessons.length, 36);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 98);
+  assert.equal(flags.length, 107);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -148,6 +148,16 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m23.l1.f3": "kf-ppl-off",
     "m23.l1.f4": "2",
     "m23.l1.f5": "apcstate",
+    // m24 dispatch-layer hooks (IRP MajorFunction + object types)
+    "m24.l1.f1": "IRP_MJ_DEVICE_CONTROL",
+    "m24.l1.f2": "0xfffff8055a720800",
+    "m24.l1.f3": "kf-dispatch-clean",
+    "m24.l1.f4": "kf-obtype-clean",
+    "m24.l1.f5": "0xdead0003",
+    "m24.l1.f6": "kf-irp-hijack-ok",
+    "m24.l2.f1": "kfsnoop.sys",
+    "m24.l2.f2": "0x70",
+    "m24.l2.f3": "kf-sentinel-v5-ok",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

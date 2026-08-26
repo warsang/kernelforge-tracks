@@ -282,3 +282,27 @@ m18: 37 / kf-hookspotted / kf-syscall-clean
 m19: 64 / 0x0000000050101000 / 64
 
 Follow-on candidates: HWID spoofing lab, TBM-Kernel vectors, ept-sim.
+
+## Catalog v6 — hooking-techniques gap coverage (feat/module-hook-taxonomy)
+
+Status: in progress 2026-08. Worktree: `../advanced_Cheat_Dev-hook-modules`.
+Covers the hook taxonomy rows the course lacked, each module carrying a
+"who catches this in the real world" callout (PatchGuard / HVCI / EDR
+self-protection / anticheat).
+
+### M24 — Dispatch-Layer Hooks (shipped)
+
+Worlds: `dispatch-hook` (bootDefault + KFDSP_* anchors in scenarios.js).
+Engine: ntsim `objtypes.mjs` (OBJECT_TYPE_INITIALIZER registry +
+scan/restore), devices.mjs `snapshotMajorBaseline` /
+`installDispatchScan` (containment scan vs own image). Debugger:
+`!dispatchscan`, `!ioctltest`, `!objtype`, `!obopen`.
+Instructor answers: m24.l1 = IRP_MJ_DEVICE_CONTROL / 0xfffff8055a720800 /
+kf-dispatch-clean / kf-obtype-clean / 0xdead0003 / kf-irp-hijack-ok;
+m24.l2 = kfsnoop.sys / 0x70 / kf-sentinel-v5-ok.
+Fixtures: kfirp.obj, kfsentinel_v5.obj via scripts/gen-m24-fixtures.mjs.
+
+### M26 — ETW Blindfolding (planned)
+### M27 — Userland VTable / Hot-Patch / DRx (planned)
+### M25 — Architectural Hooks MSR/IDT/GDT (planned)
+### M28 — VM-Exit MSR Interception (planned)

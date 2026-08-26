@@ -373,6 +373,24 @@ COMPILE_TASKS["attack-hijack"] = {
     ["patch in place", /patched in place - retire the queue/],
   ]),
 };
+
+// --- m24 dispatch-layer tasks ----------------------------------------------
+COMPILE_TASKS["attack-irp"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["victim slot observed", /ATTACK-IRP: victim slot held fffff8055a[0-9a-f]{6}/],
+    ["slot rewritten to trampoline", /MajorFunction\[IRP_MJ_DEVICE_CONTROL\] now -> fffff8055a730000/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v5"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["table walk", /SENTINEL-V5: attesting DRIVER_OBJECT kfser @ fffff8055a710000/],
+    ["foreign dispatch convicted", /FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL -> kfsnoop\.sys\+0x800/],
+    ["OpenProcedure convicted", /Process\.OpenProcedure HOOKED -> kfsnoop\.sys\+0x900/],
+    ["completion secret", /secret=kf-sentinel-v5-ok/],
+  ]),
+};
 COMPILE_TASKS["sentinel-telemetry"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([
