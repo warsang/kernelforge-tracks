@@ -59,9 +59,9 @@ export async function fetchGuestImage(fetchImpl = globalThis.fetch) {
   return res.arrayBuffer();
 }
 
-/** Fetch the ext2 rootfs disk (built alongside bzImage). */
+/** Fetch the CPIO initrd (built alongside bzImage). */
 export async function fetchRootfs(fetchImpl = globalThis.fetch) {
-  const res = await fetchImpl("vendor/artifacts/rootfs.ext2").catch(() => null);
+  const res = await fetchImpl("vendor/artifacts/rootfs.cpio").catch(() => null);
   if (!res || !res.ok) throw new ImageMissingError();
   return res.arrayBuffer();
 }
@@ -91,8 +91,9 @@ export async function bootLinuxSession({ worldId, image, rootfs, snapshot, v86 }
     bios: { url: "vendor/seabios.bin" },
     vga_bios: { url: "vendor/vgabios.bin" },
     bzimage: { buffer: image },
-    hda: rootfs ? { buffer: rootfs, async: false } : undefined,
-    cmdline: "console=ttyS0 tsc=reliable root=/dev/sda rw init=/sbin/init",
+    initrd: rootfs ? { buffer: rootfs } : undefined,
+    cmdline: "console=ttyS0 tsc=reliable root=/dev/ram0 rw init=/sbin/init",
+    memory_size: 256 * 1024 * 1024, // 256MB — enough for kernel + initrd
     uart1: true,
     autostart: true,
     // wasm sits next to the vendored bundle; served by the app origin

@@ -1227,9 +1227,9 @@ scenarios["sauer-hook"] = {
  * surfaces an instructive BundleMissingError instead of failing silently.
  */
 async function bootLinuxWorld(worldId) {
-  const { bootLinuxSession, fetchGuestImage } = await import("@kernelforge/v86-lab");
-  const image = await fetchGuestImage();
-  const session = await bootLinuxSession({ worldId, image });
+  const { bootLinuxSession, fetchGuestImage, fetchRootfs } = await import("@kernelforge/v86-lab");
+  const [image, rootfs] = await Promise.all([fetchGuestImage(), fetchRootfs()]);
+  const session = await bootLinuxSession({ worldId, image, rootfs });
   return { kind: worldId, linux: session };
 }
 

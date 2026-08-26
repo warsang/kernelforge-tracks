@@ -65,7 +65,8 @@ BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.6.18"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="/work/kernel-config"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="/work/kernel.fragment"
-BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_FULL=y
 CFG
 
 make olddefconfig
@@ -75,9 +76,9 @@ mkdir -p target/root/lab
 cp -r /work/overlay/* target/root/lab/
 EOS
 
-echo "[v86-lab] copying kernel + rootfs out of the volume"
+echo "[v86-lab] copying kernel + initrd out of the volume"
 docker run --rm -v "$VOL":/work:ro -v "$PWD/$ART":/out "$IMAGE" \
-  cp /work/buildroot/output/images/bzImage /work/buildroot/output/images/rootfs.ext2 /out/
+  cp /work/buildroot/output/images/bzImage /work/buildroot/output/images/rootfs.cpio /out/
 
 ls -la "$ART/"
 echo "done."
