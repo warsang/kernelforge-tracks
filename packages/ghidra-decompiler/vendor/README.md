@@ -41,12 +41,23 @@ register the image bytes as a single-region LoadImage, call through to
 Ghidra's `decompile(funcAddr)`, return the generated C. Keep the wrapper's
 signature so `src/wrapper.mjs` and `src/client.mjs` need no changes.
 
-## Provenance record (fill on vendor)
+## Provenance record
 
-- pyre commit:
-- ghidra source tag used for SLEIGH specs:
-- emcc version:
-- sha256 (decompiler-wasm.mjs / .wasm / x86-64.sla):
+- pyre commit: `835d7dd871304966165339d8cc7ae2deb0d00789` (cloned 2026-08-26)
+- ghidra source tag used for SLEIGH specs: pyre `specs/dist` snapshot at the
+  commit above (x86 `.sla` version 4.6); staged verbatim
+- emcc version: Emscripten 6.0.8 (Homebrew), python 3.14 host
+- sha256:
+  - `decompiler-wasm.mjs` (shim copy): `a0a7856f1c92e329ebe23b1d0d4c56553dc95db4c826cc752effa1d2f759bb6e`
+  - `pyre_decompiler.js`: `b997f3c40e95a63b5ff2d5a81f65d9157aa661c7f8b948e717798146d47cc8e0`
+  - `pyre_decompiler.wasm`: `d64440f27f7186b018e4278ba03b757ff37b278d967a609112f72e74cbc9a595`
+  - `specs/x86/data/languages/x86-64.sla`: `7df34cf9c3f3173346811fa88132ecc48a6c1de6a45ecb607c053abacea78e83`
+
+Rebuild: `npm run vendor:ghidra` (tools/build-ghidra-wasm.mjs). The shim is
+versioned at `vendor/shim.mjs`; artifacts under
+`apps/web/public/vendor/ghidra/` stay untracked (.gitignore).
+Integration test: `packages/ghidra-decompiler/test/wasm-integration.test.mjs`
+(auto-skips while artifacts are absent).
 
 ## License
 

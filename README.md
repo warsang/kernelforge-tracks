@@ -84,6 +84,23 @@ Upload any x64 `.sys` in the **Driver Analyzer** tab (sidebar → Tools):
 
 Node API: `analyzeDriver(bytes, opts)` from `@kernelforge/ntsim-analyzer`.
 
+## Ghidra Analysis workspace
+
+Sidebar → Tools → **⚗ Ghidra Analysis** opens a floating pyre-style window
+over whatever lesson you are on (it never navigates away): function list,
+capstone disassembly, CFG graph (SVG pan/zoom), Monaco pseudocode, memory
+hexdump, and a JavaScript scripting console (`emu.debug.*` /
+`emu.memory.read`) — plus live Registers/Stack/Breakpoints/Modules tabs when
+a session is booted. Pseudocode uses a real Ghidra decompiler build:
+
+```bash
+npm run vendor:ghidra    # one-time: builds pyre wasm with local emsdk (or docker)
+```
+
+Artifacts stay untracked under `apps/web/public/vendor/ghidra/`; provenance
+lives in `packages/ghidra-decompiler/vendor/README.md`. Without the artifact
+everything loud-degrades to static analysis (`!funcs`, rel32 resolution).
+
 ## Genuine kernel bytes (optional)
 
 ```bash
@@ -149,7 +166,8 @@ node apps/web/server.mjs # serve on :8080 (+ /api/compile dev bridge)
 # IDE tab: Compile driver; Lab tab: submit lab answers
 cd apps/web && node test/e2e.mjs   # headless browser integration test (legacy branch)
 
-npm run vendor:sogen     # optional: fetch the 90 MB sogen wasm payload
+npm run vendor:sogen     # optional: fetch the 90 MB sogen wasm payload (git LFS pulls it too)
+npm run vendor:ghidra    # optional: build the Ghidra decompiler wasm (local emsdk or docker)
 ```
 
 ## Regenerating struct tables
@@ -298,8 +316,9 @@ kfhooksy.ko hooks `sys_call_table[__NR_kill]`; kallsyms cross-check
 detector + exported restore path, graded over serial KFFLAG lines.
 
 **Module 19 — Reversing the Sensor Statically** (`edr-sensor`)
-`!funcs` boundary recovery plus `!pseudocode` fixture decompilation of
-the CreationStatus store (+0x40 = decimal 64).
+`!funcs` boundary recovery plus `!pseudocode` decompilation of the
+CreationStatus store (+0x40 = decimal 64) — real Ghidra output once
+`npm run vendor:ghidra` has run; deterministic fixture otherwise.
 
 **Module 20 — Hooks & Integrity Monitoring** (`pg-hooks`)
 Kernel hook taxonomy split into PatchGuard-compliant vs non-compliant,

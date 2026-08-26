@@ -59,15 +59,23 @@ export async function fetchGuestImage(fetchImpl = globalThis.fetch) {
   return res.arrayBuffer();
 }
 
+/** Fetch the ext2 rootfs disk (built alongside bzImage). */
+export async function fetchRootfs(fetchImpl = globalThis.fetch) {
+  const res = await fetchImpl("vendor/artifacts/rootfs.ext2").catch(() => null);
+  if (!res || !res.ok) throw new ImageMissingError();
+  return res.arrayBuffer();
+}
+
 /**
  * Boot a linux lab session.
  * @param {object} opts
  * @param {string} opts.worldId        lkm-hello | syscall-trace | task-hide
  * @param {ArrayBufferLike} [opts.image] bzImage bytes (vendored artifact)
+ * @param {ArrayBufferLike} [opts.rootfs] ext2 rootfs bytes (hda)
  * @param {ArrayBufferLike} [opts.snapshot] saved v86 state for fast boot
  * @param {object} [opts.v86]          pre-resolved bundle (tests inject mocks)
  */
-export async function bootLinuxSession({ worldId, image, snapshot, v86 }) {
+export async function bootLinuxSession({ worldId, image, rootfs, snapshot, v86 }) {
   if (!worldId) throw new Error("bootLinuxSession: worldId required");
 
   // Explicit `v86: null` forces the missing-bundle path (deterministic in
@@ -83,7 +91,8 @@ export async function bootLinuxSession({ worldId, image, snapshot, v86 }) {
     bios: { url: "vendor/seabios.bin" },
     vga_bios: { url: "vendor/vgabios.bin" },
     bzimage: { buffer: image },
-    cmdline: "console=ttyS0 tsc=reliable",
+    hda: rootfs ? { buffer: rootfs, async: false } : undefined,
+    cmdline: "console=ttyS0 tsc=reliable root=/dev/sda rw init=/sbin/init",
     uart1: true,
     autostart: true,
     // wasm sits next to the vendored bundle; served by the app origin

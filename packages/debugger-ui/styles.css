@@ -180,3 +180,179 @@
 .dbg-console-host > .console-host,
 .dbg-console-host .console,
 .dbg-console-host .console-xterm { flex: 1; min-height: 0; }
+
+/* ---- floating analysis workspace (pyre-style) -------------------------- */
+
+.kf-ws {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 520px;
+  min-height: 320px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: #e6edf3;
+  overflow: hidden;
+}
+.kf-ws:focus { outline: none; border-color: #58a6ff66; }
+.kf-ws.minimized { display: none; }
+
+.kf-ws-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  cursor: move;
+  user-select: none;
+}
+.kf-ws-title { font-weight: 600; color: #e6edf3; }
+.kf-ws-head-btns { margin-left: auto; display: flex; gap: 4px; }
+.kf-ws-head-btns button {
+  background: transparent;
+  border: 0;
+  color: #8b949e;
+  width: 22px;
+  height: 20px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.kf-ws-head-btns button:hover { background: #21262d; color: #e6edf3; }
+
+.kf-ws-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #21262d;
+  background: #0d1117;
+}
+.kf-ws-engine.warn { color: #d29922; }
+.kf-ws-toolbar .dbg-input { max-width: 260px; }
+
+.kf-ws-body { flex: 1; display: flex; min-height: 0; }
+.kf-ws-side {
+  width: 230px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #21262d;
+  background: #010409;
+  min-height: 0;
+}
+.kf-ws-side-head {
+  padding: 6px 10px;
+  font-weight: 600;
+  color: #8b949e;
+  border-bottom: 1px solid #21262d;
+}
+.kf-ws-funcs { flex: 1; overflow: auto; }
+.kf-ws-func {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: #a5d6ff;
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.kf-ws-func:hover { background: #161b22; }
+.kf-ws-func.active { background: #21262d; color: #e6edf3; }
+.kf-ws-func-addr { color: inherit; }
+.kf-ws-func-size { color: #6e7681; }
+
+.kf-ws-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.kf-ws-content { flex: 1; min-height: 0; }
+.kf-ws-status { border-top: 1px solid #21262d; }
+
+.kf-ws-grip-se {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 6;
+}
+.kf-ws-grip-se:hover { background: #58a6ff33; }
+
+.kf-ws-chip {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 4999;
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.kf-ws-chip:hover { border-color: #58a6ff88; }
+
+/* ---- CFG view ----------------------------------------------------------- */
+
+.dbg-cfg { display: flex; flex-direction: column; min-height: 0; }
+.dbg-cfg-viewport {
+  flex: 1;
+  min-height: 320px;
+  overflow: hidden;
+  cursor: grab;
+  background:
+    radial-gradient(circle, #21262d 1px, transparent 1px) 0 0 / 22px 22px;
+}
+.dbg-cfg-viewport:active { cursor: grabbing; }
+.dbg-cfg-svg { width: 100%; height: 100%; }
+.dbg-cfg-hint { padding: 4px 10px; font-size: 11px; }
+
+.cfg-block > rect {
+  fill: #161b22;
+  stroke: #30363d;
+  stroke-width: 1;
+}
+.cfg-block:hover > rect { stroke: #58a6ff88; }
+.cfg-block.current > rect { stroke: #3fb950; stroke-width: 2; }
+.cfg-title { fill: #ffa657; font-size: 11px; font-weight: 700; }
+.cfg-insns { fill: #c9d1d9; font-size: 10.5px; }
+.cfg-edge { stroke: #6e7681; fill: none; stroke-width: 1.2; }
+.cfg-edge-cond { stroke: #d29922; stroke-dasharray: none; }
+
+/* ---- script console ------------------------------------------------------ */
+
+.dbg-script { display: flex; flex-direction: column; min-height: 0; }
+.dbg-script-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #21262d;
+  align-items: center;
+}
+.dbg-script-bar select { max-width: 160px; }
+.dbg-script-bar input { max-width: 140px; }
+.dbg-script-editor { flex: 1.4; min-height: 200px; }
+.dbg-script-out {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  border-top: 1px solid #21262d;
+  background: #010409;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: #c9d1d9;
+  white-space: pre-wrap;
+}

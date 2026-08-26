@@ -25,6 +25,8 @@ import {
   createModulesPanel,
 } from "./views/panels.js";
 import { createPseudocodeView } from "./views/pseudocode.js";
+import { createCfgView } from "./views/cfg.js";
+import { createScriptView } from "./views/script.js";
 import { toBig, fmtAddr } from "./session.mjs";
 
 /** All live shells; disposed together on lesson re-render. */
@@ -105,15 +107,18 @@ export function createDebuggerShell(host, opts = {}) {
   const threads = createThreadsPanel({ onFollow });
   const modules = createModulesPanel({ onFollow });
   const pseudo = createPseudocodeView({ decompiler });
+  const cfg = createCfgView({ session });
 
   const followAddr = (addr) => {
     const big = toBig(addr);
     if (big === null) return;
     activateTab("disasm");
     disasm.show(big);
+    cfg.setEntry(big);
     if (onFollow) onFollow(big);
   };
   disasm.onFollow(followAddr);
+  cfg.onFollow((addr) => followAddr(addr));
 
   // ---- tabs ----------------------------------------------------------------
 
@@ -127,8 +132,11 @@ export function createDebuggerShell(host, opts = {}) {
   addTab("stack", "Stack", stack.element);
   addTab("breakpoints", "Breakpoints", bpsPanel.element);
   addTab("threads", "Threads", threads.element);
+  const script = createScriptView({ session });
   addTab("modules", "Modules", modules.element);
+  addTab("cfg", "CFG", cfg.element);
   addTab("pseudocode", "Pseudocode", pseudo.element);
+  addTab("script", "Script", script.element);
   if (consoleFactory) {
     const consoleHost = document.createElement("div");
     consoleHost.className = "dbg-console-host";
@@ -294,6 +302,8 @@ export function createDebuggerShell(host, opts = {}) {
   // ---- hotkeys ----------------------------------------------------------------
 
   const onKey = (e) => {
+    // never steal keys from code editors or the floating workspace
+    if (e.target.closest?.(".kf-monaco-host") || e.target.closest?.(".kf-ws")) return;
     if (e.key === "F5") {
       e.preventDefault();
       if (session.paused) act(() => session.resume?.() ?? session.continueExecution?.());
@@ -353,7 +363,7 @@ export function createDebuggerShell(host, opts = {}) {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      for (const v of [disasm, hex, pseudo]) v.dispose?.();
+      for (const v of [disasm, hex, pseudo, cfg, script]) v.dispose?.();
       consoleAdapter?.dispose?.();
       element.remove();
       live.delete(facade);

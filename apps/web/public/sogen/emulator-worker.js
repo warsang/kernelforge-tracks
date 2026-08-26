@@ -3,6 +3,9 @@ var lastFlush = new Date().getTime();
 
 var msgQueue = [];
 var pendingUiEvents = [];
+// KernelForge addition (2026-08-26): seed target binaries into the emulated
+// root before callMain. Messages: {message:"writeFile", data:{path, bytes}}.
+var pendingFiles = [];
 const runtimeRoot = "/root-windows";
 
 function ensureDirectory(path) {
@@ -89,6 +92,9 @@ onmessage = async (event) => {
     case "event":
       msgQueue.push(payload);
       break;
+    case "writeFile":
+      pendingFiles.push(payload);
+      break;
   }
 };
 
@@ -140,6 +146,25 @@ function getMessageFromQueue() {
   return msgQueue.shift();
 }
 
+// Write queued seed files under the runtime root. Paths must stay inside
+// /root-windows; bytes arrive as Uint8Array (structured clone) or Array.
+function writeSeedFiles() {
+  for (const f of pendingFiles) {
+    try {
+      let p = String(f.path ?? "");
+      if (!p.startsWith("/")) p = runtimeRoot + "/" + p;
+      if (!p.startsWith(runtimeRoot)) throw new Error("path outside root");
+      const slash = p.lastIndexOf("/");
+      const parent = slash > 0 ? p.substring(0, slash) : runtimeRoot;
+      ensureDirectory(parent);
+      FS.writeFile(p, f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes));
+    } catch (e) {
+      logLine("[seed-file] " + (e && e.message ? e.message : String(e)));
+    }
+  }
+  pendingFiles = [];
+}
+
 function runEmulation(
   file,
   options,
@@ -171,6 +196,7 @@ function runEmulation(
       FS.syncfs(true, function (_) {
         setTimeout(() => {
           flushUiEvents();
+          writeSeedFiles();
           Module.callMain(mainArguments);
         }, 0);
       });

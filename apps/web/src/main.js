@@ -26,6 +26,11 @@ let currentDebugger = null;
 let currentKernel = null;
 let currentSession = null;
 
+/** lab card -> {facade?, host} of the currently mounted graphical shell.
+ *  Boot / Reset must REPLACE the shell (dispose timers/hotkeys, drop host),
+ *  never stack a second one above the console. */
+const mountedShells = new WeakMap();
+
 function kernel_processByName(kernel, name) {
   return kernel.processesByName.get(name) ?? null;
 }
@@ -433,6 +438,16 @@ function renderSidebar() {
     onclick: () => renderAnalyzer(document.getElementById("main")),
   }, "⚒ Driver Analyzer");
   sidebar.append(analyzerBtn);
+  // Floating pyre-style decompiler/disassembler workspace. Overlays the
+  // current lesson — students never leave the page they are studying.
+  const analysisBtn = h("button", {
+    class: "tool",
+    onclick: async () => {
+      const { openAnalysis } = await import("./analysis.js");
+      openAnalysis(currentSession);
+    },
+  }, "⚗ Ghidra Analysis");
+  sidebar.append(analysisBtn);
   // Free navigation: every lesson is selectable so players can jump straight
   // to the topics they care about. The progression chain stays in the data
   // and still drives points/completion marks — it guides, it no longer gates.
@@ -529,6 +544,13 @@ function renderLesson(lesson) {
   disposeConsoles(); // terminals from the previous lesson render
   disposeShells();
   disposeAllEditors();
+  void (async () => {
+    // floating analysis workspace is a singleton overlay; re-bind on next open
+    try {
+      const { closeAnalysis } = await import("./analysis.js");
+      closeAnalysis();
+    } catch { /* not loaded yet */ }
+  })();
   main.innerHTML = "";
 
   // Lesson body: markdown (shipped as content modules in course-content).
@@ -603,12 +625,21 @@ function renderLesson(lesson) {
               `Windows kernel dump (${dumpWorld.meta.source}).`);
           }
           currentDebugger.write(`Booted "${lab.scenario}" on the ${backendSel.value} backend. Type 'help'.`);
-          // pane-registered graphical debugger shell (docks above the console)
+          // pane-registered graphical debugger shell (docks above the console).
+          // Replace any previous mount for this card: dispose its facade
+          // (interval/hotkey/listener teardown) and drop the host element.
           if (pane.mountShell) {
+            const prev = mountedShells.get(card);
+            if (prev) {
+              try { prev.facade?.dispose?.(); } catch { /* best effort */ }
+              prev.host?.remove();
+            }
             const shellHost = h("div", { class: "shell-host" });
             consoleHost.before(shellHost);
+            let facade = null;
             try {
-              pane.mountShell(session, {
+              // sogen panes resolve their backend asynchronously (wasm probe)
+              facade = await pane.mountShell(session, {
                 card, consoleHost, shellHost, h,
                 consoleDebugger: currentDebugger,
               });
@@ -616,6 +647,7 @@ function renderLesson(lesson) {
               console.warn("debugger shell mount failed:", err);
               currentDebugger.write(`debugger shell unavailable: ${err.message}`, "warn");
             }
+            mountedShells.set(card, { facade, host: shellHost });
           }
           dbg.focusTarget?.focus?.();
         } catch (e) {
@@ -770,7 +802,25 @@ function renderLesson(lesson) {
       card.append(editorHost, h("div", { class: "controls" }, compileBtn), compileStatus);
     }
 
-    card.append(h("div", { class: "controls" }, backendSel, bootBtn));
+    const controls = [backendSel, bootBtn];
+    if (pane.targetUpload) {
+      // Target binary for the sogen WASM core (uploaded, in-memory only).
+      // With a target attached, the debugger shell controls the REAL
+      // emulated process; without one it uses the JS reference backend.
+      const targetInput = h("input", { type: "file", class: "target-upload" });
+      targetInput.addEventListener("change", async () => {
+        const f = targetInput.files?.[0];
+        if (!f) return;
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const { addSogenTarget } = await import("./sogen-targets.js");
+        addSogenTarget(f.name, bytes);
+        currentDebugger?.write(
+          `target "${f.name}" staged — Boot / Reset attaches the wasm core.`, "dim");
+        targetInput.value = "";
+      });
+      controls.push(targetInput);
+    }
+    card.append(h("div", { class: "controls" }, ...controls));
     card.append(consoleHost);
 
     // ---- flag submission

@@ -13,7 +13,10 @@ export { SAUER_CONSTANTS, SENDINPUT_PROLOGUE, buildSauerWorld } from "./world.mj
 export { TBM_CONSTANTS } from "./ac.mjs";
 export { SogenConsole, parseNum } from "./console.mjs";
 export { createStaticDebugSession } from "./backend-static.mjs";
-export { probeAssets, createWasmClient, DebugCommandKind, DebuggerUnavailableError } from "./backend-wasm.mjs";
+export {
+  probeAssets, createWasmClient, DebugCommandKind, DebuggerUnavailableError,
+  createSogenDebugSession,
+} from "./backend-wasm.mjs";
 
 /**
  * Boot a userland lab session by scenario world id.

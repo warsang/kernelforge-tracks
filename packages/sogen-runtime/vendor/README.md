@@ -37,12 +37,18 @@ cmake --build --preset emscripten
 
 Record any re-vendor here with commit hash + all four sha256s.
 
-## Integration state
+## Integration state (2026-08-26)
 
-- Worker lifecycle (run/log/end messages), asset probe, and session flip:
-  `src/backend-wasm.mjs` (+ `resolveSogenBackend` in src/index.mjs).
-- Debugger verb channel (Flatbuffers DebugCommand envelope → JSON payloads,
-  kinds 0–13 per upstream docs/debugger/ARCHITECTURE.md): transport is wired;
-  the Flatbuffers encoder/decoder is the remaining milestone — tracked in
-  backend-wasm.mjs as `debugCommand()`, loud-degrades to the static session
-  until it lands.
+- **Flatbuffers codec landed**: `src/fb/debugger.mjs` is a hand-ported JS
+  subset of upstream's generated bindings (identical vtables/field ids —
+  round-trip + reference-buffer tests in `test/fb-codec.test.mjs`). The
+  generic DebugCommand channel (kinds 0–13, JSON payloads) plus the raw
+  Read/WriteMemory union messages are implemented in `src/backend-wasm.mjs`
+  (`createWasmClient`, `createSogenDebugSession`).
+- **Worker modification** (documented GPL change): our vendored
+  `emulator-worker.js` adds a `writeFile` message so target binaries can be
+  seeded into `/root-windows` before `callMain`. Upstream file was
+  byte-identical before the patch; keep this hunk when re-vendoring.
+- Target binaries: students upload a PE via the lab card's file input
+  (in-memory only). A windows emulation root (`sogen.dev/root.zip`) is still
+  required for DLL-linked PEs; statically-linked targets avoid it.

@@ -164,8 +164,19 @@ Status: implemented 2026-08. Branch base: main @ 7cf7a81. Worktree:
       ELF staging, boundary scanner); lab-flow tests drive the real scenario +
       command surface headless (labs-m2m4 pattern, labs-m10 added).
 - [x] npm test + tsc --build green at every commit.
-- Pending vendors: sogen wasm core, v86 bundle + bzImage artifact, ghidra
-  decompiler wasm (each documented in its package's vendor/README.md).
+- [x] Ghidra decompiler wasm VENDORED (feat/debugger-analysis-suite): pyre
+      pipeline via `npm run vendor:ghidra`; shim + dual-path loader; !decomp/
+      !pseudocode feed whole module images. Artifacts untracked.
+- [x] sogen wasm debugger client landed (same branch): FB codec
+      (src/fb/debugger.mjs) + createWasmClient/createSogenDebugSession;
+      shell binds to the real emulated process when assets probe ok AND a
+      target binary is staged via the lab card upload. Windows emulation root
+      (root.zip) still BYO for DLL-linked PEs.
+- [x] Floating pyre-style analysis workspace (sidebar → Tools → ⚗ Ghidra
+      Analysis): overlay window with functions/disasm/CFG/pseudocode/memory/
+      script tabs; never navigates away from the lesson.
+- Pending vendors: v86 bundle + bzImage artifact (documented in its
+  package's vendor/README.md).
 
 ### Defense build-out: KF-Sentinel + debugger hardening (feat/defense-labs-debugger-fixes)
 

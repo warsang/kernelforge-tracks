@@ -18,9 +18,13 @@
 import { createSogenDebugger } from "./sogen-debugger.js";
 import { createLinuxDebugger, attachLinuxEditor } from "./linux-pane.js";
 import { createDebuggerShell } from "@kernelforge/debugger-ui";
-import { createStaticDebugSession, SAUER_CONSTANTS } from "@kernelforge/sogen-runtime";
+import {
+  createStaticDebugSession, SAUER_CONSTANTS,
+  probeAssets, createSogenDebugSession,
+} from "@kernelforge/sogen-runtime";
 import { createDecompilerClient } from "@kernelforge/ghidra-decompiler";
 import { createGdbConsole } from "./gdb-console.js";
+import { latestSogenTarget } from "./sogen-targets.js";
 
 const panes = new Map();
 
@@ -38,22 +42,50 @@ registerPane("ntsim", {});
 registerPane("compiler", {});
 
 // --- windows-userland: sogen track ------------------------------------------
-// Graphical shell over the reference world (static views today: disasm,
-// memory, modules, visual breakpoints). The vendored sogen WASM core swaps
-// in a full DebugSession (registers/threads/stack/real bp+step) behind the
-// same mount point — see packages/sogen-runtime/src/backend-static.mjs.
+// Graphical shell over the reference world. When the vendored sogen WASM
+// core is present AND the student uploaded a target binary, the shell binds
+// to the REAL emulated process (registers/threads/stack, live breakpoints,
+// stepping); otherwise it falls back to backend-static (disasm/memory/
+// modules/visual breakpoints over the JS reference world).
 registerPane("sogen", {
   backends: [
     { value: "js", label: "Emulator: sogen reference backend (deterministic)" },
   ],
+  targetUpload: true,
   noDump: true,
   createDebugger: (session, host) => createSogenDebugger(session, host),
-  mountShell: (session, ctx) => {
+  mountShell: async (session, ctx) => {
     if (!session?.world) return null;
     const world = session.world;
+
+    // --- preferred: real sogen wasm core + uploaded target -------------------
+    try {
+      const assets = await probeAssets();
+      const target = assets.ok ? latestSogenTarget() : null;
+      if (target) {
+        const safe = target.name.replace(/[^\w.-]/g, "_").slice(0, 64) || "target.exe";
+        const { session: dbgSession } = createSogenDebugSession({
+          file: `c:/${safe}`,
+          breakOnStart: true,
+          files: [{ path: `/root-windows/filesys/c:/${safe}`, bytes: target.bytes }],
+        });
+        ctx.consoleDebugger?.write(
+          `sogen WASM core attached — target ${safe} paused at start. ` +
+          "F5/F10/F11 control the emulated process.", "dim");
+        return mountShellViews(ctx, dbgSession,
+          "sogen — userland debugger (wasm core)");
+      }
+      if (!assets.ok) {
+        ctx.consoleDebugger?.write(
+          "sogen WASM core assets missing (" + assets.missing.join(", ") +
+          ") — debugger shell uses the static reference backend.", "warn");
+      }
+    } catch (err) {
+      console.warn("sogen wasm attach failed; static fallback:", err);
+    }
+
+    // --- fallback: static DebugSession over the JS reference world ------------
     const dbgSession = createStaticDebugSession(world);
-    // pyre-style decompiler client over the game image extent (loud-degrades
-    // until the ghidra wasm is vendored; function LIST works statically)
     const decompiler = createDecompilerClient({
       readImage: (addr, size) => {
         const base = BigInt(addr);
@@ -62,17 +94,23 @@ registerPane("sogen", {
       },
       extent: { base: SAUER_CONSTANTS.imageBase, size: SAUER_CONSTANTS.imageSize },
     });
-    const shell = createDebuggerShell(ctx.shellHost, {
-      session: dbgSession,
-      title: "sogen — userland debugger",
-      initialTab: "disasm",
-      decompiler,
-    });
-    // console commands mutate the world; refresh panels after each exec
-    if (ctx.consoleDebugger) ctx.consoleDebugger.onAfterExec = () => shell.refresh();
-    return shell;
+    return mountShellViews(ctx, dbgSession,
+      "sogen — userland debugger", decompiler);
   },
 });
+
+/** Shared shell construction for both sogen backends. */
+function mountShellViews(ctx, dbgSession, title, decompiler = null) {
+  const shell = createDebuggerShell(ctx.shellHost, {
+    session: dbgSession,
+    title,
+    initialTab: "disasm",
+    decompiler: decompiler ?? undefined,
+  });
+  // console commands mutate the world; refresh panels after each exec
+  if (ctx.consoleDebugger) ctx.consoleDebugger.onAfterExec = () => shell.refresh();
+  return shell;
+}
 
 // --- linux-kernel: v86 buildroot guest --------------------------------------
 registerPane("linux", {
@@ -144,6 +182,14 @@ registerPane("linux", {
       // keep panels fresh after every stop
       gdbSession.onStateChange(() => shell?.refresh());
     });
-    return null;
+    // Facade so a re-boot disposes the placeholder + any attached gdb shell
+    // instead of stacking another dock above the console.
+    return {
+      dispose() {
+        try { shell?.dispose?.(); } catch { /* best effort */ }
+        shell = null;
+        placeholder.remove();
+      },
+    };
   },
 });

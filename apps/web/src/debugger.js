@@ -16,7 +16,7 @@ import { irqlName } from "@kernelforge/ntsim/src/kernel.mjs";
 import { DRIVER_OBJECT, IRP_MJ_NAMES } from "@kernelforge/ntsim/src/devices.mjs";
 import { decodePte, pteBitsString } from "@kernelforge/ntsim/src/paging.mjs";
 import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
-import { analyzeExtent, resolveRel32, decompile as ghidraDecompile } from "@kernelforge/ghidra-decompiler";
+import { analyzeExtent, resolveRel32, decompile as ghidraDecompile, loadDecompiler } from "@kernelforge/ghidra-decompiler";
 import { disassemble, liftAliasHex } from "./disasm.mjs";
 
 const FAST_REF_MASK = ~0xfn; // x64: low nibble holds reference count
@@ -48,6 +48,22 @@ function parseAddr(s) {
     if (/^[0-9a-fA-F]{8,}$/.test(s)) return BigInt("0x" + s);
   } catch { /* fallthrough */ }
   return null;
+}
+
+/** Read up to `max` bytes forward from `start`, stopping at the first gap. */
+function readForward(mem, start, max) {
+  let avail = 0;
+  while (avail < max) {
+    const step = Math.min(64, max - avail);
+    try {
+      if (!mem.canRead(start + BigInt(avail), step)) break;
+    } catch {
+      if (!mem.hasPage?.(start + BigInt(avail))) break;
+    }
+    avail += step;
+  }
+  if (avail === 0 && mem.canRead(start, 1)) avail = Math.min(max, 64);
+  return avail > 0 ? mem.read(start, avail) : new Uint8Array(0);
 }
 
 /**
@@ -211,6 +227,16 @@ function walkableFields(tables, typeName) {
 export function createCommands(kernel) {
   const mem = kernel.mem;
   const tables = kernel.tables;
+
+  /** Containing loaded-module image for a VA, else null. */
+  function moduleImageAt(addr) {
+    for (const m of kernel.loadedModules ?? []) {
+      const base = BigInt(m.base);
+      const size = Number(m.sizeOfImage ?? 0);
+      if (size && addr >= base && addr < base + BigInt(size)) return { base, size };
+    }
+    return null;
+  }
 
   // x64 canonical: bits 63..47 identical -> user < 2^47 or kernel >= 2^64-2^47
   const TOP17 = 0xffff800000000000n;
@@ -873,14 +899,14 @@ export function createCommands(kernel) {
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
       w("  !poolverify               sweep all allocation guards");
       w("  !funcs <module>           static function recovery over a module");
-      w("  !decomp <addr>            decompile (needs vendored wasm; static info otherwise)");
+      w("  !decomp <addr>            Ghidra pseudocode (real engine once vendored: npm run vendor:ghidra)");
       w("  !cr3 [proc]               page-table base + self-map index (paging labs)");
       w("  !pte <va> [proc]          full 4-level walk: entries, aliases, bits");
       w("  !vtop <va> [proc]         translate VA -> PA");
       w("  !notifyroutines           registered process/thread/image/Ob/Cm callbacks");
       w("  !notifytest <exe> [pid]   drive a process-create through the notify chain");
       w("  !ssdt [module]            system service table + inline-hook scan");
-      w("  !pseudocode <addr>        fixture-shaped decompilation (m19)");
+      w("  !pseudocode <addr>        Ghidra pseudocode (fixture fallback without the wasm)");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -2068,10 +2094,18 @@ export function createCommands(kernel) {
     },
 
     "!decomp"(args, w) {
-      // pseudocode via the vendored Ghidra native decompiler; loud degrade
+      // pseudocode via the vendored Ghidra native decompiler; loud degrade.
+      // Feed the whole containing module image (capped) so Ghidra sees real
+      // context instead of a lone address.
       const addr = args[0] ? parseAddr(args[0]) : null;
       if (addr === null) { w("usage: !decomp <addr>  (static !funcs works without the wasm)", "err"); return; }
-      ghidraDecompile(new Uint8Array(0), addr, addr)
+      const image = moduleImageAt(addr) ?? { base: addr, size: 4096 };
+      const bytes = readForward(mem, image.base, Math.min(image.size, 0x20000));
+      if (!bytes.length) {
+        w(`!decomp: no readable code at ${fmtAddr(addr)}`, "err");
+        return;
+      }
+      ghidraDecompile(bytes, image.base, addr)
         .then(({ c }) => w(c.split("\n").slice(0, 40).join("\n"), "code"))
         .catch((e) => {
           w(`!decomp: ${e.message}`, "warn");
@@ -2263,9 +2297,25 @@ export function createCommands(kernel) {
       kernel.onSsdtScanned?.(hooks);
     },
 
-    "!pseudocode"(args, w) {
+    async "!pseudocode"(args, w) {
       const addr = args[0] ? parseAddr(args[0]) : null;
       if (addr === null) return w("usage: !pseudocode <addr>", "err");
+      // Real Ghidra pseudocode when the wasm is vendored (npm run
+      // vendor:ghidra); the deterministic fixture below remains the
+      // offline/no-artifact path so m19's flag flow never changes.
+      if (await loadDecompiler()) {
+        const image = moduleImageAt(addr) ?? { base: addr, size: 4096 };
+        const bytes = readForward(mem, image.base, Math.min(image.size, 0x20000));
+        if (bytes.length) {
+          try {
+            const { c } = await ghidraDecompile(bytes, image.base, addr);
+            for (const l of c.split("\n").slice(0, 48)) w(l, "code");
+            return;
+          } catch (e) {
+            w(`// ghidra engine failed (${e.message}); falling back to fixture`, "dim");
+          }
+        }
+      }
       // Fixture-shaped decompilation (deterministic, browser-contained):
       // recognize known sensor idioms by their immediate fingerprints.
       const b = mem.read(addr, 96);

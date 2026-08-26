@@ -38,14 +38,18 @@ test("m16 reversing: !funcs count + !pseudocode fixture render", async () => {
   });
   const cmds = createCommands(s.kernel);
   const lines = []; const w = (t) => lines.push(t);
-  const exec = (l) => { lines.length = 0; const [c, ...a] = l.split(/\s+/); cmds[c]?.(a, w, {}); };
+  const exec = async (l) => {
+    lines.length = 0;
+    const [c, ...a] = l.split(/\s+/);
+    await cmds[c]?.(a, w, {}); // handlers may return promises (e.g. !pseudocode)
+  };
 
-  exec("!funcs kfalcon.sys");
+  await exec("!funcs kfalcon.sys");
   const gridCount = [...lines.join("\n").matchAll(/0x[0-9a-f]{16}/g)].length;
   assert.ok(gridCount >= 32, `grid functions visible (${gridCount})`);
   assert.match(lines.join("\n"), /kfalcon\.sys — \d+ function\(s\)/);
 
-  exec(`!pseudocode 0x${EDR_CONST.CALLBACK.toString(16)}`);
+  await exec(`!pseudocode 0x${EDR_CONST.CALLBACK.toString(16)}`);
   const code = lines.join("\n");
   assert.match(code, /Cs_ProcessNotifyCallback/);
   assert.match(code, /CreationStatus = 0xC0000022/);
