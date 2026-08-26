@@ -306,3 +306,15 @@ Fixtures: kfirp.obj, kfsentinel_v5.obj via scripts/gen-m24-fixtures.mjs.
 ### M27 — Userland VTable / Hot-Patch / DRx (planned)
 ### M25 — Architectural Hooks MSR/IDT/GDT (planned)
 ### M28 — VM-Exit MSR Interception (planned)
+
+### M26 — ETW Blindfolding (shipped)
+
+Split-track module (catalog order: after m24 until m25 lands). Worlds:
+sogen `etw-blind` (ntdll!EtwEventWrite stub page + RegHandle table,
+!providers/!etwpump/!etwtrace) and ntsim `etw-kernel` (CKCL
+_WMI_LOGGER_CONTEXT teaching struct at KFETW_CKCL, !etwloggers/!etwpump).
+Engine: sogen-runtime etw.mjs; ntsim etwkernel.mjs.
+Instructor answers: m26.l1 = 0x7749e2a0 / 8 / kf-etw-restored;
+m26.l2 = 0x10 / blinded / kf-etw-blinded;
+m26.l3 = 0xff / ckcl / kf-sentinel-v7-ok.
+Fixtures: kfetwtamper.obj, kfsentinel_v7.obj.

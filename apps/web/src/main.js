@@ -386,9 +386,27 @@ COMPILE_TASKS["sentinel-v5"] = {
   validate: (src) => validateDriverSource(src, "sentinel"),
   verify: makeSentinelVerify([
     ["table walk", /SENTINEL-V5: attesting DRIVER_OBJECT kfser @ fffff8055a710000/],
-    ["foreign dispatch convicted", /FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL -> kfsnoop\.sys\+0x800/],
-    ["OpenProcedure convicted", /Process\.OpenProcedure HOOKED -> kfsnoop\.sys\+0x900/],
+    ["foreign dispatch convicted", /FOREIGN DISPATCH IRP_MJ_DEVICE_CONTROL -> fffff8055a720800/],
+    ["OpenProcedure convicted", /Process\.OpenProcedure HOOKED -> fffff8055a720900/],
     ["completion secret", /secret=kf-sentinel-v5-ok/],
+  ]),
+};
+
+// --- m26 ETW tasks -----------------------------------------------------------
+COMPILE_TASKS["attack-etwtamper"] = {
+  validate: (src) => validateDriverSource(src, "attack"),
+  verify: makeSentinelVerify([
+    ["baseline observed", /ATTACK-ETW: CKCL EnableFlags was 0x000000ff/],
+    ["gate closed", /CKCL EnableFlags now 0x00000000 - gate closed/],
+  ]),
+};
+COMPILE_TASKS["sentinel-v7"] = {
+  validate: (src) => validateDriverSource(src, "sentinel"),
+  verify: makeSentinelVerify([
+    ["attestation ran", /SENTINEL-V7: attesting logger CKCL @ fffff8055a740000/],
+    ["drift convicted", /EnableFlags DRIFT 0x000000ff -> 0x00000000 \(BLINDED\)/],
+    ["baseline re-asserted", /SENTINEL-V7: baseline re-asserted -> 0x000000ff/],
+    ["completion secret", /secret=kf-sentinel-v7-ok/],
   ]),
 };
 COMPILE_TASKS["sentinel-telemetry"] = {

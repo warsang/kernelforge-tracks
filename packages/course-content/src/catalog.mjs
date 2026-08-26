@@ -47,9 +47,9 @@ import {
   SENTINEL_V1_STARTER, SENTINEL_V2_STARTER, SENTINEL_V3_STARTER,
   SENTINEL_V4_STARTER, SENTINEL_V5_STARTER,
   ATTACK_WPOFF_STARTER, ATTACK_LOCKDOWN_STARTER, ATTACK_TIMERDPC_STARTER,
-  ATTACK_HIJACK_STARTER, ATTACK_IRP_STARTER,
+  ATTACK_HIJACK_STARTER, ATTACK_IRP_STARTER, ATTACK_ETWTAMPER_STARTER,
   SENSOR_TELEMETRY_STARTER, SENSOR_DEADLINE_STARTER,
-  INJECT_STARTER,
+  SENTINEL_V7_STARTER, INJECT_STARTER,
 } from "./starters.mjs";
 import m11l1Body from "./lessons/m11-l1.mjs";
 import m12l1Body from "./lessons/m12-l1.mjs";
@@ -68,6 +68,9 @@ import m22l2Body from "./lessons/m22-l2.mjs";
 import m23l1Body from "./lessons/m23-l1.mjs";
 import m24l1Body from "./lessons/m24-l1.mjs";
 import m24l2Body from "./lessons/m24-l2.mjs";
+import m26l1Body from "./lessons/m26-l1.mjs";
+import m26l2Body from "./lessons/m26-l2.mjs";
+import m26l3Body from "./lessons/m26-l3.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -199,6 +202,17 @@ const F = {
   m24l2f1: "0dc578f12279fd05ac3f591638c7e06c8d953cb083271754656c80c2f1b267cd", // convicted owner module
   m24l2f2: "b0f6136292266f5a55b41125b55ec719c33ab9547b5a6ef3f1fa2d51661e4ea3", // MajorFunction table offset
   m24l2f3: "ee5a5019da01e4e784c917c469a277e7004414bdaa0b6fb5ce239bae1f1448c6", // sentinel v5 secret
+
+  // --- m26 ETW blindfolding (userland + kernel split) ---
+  m26l1f1: "f38dbeba4c18003d1e329b6f585fb2e213b7104803e8334bbeea0d91500122e9", // wrapper VA
+  m26l1f2: "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3", // suppressed count
+  m26l1f3: "1dfd58e7bb274289083aa7bdccd3c8e7cacfefa52ec7fcdd7b7f9296d2674595", // restore secret
+  m26l2f1: "bf9c4d8ecd7280186783365c73316cd064c58d6abdfe7ffbb79b6b99a21f56d0", // EnableFlags offset
+  m26l2f2: "3d4bf4b6882f4be6c9d1c41633aa9a19cf8b662e89de93ed9702966e8a061084", // blinded verdict
+  m26l2f3: "a1e35e70439c60ce05bbe8f64c590b6a1eaf17bfcc8f7df61edec999b7c1db22", // blind payoff
+  m26l3f1: "0273f35d56e5badf5f3a6ef5b8bfe4018c58e5018adb077dc5d896a20445246e", // baseline flags
+  m26l3f2: "3e9bbfba04f7510ca77c826c15aeb56dd50bc1e8ed748ed02c0a47caa0cb9bab", // session name
+  m26l3f3: "7d6b122b7e2c1fe83462204f5e65fd32edb47f2bf535a64ee0a2dee4d5057f50", // sentinel v7 secret
 
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
@@ -2302,7 +2316,160 @@ export const module24 = {
   ],
 };
 
+export const module26 = {
+  id: "m26",
+  title: "ETW Blindfolding & Telemetry Tampering",
+  track: "windows-kernel",
+  summary:
+    "Kill telemetry at both layers: patch ntdll!EtwEventWrite in the " +
+    "emulated game process, zero a CKCL logger context's EnableFlags from " +
+    "ring 0 — then build the sensors that catch both. PatchGuard watches " +
+    "none of it.",
+  lessons: [
+    {
+      id: "m26.l1",
+      title: "ETW architecture & the user-mode blindfold",
+      body: m26l1Body,
+      requires: ["m24.l2"],
+      labs: [
+        {
+          id: "m26.l1.lab1",
+          kind: "sogen",
+          title: "Blindfold, prove the gap, restore",
+          brief:
+            "Patch ntdll!EtwEventWrite in the emulated game process, pump " +
+            "events and watch them die silently, then restore until " +
+            "!etwtrace reads honest end-to-end.",
+          scenario: "etw-blind",
+          flags: [
+            {
+              id: "m26.l1.f1",
+              sha256: F.m26l1f1,
+              prompt:
+                "!providers prints the wrapper address. Submit " +
+                "ntdll!EtwEventWrite's VA as full 8-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m26.l1.f2",
+              sha256: F.m26l1f2,
+              prompt:
+                "Patch the wrapper (eb 31 c0 c3) and run !etwpump 8. How " +
+                "many events does !etwtrace report as suppressed? Decimal.",
+              points: 150,
+            },
+            {
+              id: "m26.l1.f3",
+              sha256: F.m26l1f3,
+              prompt:
+                "Restore the pristine prologue (hookscan prints it), pump " +
+                "again until nothing is suppressed, and submit the honest " +
+                "end-to-end secret.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m26.l2",
+      title: "Kernel logger-context tampering",
+      body: m26l2Body,
+      requires: ["m26.l1"],
+      labs: [
+        {
+          id: "m26.l2.lab1",
+          kind: "compiler",
+          title: "Zero the CKCL gate",
+          brief:
+            "Compile a driver that zeroes EnableFlags on the modeled CKCL " +
+            "context; !etwpump proves events die silently while providers " +
+            "keep succeeding.",
+          scenario: "etw-kernel",
+          compileTask: "attack-etwtamper",
+          starterFiles: [
+            { path: "driver/kfetwtamper.c", content: ATTACK_ETWTAMPER_STARTER },
+          ],
+          flags: [
+            {
+              id: "m26.l2.f1",
+              sha256: F.m26l2f1,
+              prompt:
+                "EnableFlags sits at _WMI_LOGGER_CONTEXT+0x??. Submit that " +
+                "offset as short 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m26.l2.f2",
+              sha256: F.m26l2f2,
+              prompt:
+                "After your attack loads, !etwloggers stamps the zeroed " +
+                "context with a one-word verdict. Submit it (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m26.l2.f3",
+              sha256: F.m26l2f3,
+              prompt:
+                "The first blinded pump releases a payoff secret into the " +
+                "DbgPrint buffer (!analyze -v). Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m26.l3",
+      title: "Defense: KF-Sentinel v7 — logger attestation",
+      body: m26l3Body,
+      requires: ["m26.l2"],
+      labs: [
+        {
+          id: "m26.l3.lab1",
+          kind: "compiler",
+          title: "KF-Sentinel v7: attest the telemetry gate from ring 0",
+          brief:
+            "Compile the poll-and-assert sensor: diff CKCL's EnableFlags " +
+            "against the boot baseline, re-assert, release your verdict.",
+          scenario: "etw-kernel",
+          compileTask: "sentinel-v7",
+          starterFiles: [
+            { path: "driver/kfsentinel_v7.c", content: SENTINEL_V7_STARTER },
+          ],
+          flags: [
+            {
+              id: "m26.l3.f1",
+              sha256: F.m26l3f1,
+              prompt:
+                "Submit the CKCL baseline EnableFlags as 0x-prefixed hex " +
+                "(as printed healthy in !etwloggers).",
+              points: 100,
+            },
+            {
+              id: "m26.l3.f2",
+              sha256: F.m26l3f2,
+              prompt:
+                "Which named session does the sensor attest? Submit its " +
+                "short name (lowercase).",
+              points: 100,
+            },
+            {
+              id: "m26.l3.f3",
+              sha256: F.m26l3f3,
+              prompt:
+                "On conviction + repair the sensor prints its completion " +
+                "secret. Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 6,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module26],
 };

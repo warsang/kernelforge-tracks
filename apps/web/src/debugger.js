@@ -912,6 +912,8 @@ export function createCommands(kernel) {
       w("  !ioctltest <drv> [ioctl]  send one IRP_MJ_DEVICE_CONTROL through the live slot");
       w("  !objtype [name]           OBJECT_TYPE_INITIALIZER procedure attestation (m24)");
       w("  !obopen <name> [access]   modeled ObOpenObjectByPointer via live OpenProcedure");
+      w("  !etwloggers               kernel logger contexts + EnableFlags attestation (m26)");
+      w("  !etwpump <n>              emit n modeled CKCL events (delivered vs suppressed)");
     },
     "!help"(args, w) { commands.help(args, w); },
     clear(args, w, out) { out.innerHTML = "(cleared)\n"; },
@@ -1794,6 +1796,59 @@ export function createCommands(kernel) {
       const status = BigInt.asUintN(32, BigInt(r.retval ?? 0n));
       w(`  -> 0x${status.toString(16).padStart(8, "0")} (${statusName(status)})`,
         status === 0n ? "good" : "warn");
+    },
+
+    // ------------------------------------------------------- m26 ETW labs
+
+    "!etwloggers"(args, w) {
+      if (!kernel.etwLoggers?.length) {
+        return w("!etwloggers: no kernel logger contexts modeled in this world", "err");
+      }
+      const tampered = kernel.scanEtwTamper?.() ?? [];
+      w("kernel logger contexts (_WMI_LOGGER_CONTEXT):", "hdr");
+      for (const l of kernel.etwLoggers) {
+        const flags = kernel.loggerFlags(l);
+        const id = mem.u32(l.va);
+        const clock = mem.u32(l.va + 0x14n);
+        const bad = flags === 0 ? "BLINDED" : (flags !== l.baseline.flags ? "TAMPERED" : null);
+        w(`  ${l.name}  ${fmtAddr(l.va)}  id=${id} EnableFlags=0x${flags.toString(16).padStart(8, "0")} GetCpuClock=${clock}` +
+          (bad ? `  [${bad}]` : ""), bad ? "err" : "");
+        if (!bad) continue;
+        const le = [...new Uint8Array(new Uint32Array([l.baseline.flags]).buffer)]
+          .map((b) => b.toString(16).padStart(2, "0")).join(" ");
+        w(`      repair: eb ${fmtAddr(l.va + 0x10n)} ${le}`, "dim");
+      }
+      if (!tampered.length) {
+        w("all logger contexts match their boot baselines", "good");
+        if (kernel.onEtwHealed && !kernel.etwHealedSeen) {
+          kernel.etwHealedSeen = true;
+          kernel.onEtwHealed();
+        }
+      }
+    },
+
+    async "!etwpump"(args, w) {
+      const n = Number.parseInt(args[0] ?? "", 10);
+      if (!Number.isFinite(n) || n <= 0 || n > 64) {
+        return w("usage: !etwpump <n>   (emit 1-64 modeled kernel events)", "err");
+      }
+      if (!kernel.pumpKernelEvents) {
+        return w("!etwpump: no ETW model in this world", "err");
+      }
+      const r = kernel.pumpKernelEvents(n);
+      w(`CKCL emission of ${n} event(s):`, "hdr");
+      w(`  delivered : ${r.delivered}`);
+      w(`  suppressed: ${r.suppressed}`, r.suppressed > 0 ? "warn" : "");
+      if (r.suppressed > 0) {
+        w("  events died silently — providers still report success", "warn");
+        if (kernel.onEtwBlind && !kernel.etwBlindSeen) {
+          kernel.etwBlindSeen = true;
+          kernel.onEtwBlind(r.suppressed);
+        }
+      } else if (kernel.etwBlindSeen && kernel.onEtwHealed && !kernel.etwPumpHealedSeen) {
+        kernel.etwPumpHealedSeen = true;
+        kernel.onEtwHealed();
+      }
     },
 
     db(args, w) {

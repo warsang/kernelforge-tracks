@@ -14,6 +14,7 @@ import { ServiceTable } from "@kernelforge/ntsim/src/ssdt.mjs";
 import { createDriverObject, createDeviceObject, snapshotMajorBaseline,
   installDispatchScan, DRIVER_OBJECT } from "@kernelforge/ntsim/src/devices.mjs";
 import { installObjectTypes } from "@kernelforge/ntsim/src/objtypes.mjs";
+import { installEtwKernelModel } from "@kernelforge/ntsim/src/etwkernel.mjs";
 import { writeFunctionGrid } from "@kernelforge/ghidra-decompiler";
 import { loadDumpState } from "@kernelforge/ntsim/src/dumpstate.mjs";
 import { Chipset, SmmEngine, DEFAULT_SMBASE } from "@kernelforge/ntsim/src/index.mjs";
@@ -1098,6 +1099,71 @@ scenarios["dispatch-hook"] = {
     setupDispatchHook(session.kernel);
     session.kind = "dispatch-hook";
     return session;
+  },
+};
+
+/**
+ * m26 kernel ETW world: a CKCL-class logger context in pool whose
+ * EnableFlags bitmask gates every modeled kernel event. The compiled
+ * attack zeroes the mask; !etwpump shows events dying silently.
+ */
+export const KFETW_CKCL = 0xfffff8055a740000n;  // _WMI_LOGGER_CONTEXT (CKCL)
+export const KFETW_BASELINE_FLAGS = 0x000000ff;
+
+function setupEtwKernel(kernel) {
+  installEtwKernelModel(kernel);
+  kernel.defineEtwLogger({
+    name: "CKCL", va: KFETW_CKCL, loggerId: 0x1a,
+    enableFlags: KFETW_BASELINE_FLAGS, getCpuClock: 1,
+  });
+  kernel.loadedModules.push({
+    base: 0xfffff8055a750000n, sizeOfImage: 0x4000, name: "kfwmi.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kfwmi.sys", lab: true,
+  });
+  let blindOnce = false;
+  let healOnce = false;
+  kernel.onEtwBlind = (suppressed) => {
+    if (blindOnce) return;
+    blindOnce = true;
+    kernel.dbgLog.push(
+      `kfwmi: CKCL gate closed — ${suppressed} event(s) suppressed secret=kf-etw-blinded`);
+  };
+  kernel.onEtwHealed = () => {
+    if (!blindOnce || healOnce) return;
+    healOnce = true;
+    kernel.dbgLog.push("kfwmi: CKCL gate restored secret=kf-etw-healed");
+  };
+}
+
+scenarios["etw-kernel"] = {
+  title: "etw-kernel — logger context tampering target",
+  description:
+    "A CKCL-class session sits in pool at a fixed VA. Compile a driver " +
+    "that zeroes EnableFlags, prove the silent gap with !etwpump, then " +
+    "restore and attest with !etwloggers.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupEtwKernel(session.kernel);
+    session.kind = "etw-kernel";
+    return session;
+  },
+};
+
+scenarios["etw-blind"] = {
+  title: "etw-blind — userland telemetry blindfold",
+  description:
+    "Headless game process emitting ETW telemetry through ntdll!EtwEventWrite. " +
+    "Patch the wrapper (31 c0 c3) or null a RegHandle, pump events, watch them " +
+    "die silently — then restore until !etwtrace reads honest end-to-end.",
+  boot: async () => {
+    const { createSogenSession } = await import("@kernelforge/sogen-runtime");
+    const { world } = createSogenSession("etw-blind");
+    return {
+      kind: "etw-blind",
+      sogen: true,
+      world,
+      consoleEngine: new (await import("@kernelforge/sogen-runtime")).SogenConsole(world),
+    };
   },
 };
 

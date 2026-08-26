@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v6 has twenty-four modules / thirty-six lessons / one-hundred-seven flags", () => {
+test("catalog v6 has twenty-five modules / thirty-nine lessons / one-hundred-sixteen flags", () => {
   assert.equal(catalog.version, 6);
-  assert.equal(catalog.modules.length, 24);
+  assert.equal(catalog.modules.length, 25);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 36);
+  assert.equal(lessons.length, 39);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 107);
+  assert.equal(flags.length, 116);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -158,6 +158,16 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m24.l2.f1": "kfsnoop.sys",
     "m24.l2.f2": "0x70",
     "m24.l2.f3": "kf-sentinel-v5-ok",
+    // m26 ETW blindfolding (userland + kernel split)
+    "m26.l1.f1": "0x7749e2a0",
+    "m26.l1.f2": "8",
+    "m26.l1.f3": "kf-etw-restored",
+    "m26.l2.f1": "0x10",
+    "m26.l2.f2": "blinded",
+    "m26.l2.f3": "kf-etw-blinded",
+    "m26.l3.f1": "0xff",
+    "m26.l3.f2": "ckcl",
+    "m26.l3.f3": "kf-sentinel-v7-ok",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

