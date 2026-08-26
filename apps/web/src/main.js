@@ -428,6 +428,16 @@ function renderSidebar() {
     onclick: () => renderAnalyzer(document.getElementById("main")),
   }, "⚒ Driver Analyzer");
   sidebar.append(analyzerBtn);
+  // Floating pyre-style decompiler/disassembler workspace. Overlays the
+  // current lesson — students never leave the page they are studying.
+  const analysisBtn = h("button", {
+    class: "tool",
+    onclick: async () => {
+      const { openAnalysis } = await import("./analysis.js");
+      openAnalysis(currentSession);
+    },
+  }, "⚗ Ghidra Analysis");
+  sidebar.append(analysisBtn);
   // Free navigation: every lesson is selectable so players can jump straight
   // to the topics they care about. The progression chain stays in the data
   // and still drives points/completion marks — it guides, it no longer gates.
@@ -521,6 +531,13 @@ function renderLesson(lesson) {
   disposeConsoles(); // terminals from the previous lesson render
   disposeShells();
   disposeAllEditors();
+  void (async () => {
+    // floating analysis workspace is a singleton overlay; re-bind on next open
+    try {
+      const { closeAnalysis } = await import("./analysis.js");
+      closeAnalysis();
+    } catch { /* not loaded yet */ }
+  })();
   main.innerHTML = "";
 
   // Lesson body: markdown (shipped as content modules in course-content).

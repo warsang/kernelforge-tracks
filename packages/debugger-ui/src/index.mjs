@@ -16,6 +16,9 @@ export {
 } from "./session.mjs";
 export { MockSession, createMockSession } from "./mock-session.mjs";
 export { createDebuggerShell, disposeShells } from "./shell.js";
+export {
+  createAnalysisWorkspace, disposeWorkspaces,
+} from "./workspace.js";
 export { createCodeEditor, disposeAllEditors } from "./editor.js";
 export { createDisasmView } from "./views/disasm.js";
 export { createHexView } from "./views/hexdump.js";
@@ -27,3 +30,7 @@ export {
   createModulesPanel,
 } from "./views/panels.js";
 export { createPseudocodeView } from "./views/pseudocode.js";
+export {
+  createCfgView, buildBlocks, layoutBlocks,
+} from "./views/cfg.js";
+export { createScriptView, createEmuFacade } from "./views/script.js";
