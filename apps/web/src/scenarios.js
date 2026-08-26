@@ -864,6 +864,48 @@ scenarios["api-hook-blank"] = {
 };
 
 /**
+ * m20 timing-lab world: api-hook-blank plus a fake mini-PatchGuard sweeping
+ * FOUR protected regions on the lab clock. The taught race: install a hook
+ * on a PG-protected export, do the read/write you needed, restore the
+ * pristine bytes, and let a clean sweep re-arm — all before the next sweep
+ * would have caught the tamper window. Stay hooked across a sweep and the
+ * world bugchecks 0x109 like the real thing.
+ */
+function setupPatchguardHooks(kernel) {
+  setupApiHookBlank(kernel);
+
+  // protect the hookable export's thunk + neighbors + a code page
+  const targets = [
+    ["PsLookupProcessByProcessId", "nt!PsLookupProcessByProcessId"],
+    ["DbgPrint", "nt!DbgPrint"],
+    ["ExAllocatePoolWithTag", "nt!ExAllocatePoolWithTag"],
+  ];
+  for (const [api, label] of targets) {
+    const thunk = kernel.apiThunks.get(api);
+    if (thunk) kernel.protectRange(thunk, 8, label);
+  }
+  kernel.protectRange(0x30000a00n, 0x40, "kfprobe.sys .text");
+
+  // deterministic clock: phase 2 means the first sweep lands on tick 6
+  kernel.installPatchguard({ period: 4, phase: 2 });
+}
+
+scenarios["pg-hooks"] = {
+  title: "pg-hooks — PatchGuard timing lab",
+  description:
+    "A mini-PatchGuard sweeps four protected regions every few ticks. Hook " +
+    "PsLookupProcessByProcessId (eb an E9 over its prologue), prove it with " +
+    "!hooktest, restore the pristine bytes, then !dpcpump past a sweep. Get " +
+    "caught mid-hook and the world bugchecks 0x109.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupPatchguardHooks(session.kernel);
+    session.kind = "pg-hooks";
+    return session;
+  },
+};
+
+/**
  * Pool-corruption lab world: same base world plus kfpooler.sys managing
  * three tag-KfPb blocks at deterministic VAs. An upstream overflow smashed
  * one trailing guard. Student audits (!poolfind), repairs with eb, verifies

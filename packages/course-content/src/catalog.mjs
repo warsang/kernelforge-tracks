@@ -58,6 +58,8 @@ import m16l1Body from "./lessons/m16-l1.mjs";
 import m17l1Body from "./lessons/m17-l1.mjs";
 import m18l1Body from "./lessons/m18-l1.mjs";
 import m19l1Body from "./lessons/m19-l1.mjs";
+import m20l1Body from "./lessons/m20-l1.mjs";
+import m20l2Body from "./lessons/m20-l2.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -156,6 +158,12 @@ const F = {
   m18l1f1: "7a61b53701befdae0eeeffaecc73f14e20b537bb0f8b91ad7c2936dc63562b25", // __NR_kill i386
   m18l1f2: "edf12aa731ae4c1c81e79821415e7ff7a222f026c8304dac470f2e75dcf158d2", // detector secret
   m18l1f3: "5922ec30f7a92494220babe4b74d77228b75de3dbdd28d9a76da04695456e58b", // restore secret
+  // --- m20 hooks & integrity monitoring ---
+  m20l1f1: "0fd42b3f73c448b34940b339f87d07adf116b05c0227aad72e8f0ee90533e699", // caught-hook bugcheck (109)
+  m20l1f2: "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a", // protected region count (4)
+  m20l1f3: "4b86ca5be6355028fdf22002f8ad1958bfbcc37ebe6362da4b12ea67fab9622e", // stealth-window secret
+  m20l2f1: "3df05ba6053db552571d26c662c79f7363a804a352f6e0187c1d9a9382cdbaae", // IAT
+  m20l2f2: "005bc5c2e3eda888e9710622372ad53ddfaca6ac6d69d21e043dd1c159bfd1f7", // VEH
   // --- m19 reversing the sensor (kfalcon grid + fixture pseudocode) ---
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
@@ -1806,7 +1814,101 @@ export const module19 = {
   ],
 };
 
+export const module20 = {
+  id: "m20",
+  title: "Hooks & Integrity Monitoring",
+  track: "windows-kernel",
+  summary:
+    "The full hook taxonomy on both sides of the verifier: PatchGuard-" +
+    "compliant vs non-compliant kernel hooks with a fake mini-PatchGuard " +
+    "timing lab, then the userland techniques (IAT/EAT/inline/VEH/hijack).",
+  lessons: [
+    {
+      id: "m20.l1",
+      title: "Kernel hooks: PatchGuard-compliant vs non-compliant",
+      body: m20l1Body,
+      requires: ["m19.l1"],
+      labs: [
+        {
+          id: "m20.l1.lab1",
+          kind: "windbg",
+          title: "Beat the clock: hook, use, unhook before the sweep",
+          brief:
+            "A mini-PatchGuard sweeps four protected regions on the lab " +
+            "clock. Install a non-compliant hook, do your read/write through " +
+            "it, restore pristine bytes and cross a clean sweep — or eat a " +
+            "0x109.",
+          scenario: "pg-hooks",
+          flags: [
+            {
+              id: "m20.l1.f1",
+              sha256: F.m20l1f1,
+              prompt:
+                "Leave the hook installed across a sweep and the world " +
+                "bugchecks. Submit the STOP code as a 3-digit decimal.",
+              points: 100,
+            },
+            {
+              id: "m20.l1.f2",
+              sha256: F.m20l1f2,
+              prompt:
+                "!pgstatus lists the protected regions it re-validates every " +
+                "sweep. Submit that count in decimal.",
+              points: 100,
+            },
+            {
+              id: "m20.l1.f3",
+              sha256: F.m20l1f3,
+              prompt:
+                "Hook PsLookupProcessByProcessId, use it (!hooktest), restore " +
+                "the pristine bytes and pump past one clean sweep — !pgstatus " +
+                "prints a completion secret. Submit it exactly.",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: "m20.l2",
+      title: "Userland hooks: IAT, EAT, inline, VEH & thread hijack",
+      body: m20l2Body,
+      requires: ["m20.l1"],
+      labs: [
+        {
+          id: "m20.l2.lab1",
+          kind: "quiz",
+          title: "Pick the right ring-3 technique",
+          brief:
+            "Reading comprehension check on the userland hook taxonomy — " +
+            "then run m6/m17 for the hands-on halves.",
+          scenario: null,
+          flags: [
+            {
+              id: "m20.l2.f1",
+              sha256: F.m20l2f1,
+              prompt:
+                "Which userland hook technique overwrites a module's Import " +
+                "Address Table entries? Submit the three-letter abbreviation.",
+              points: 100,
+            },
+            {
+              id: "m20.l2.f2",
+              sha256: F.m20l2f2,
+              prompt:
+                "Which technique leaves .text byte-for-byte pristine by " +
+                "redirecting through vectored exceptions / debug registers? " +
+                "Submit the three-letter abbreviation.",
+              points: 100,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20],
 };

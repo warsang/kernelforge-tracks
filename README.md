@@ -301,6 +301,13 @@ detector + exported restore path, graded over serial KFFLAG lines.
 `!funcs` boundary recovery plus `!pseudocode` fixture decompilation of
 the CreationStatus store (+0x40 = decimal 64).
 
+**Module 20 — Hooks & Integrity Monitoring** (`pg-hooks`)
+Kernel hook taxonomy split into PatchGuard-compliant vs non-compliant,
+plus a fake mini-PatchGuard (`!pgstatus`) sweeping four protected regions
+on the lab clock: install a hook, use it, restore pristine bytes and cross
+a clean sweep before CRITICAL_STRUCTURE_CORRUPTION (0x109) fires. Lesson 2
+covers the userland techniques (IAT/EAT/inline/VEH/thread hijack).
+
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +

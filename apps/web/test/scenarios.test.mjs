@@ -114,6 +114,7 @@ test("every catalog lab scenario is registered (regression: manual-map)", async 
   const needed = catalog.modules
     .flatMap((m) => m.lessons)
     .flatMap((l) => l.labs)
+    .filter((lab) => lab.scenario) // quiz labs have no world by design
     .map((lab) => lab.scenario);
   assert.ok(needed.includes("manual-map"), "catalog should reference the manual-map lab");
   for (const id of needed) {

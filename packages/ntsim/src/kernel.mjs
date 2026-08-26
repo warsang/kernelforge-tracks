@@ -182,6 +182,8 @@ export class NtKernel {
     this.hvciMode = false;
     /** integrity-scanned ranges: {base, size, name, pristine:Uint8Array} */
     this.protectedRanges = [];
+    /** mini-PatchGuard state (installPatchguard) — null when not armed */
+    this.patchguard = null;
 
     // pool
     this.nextPool = this.bases.pool;
@@ -675,6 +677,82 @@ export class NtKernel {
     return diffs;
   }
 
+  // ------------------------------------------------------- mini PatchGuard
+
+  /**
+   * Arm the fake mini-PatchGuard: every `period` lab ticks a sweep re-reads
+   * the protected ranges and compares them against their install-time
+   * snapshot. Drift raises modeled CRITICAL_STRUCTURE_CORRUPTION (0x109) and
+   * halts the CPU — the race a non-PatchGuard-compliant hook loses in the
+   * m20 timing lab when it stays installed past the next sweep.
+   */
+  installPatchguard({ period = 4, phase = 2 } = {}) {
+    if (!this.protectedRanges.length) {
+      throw new Error("installPatchguard: no protectRange() targets armed");
+    }
+    this.patchguard = {
+      period: Math.max(1, Number(period) || 4),
+      // sweeps are scheduled RELATIVE to arming so worlds stay deterministic
+      // regardless of the lab clock's boot value
+      nextSweep: Number(this.tickCount ?? 0n) + Math.max(0, Number(phase) || 0),
+      sweeps: 0,
+      lastSweepTick: null,
+      violatedAt: null,
+    };
+    this.dbgLog.push(
+      `[pg] mini-PatchGuard armed: period=${this.patchguard.period} tick(s), ` +
+      `${this.protectedRanges.length} protected region(s)`);
+    return this.patchguard;
+  }
+
+  /** True when a sweep is due on the current lab clock. */
+  _pgSweepDue() {
+    const pg = this.patchguard;
+    if (!pg || pg.violatedAt !== null) return false;
+    return Number(this.tickCount ?? 0n) >= pg.nextSweep;
+  }
+
+  patchguardSweep() {
+    const pg = this.patchguard;
+    if (!pg || pg.violatedAt !== null) return false;
+    pg.sweeps++;
+    pg.lastSweepTick = this.tickCount ?? 0n;
+    const diffs = this.scanProtectedRanges();
+    if (!diffs.length) {
+      pg.nextSweep += pg.period; // clean pass — re-arm down the clock
+      return false;
+    }
+
+    const d = diffs[0];
+    pg.violatedAt = this.tickCount ?? 0n;
+    this.dbgLog.push(
+      `[pg] sweep ${pg.sweeps}: ${d.name} @ 0x${d.base.toString(16)} modified ` +
+      `(byte +0x${d.firstDelta.toString(16)}: 0x${d.pristineByte.toString(16)} -> ` +
+      `0x${d.liveByte.toString(16)}) -> CRITICAL_STRUCTURE_CORRUPTION`);
+    this.bugcheck = { code: 0x109n, params: [3n, d.base, BigInt(d.firstDelta), 0n] };
+    this.crash = { code: "0x109" };
+    this.cpu.halted = true;
+    return true;
+  }
+
+  /** PG summary for !pgstatus. */
+  patchguardStatus() {
+    const pg = this.patchguard;
+    if (!pg) return null;
+    const t = Number(this.tickCount ?? 0n);
+    return {
+      period: pg.period,
+      sweeps: pg.sweeps,
+      lastSweepTick: pg.lastSweepTick,
+      violatedAt: pg.violatedAt,
+      regions: this.protectedRanges.length,
+      clean: pg.violatedAt === null,
+      nextSweepIn: pg.violatedAt === null
+        ? Math.max(0, pg.nextSweep - t)
+        : null,
+    };
+  }
+
   /**
    * Drain-time read of a queued DPC's DeferredRoutine/DeferredContext from
    * guest memory (teaching layout: routine @+8, context @+16). Re-reading at
@@ -803,6 +881,9 @@ export class NtKernel {
     const firedTimers = this.fireDueTimers();
     let retired = 0;
     if ((this.currentIrql ?? 2) <= 2) retired = this.retireQueuedDpcs();
+    // mini-PatchGuard rides the same lab clock: sweep when due, before the
+    // caller observes anything else (integrity first — like the real thing)
+    if (ticks > 0 && this._pgSweepDue()) this.patchguardSweep();
     return { ticks, firedTimers, retired };
   }
 

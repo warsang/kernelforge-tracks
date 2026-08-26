@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has nineteen modules / twenty-eight lessons / eighty-two flags", () => {
+test("catalog v5 has twenty modules / thirty lessons / eighty-seven flags", () => {
   assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 19);
+  assert.equal(catalog.modules.length, 20);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 28);
+  assert.equal(lessons.length, 30);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 82);
+  assert.equal(flags.length, 87);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -128,6 +128,12 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m19.l1.f1": "64",
     "m19.l1.f2": "0x0000000050101000",
     "m19.l1.f3": "64",
+    // m20 hooks & integrity monitoring (mini-PatchGuard timing lab)
+    "m20.l1.f1": "109",
+    "m20.l1.f2": "4",
+    "m20.l1.f3": "kf-pg-evaded",
+    "m20.l2.f1": "iat",
+    "m20.l2.f2": "veh",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

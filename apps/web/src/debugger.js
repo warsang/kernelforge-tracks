@@ -865,6 +865,7 @@ export function createCommands(kernel) {
       w("  !dpcstat                  DPC/timer telemetry: depth, age, anomalies");
       w("  !dpcwatchdog              modeled DPC_WATCHDOG check (bugcheck 0x133)");
       w("  !pgscan                   integrity scan: protected ranges, WP history, hijacks");
+      w("  !pgstatus                 mini-PatchGuard state: sweeps, regions, verdict");
       w("  !hookscan [export]        diff live vs pristine export prologues");
       w("  !hooktest <exp> [args]    exercise a modeled nt! call path");
       w("  !poolfind <tag>           list tagged pool blocks + guard health");
@@ -1805,6 +1806,32 @@ export function createCommands(kernel) {
       }
     },
 
+    "!pgstatus"(args, w) {
+      const pg = kernel.patchguardStatus?.();
+      if (!pg) return w("!pgstatus: mini-PatchGuard not armed in this world", "err");
+      w("mini-PatchGuard state", "hdr");
+      w(`  period: every ${pg.period} tick(s)   sweeps: ${pg.sweeps}` +
+        (pg.lastSweepTick !== null ? `   last @ tick ${pg.lastSweepTick}` : "") +
+        (pg.nextSweepIn !== null ? `   next in ${pg.nextSweepIn}` : ""));
+      w(`  protected regions: ${pg.regions}`);
+      for (const r of kernel.protectedRanges ?? []) {
+        w(`    ${r.name.padEnd(28)} ${fmtAddr(r.base)} (+0x${r.size.toString(16)} bytes)`);
+      }
+      if (!pg.clean) {
+        w(`  VERDICT: CRITICAL_STRUCTURE_CORRUPTION at tick ${pg.violatedAt} — a protected region changed under the sweeper`, "err");
+        return;
+      }
+      if (kernel.pgHookObserved && pg.sweeps >= 1) {
+        w("  verdict: hook window opened and closed between sweeps — never observed", "good");
+        w("  secret=kf-pg-evaded");
+      } else if (kernel.pgHookObserved) {
+        w("  verdict: hook seen, not yet re-validated by a clean sweep", "warn");
+        w("  advance the clock with !dpcpump so a sweep confirms the restore", "dim");
+      } else {
+        w("  verdict: clean — no tamper windows observed this boot");
+      }
+    },
+
     "!hookscan"(args, w) {
       // optional filter: tolerate nt!-prefixed export names
       const want = args[0] ? args[0].replace(/^nt!|ntoskrnl\.exe!/i, "") : null;
@@ -1858,7 +1885,12 @@ export function createCommands(kernel) {
         }
         const ret = impl(...vals);
         const status = BigInt.asUintN(32, BigInt(ret));
-        const hookNote = kernel.isDetoured(name) ? "  [PROLOGUE DETOURED]" : "";
+        const detoured = kernel.isDetoured(name);
+        if (detoured && kernel.patchguard?.armed !== false && kernel.patchguard) {
+          // the timing lab's evidence: a hook ran while PatchGuard was armed
+          kernel.pgHookObserved = true;
+        }
+        const hookNote = detoured ? "  [PROLOGUE DETOURED]" : "";
         w(`${name}(${callArgs.map((a) => a.toString()).join(", ")}) -> ${statusName(status)}${hookNote}`,
           status === 0n ? "good" : "");
         if (isLookup && status === 0n && scratch) {
