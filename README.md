@@ -294,12 +294,12 @@ prove your own exploit dead.
 **Track: blog-labs v4 (windows-kernel / sogen / linux / reversing)**
 
 **Module 14 — x64 Virtual Memory & Page Tables** (`paging-walk`)
-Real PML4/PDPT/PD/PT bytes under a shuffled CR3 decoy (anti-cheat-style): walk
+Real PML4/PDPT/PD/PT bytes under a shuffled CR3 decoy (EAC-style): walk
 translation by hand (`!cr3`/`!pte`/`!vtop`), compute self-map alias VAs,
 repair an NX-smashed code PTE.
 
 **Module 15 — Kernel Callbacks & EDR Sensors** (`edr-sensor`)
-KF-Watch-style process-create blocking with REAL callback machine code on
+Falcon-style process-create blocking with REAL callback machine code on
 both CPU backends; `PS_CREATE_NOTIFY_INFO.CreationStatus` kill switch,
 enumerate → trigger → patch the name compare.
 
@@ -341,48 +341,55 @@ and the detection stack — dual-view hashing (`!eptview`/`!eptverify`),
 A/D-bit timing counters, CPUID quirks and RDTSC drift.
 
 **Module 23 — DKOM Field Labs** (`dkom-ppl`, `dkom-pid`)
-Six DKOM edits that matter: strip lsass's PPL byte (`!openprocess`
-proves the handle grant), spoof kftarget's Cid to 4 and watch which
-records still tell the truth; field guide covers handle-pointer swaps,
-SMEP toggles, CR0.WP page work and the Van1338 notify race.
+Six edits that matter: strip lsass's PPL byte and open it for real, spoof
+kftarget's Cid to 4 — plus the field guide to handle-pointer swaps, SMEP
+toggles, CR0.WP page work and the Van1338 notify race.
 
-**Module 24 — Dispatch-Layer Hooks: IRP & Object Types** (`dispatch-hook`)
-The hooks PatchGuard *doesn't* protect: kfsnoop.sys rewrote kfser.sys's
-`MajorFunction[IRP_MJ_DEVICE_CONTROL]` and the Process type's
-`OpenProcedure`. Attest with `!dispatchscan`/`!objtype`, prove behavior
-with `!ioctltest`/`!obopen`, repair with `eb`, then compile both an
-attack driver (your own IRP redirect) and KF-Sentinel v5 — the
-containment/baseline sensor EDRs run for exactly these tables.
+**Track: linux-internals (tmp.0ut)**
 
-**Module 25 — Architectural Hooks: MSR / IDT / GDT** (`arch-hooks`, `arch-hardened`)
-Hooks below every table: redirect IA32_LSTAR and own the syscall
-boundary — then meet the two regimes that kill it on modern x64
-(mini-PatchGuard sweeps and HVCI write refusal), and build the
-rdmsr attestation sensor (KF-Sentinel v6).
+Five modules distilled from all five volumes of the tmp.0ut zine
+(https://tmpout.sh) — Linux/ELF internals research by xcellerator, sblip,
+d3npa, manizzle, s01den, netspooky, ulexec, vrzh, deluks, g1inko, TMZ,
+isra, dominikr, wintermute, lil.skelly, bah, PinkNoize, elfmaster,
+FridayOrtiz, Matheuzsec & Humzak711, qkumba, patate, febnug, ti3f, h4x.cz
+and others. Static ELF64 fixtures live in `apps/web/public/fixtures/elf/`
+(regenerate via `node tools/gen-elf-fixtures.mjs`); the readelf-style
+inspector console is `apps/web/src/elf/elfinspector.js` over the lenient
+parser in `apps/web/src/elf/parse.mjs`. Article cache (gitignored):
+`node tools/scrape-tmpout.mjs`.
 
-**Module 26 — ETW Blindfolding & Telemetry Tampering** (`etw-blind`, `etw-kernel`)
-Kill telemetry at both layers: patch ntdll!EtwEventWrite in the
-emulated game process, zero a CKCL logger context's EnableFlags from
-ring 0 — then build the sensors that catch both. PatchGuard watches
-none of it.
+**Module 24 — ELF Anatomy & Forensics** (`elf-hello`)
+Dissect a real x86-64 static executable in-browser: ehdr/phdr/shdr/symbols,
+what `fs/binfmt_elf.c` actually validates vs ignores, extended section
+numbering, and how 57-byte degenerate headers still sail through.
 
-**Module 27 — Userland Hooking Deep Cuts: VTable / Hot-Patch / DRx** (`vtable-hook`, `hotpatch-hook`, `drx-hook`)
-Three techniques live anticheats hunt hardest: vtable pointer swaps,
-MS hot-patch sled installs, and debug-register hooks — each with its
-behavioral proof, each with the audit that convicts it.
+**Module 25 — ELF Parasites: Infection & Repair** (`elf-infected`)
+The PT_NOTE infection method end-to-end on a fixture infected with a real
+parasite (far-VA PT_LOAD, movabs/jmp rax OEP stub): recover the original
+entry point as the analyst, then quiz the zine's constants — disinfection
+invariants, `.fini_array` EPO, `__cxa_finalize` GOT hijack.
 
-**Module 28 — Hypervisor Escape Hatch: VM-Exit MSR Interception** (`msr-exit`)
-The only way to hook syscall flow without PatchGuard: own layer two,
-intercept RDMSR/WRMSR via VM-exit, fake success. The guest never knows
-the hypervisor owns the MSR. Detection via timing divergence and
-consistency checks.
+**Module 26 — Fileless & Memory-Resident Execution** (`elf-tiny`)
+memfd_create/finit_module LKM loading, SHELF reflective payloads and TMZ's
+halfexec/halfshelf/phork trilogy, fd-less Perl execution — hands-on on the
+57-byte header where the Phdr aliases the Ehdr itself.
+
+**Module 27 — Linux Kernel Offense & Defense Survey**
+ftrace/kprobe/eBPF rootkit taxonomy, procfs C2 channels, arm64 svc-handler
+patching, boot-time bzImage patching; detection via tracefs walking, taint
+forensics, GhostCache L1i side-channels and gASLR hardening.
+
+**Module 28 — Obfuscation, Polymorphism & Weird Machines**
+False disassembly with polymorphic junk bytes, M4rx's custom VM ISA and its
+RE, code virtualization survey, XLAT table decoding, stateless control flow,
+Brainfuck-compiled ROP chains and a metamorphic virus in 440 bytes.
 
 ## Roadmap (see docs/plan.md)
 
 - Phase 4: shadow-EPT hypervisor module (ept-sim) — Daax's EPT series +
   momo5502 hypervisor-hook detection are the source material
 - Phase 5: UEFI bootkit simulator
-- Phase 6: BYOVD/misconfiguration labs (RACanti-cheat-style TOCTOU, mhyprot2 pattern)
+- Phase 6: BYOVD/misconfiguration labs (RACEAC-style TOCTOU, mhyprot2 pattern)
 - Sogen WASM core vendor step: replace the reference userland backend with
   real PE execution against Wine-derived DLLs (packages/sogen-runtime/vendor)
 - Playable Sauerbraten client in-browser: gated behind the GUI spike

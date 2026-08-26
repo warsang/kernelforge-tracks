@@ -17,6 +17,7 @@
 
 import { createSogenDebugger } from "./sogen-debugger.js";
 import { createLinuxDebugger, attachLinuxEditor } from "./linux-pane.js";
+import { createElfInspector } from "./elf/elfinspector.js";
 import { createDebuggerShell } from "@kernelforge/debugger-ui";
 import {
   createStaticDebugSession, SAUER_CONSTANTS,
@@ -191,5 +192,21 @@ registerPane("linux", {
         placeholder.remove();
       },
     };
+  },
+});
+
+// --- linux-internals: static ELF fixtures + readelf-style inspector ---------
+// No world to boot: the "session" is a parsed fixture and the console runs
+// the elfinspector command set (info/phdr/shdr/sym/hex/...).
+registerPane("elf", {
+  backends: [
+    { value: "static", label: "Inspector: static ELF parser" },
+  ],
+  noDump: true,
+  rawBoot: true,
+  createDebugger: (session, host) => {
+    const dbg = createElfInspector(session, host);
+    dbg.banner();
+    return dbg;
   },
 });
