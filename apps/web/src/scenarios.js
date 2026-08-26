@@ -1593,3 +1593,43 @@ scenarios["smm-reloc"] = {
     return session;
   },
 };
+
+// --- linux-internals track (m24+): static ELF fixtures + inspector ----------
+// No kernel world: boot() just parses the fixture; the "debugger" is the
+// elfinspector console. See apps/web/src/elf/ for parser + fixtures.
+
+import { parseElf } from "./elf/parse.mjs";
+import { FIXTURES } from "./elf/fixtures.gen.mjs";
+
+function elfSession(name, bytes) {
+  return {
+    kind: "elf",
+    name,
+    bytes,
+    parsed: parseElf(bytes),
+  };
+}
+
+for (const [id, label, description] of [
+  ["elf-hello", "elf-hello — clean static ELF64 baseline",
+    "A well-formed x86-64 ET_EXEC with two PT_LOADs, a PT_NOTE and a full " +
+    "symtab (_start / kf_greet / secret_msg). Learn the anatomy here."],
+  ["elf-infected", "elf-infected — PT_NOTE parasite patient",
+    "The hello baseline after a tmpout-v1-style infection: the PT_NOTE was " +
+    "repurposed into an R-X PT_LOAD at a far VA, e_entry points into the " +
+    "appended parasite, and the OEP hides in a movabs/jmp stub."],
+  ["elf-weird", "elf-weird — extended-numbering parser stress",
+    "e_shnum lies (0) while shdr[0].sh_size carries the true count, " +
+    "e_shstrndx is SHN_XINDEX, one section points past EOF and a symtab has " +
+    "sh_entsize 0."],
+  ["elf-tiny", "elf-tiny — 57-byte degenerate header",
+    "The h4x.cz construction: magic-only e_ident, Phdr aliasing the Ehdr at " +
+    "e_phoff=0, trailing fields elided to exactly 57 bytes."],
+]) {
+  const key = id.replace("elf-", "");
+  scenarios[id] = {
+    title: label,
+    description,
+    boot: async () => elfSession(key, FIXTURES[key]),
+  };
+}
