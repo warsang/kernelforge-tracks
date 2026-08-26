@@ -534,6 +534,16 @@ function renderLesson(lesson) {
   main.append(card);
 
   for (const lab of lesson.labs) {
+    // quiz labs: no world, no console — brief + flags only
+    if (lab.kind === "quiz") {
+      const card = h("div", { class: "card lab" },
+        h("h2", null, lab.title + " ", h("code", { class: "kind" }, lab.kind)),
+        h("p", null, lab.brief),
+      );
+      main.append(card);
+      renderFlagInputs(card, lab, lesson);
+      continue;
+    }
     // xterm.js-backed kd> console (div fallback in headless DOMs); input is
     // inline — every submitted line routes to currentDebugger.exec.
     const consoleHost = h("div", { class: "console-host" });
@@ -754,38 +764,43 @@ function renderLesson(lesson) {
     card.append(consoleHost);
 
     // ---- flag submission
-    for (const f of lab.flags) {
-      const solved = !!progress.solvedFlags[f.id];
-      const inp = h("input", { placeholder: solved ? "solved ✔" : "your answer…", disabled: solved ? "" : undefined });
-      const btn = h("button", {
-        disabled: solved ? "" : undefined,
-        onclick: async () => {
-          const ok = await checkFlag(inp.value, f);
-          const ev = submitFlagForProgress(progress, lesson, f.id, ok);
-          if (ok) {
-            progress = ev.progress;
-            await persist();
-            btn.textContent = "✔";
-            btn.classList.add("good");
-            inp.placeholder = "solved ✔";
-            inp.disabled = true;
-            btn.disabled = true;
-            refreshHeader();
-            renderSidebar(); // surface newly unlocked lessons immediately
-          } else {
-            inp.classList.add("bad");
-            setTimeout(() => inp.classList.remove("bad"), 600);
-          }
-        },
-      }, solved ? "✔" : "submit");
-      card.append(h("div", { class: "flag" },
-        h("span", { class: "prompt" }, f.prompt),
-        h("span", { class: "pts" }, `${f.points} pts`),
-        h("div", { class: "row" }, inp, btn),
-      ));
-    }
+    renderFlagInputs(card, lab, lesson);
 
     main.append(card);
+  }
+}
+
+/** Flag prompt+input rows shared by every lab kind. */
+function renderFlagInputs(card, lab, lesson) {
+  for (const f of lab.flags) {
+    const solved = !!progress.solvedFlags[f.id];
+    const inp = h("input", { placeholder: solved ? "solved ✔" : "your answer…", disabled: solved ? "" : undefined });
+    const btn = h("button", {
+      disabled: solved ? "" : undefined,
+      onclick: async () => {
+        const ok = await checkFlag(inp.value, f);
+        const ev = submitFlagForProgress(progress, lesson, f.id, ok);
+        if (ok) {
+          progress = ev.progress;
+          await persist();
+          btn.textContent = "✔";
+          btn.classList.add("good");
+          inp.placeholder = "solved ✔";
+          inp.disabled = true;
+          btn.disabled = true;
+          refreshHeader();
+          renderSidebar(); // surface newly unlocked lessons immediately
+        } else {
+          inp.classList.add("bad");
+          setTimeout(() => inp.classList.remove("bad"), 600);
+        }
+      },
+    }, solved ? "✔" : "submit");
+    card.append(h("div", { class: "flag" },
+      h("span", { class: "prompt" }, f.prompt),
+      h("span", { class: "pts" }, `${f.points} pts`),
+      h("div", { class: "row" }, inp, btn),
+    ));
   }
 }
 
