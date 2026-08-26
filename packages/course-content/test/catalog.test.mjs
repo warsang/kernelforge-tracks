@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v5 has twenty-three modules / thirty-four lessons / ninety-eight flags", () => {
-  assert.equal(catalog.version, 5);
-  assert.equal(catalog.modules.length, 23);
+test("catalog v6 has twenty-eight modules / thirty-nine lessons / one-hundred-twenty-nine flags", () => {
+  assert.equal(catalog.version, 6);
+  assert.equal(catalog.modules.length, 28);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 34);
+  assert.equal(lessons.length, 39);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 98);
+  assert.equal(flags.length, 129);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -148,6 +148,38 @@ test("answer hashes verify against expected plaintexts", async () => {
     "m23.l1.f3": "kf-ppl-off",
     "m23.l1.f4": "2",
     "m23.l1.f5": "apcstate",
+    // m24-m28 linux-internals (tmp.0ut track; fixtures in apps/web/src/elf/)
+    "m24.l1.f1": "0x400100", // hello.elf e_entry (gen-elf-fixtures pinned)
+    "m24.l1.f2": "256", // .text file offset 0x100
+    "m24.l1.f3": "0x400130", // kf_greet st_value
+    "m24.l1.f4": "56",
+    "m24.l1.f5": "ei_data",
+    "m24.l1.f6": "0x20",
+    "m25.l1.f1": "0x400100", // OEP recovered from movabs imm64
+    "m25.l1.f2": "1132", // parasite file offset (old EOF)
+    "m25.l1.f3": "pt_note",
+    "m25.l1.f4": "0xc000000", // midrashim far-VA base
+    "m25.l1.f5": "ff e0", // jmp rax
+    "m25.l1.f6": "go",
+    "m26.l1.f1": "0",
+    "m26.l1.f2": "0x464c457f", // p_type == ELF magic
+    "m26.l1.f3": "57",
+    "m26.l1.f4": "313",
+    "m26.l1.f5": "319",
+    "m26.l1.f6": "execve",
+    "m27.l1.f1": "el0_svc_common",
+    "m27.l1.f2": "proc_read",
+    "m27.l1.f3": "12288",
+    "m27.l1.f4": "512",
+    "m27.l1.f5": "exitbootservices",
+    "m27.l1.f6": "3",
+    "m27.l1.f7": "granular aslr",
+    "m28.l1.f1": "8",
+    "m28.l1.f2": "2",
+    "m28.l1.f3": "xlatb",
+    "m28.l1.f4": "carry flag",
+    "m28.l1.f5": "rsp",
+    "m28.l1.f6": "(x+5)*3",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

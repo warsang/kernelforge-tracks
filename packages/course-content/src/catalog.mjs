@@ -1,7 +1,10 @@
 /**
- * Course catalog v3 — Modules 1-4 (windows-kernel track), 5-6 (windows-userland
- * sogen track), 7-9 (linux-kernel v86 track). m10 (reversing/ghidra) joins in
- * the M3 milestone once the static-analysis engine lands.
+ * Course catalog v6 — Modules 1-4 (windows-kernel track), 5-6 (windows-userland
+ * sogen track), 7-9 (linux-kernel v86 track), 10 (reversing/ghidra),
+ * 11-13 (SMM/SMRAM), 14-23 (blog labs: paging / EDR sensors / SSDT / tbm-ac /
+ * syscall hooks / hypervisor EPT / DKOM), 24-28 (linux-internals track built
+ * on tmp.0ut zine research: ELF anatomy, parasites, fileless execution,
+ * kernel offense/defense, obfuscation).
  *
  * Flag "hashes" are sha256 over NORMALIZED answers (trim + lowercase) and are
  * precomputed constants (browser-safe; no crypto dep at runtime). The
@@ -65,6 +68,11 @@ import m21l1Body from "./lessons/m21-l1.mjs";
 import m22l1Body from "./lessons/m22-l1.mjs";
 import m22l2Body from "./lessons/m22-l2.mjs";
 import m23l1Body from "./lessons/m23-l1.mjs";
+import m24l1Body from "./lessons/m24-l1.mjs";
+import m25l1Body from "./lessons/m25-l1.mjs";
+import m26l1Body from "./lessons/m26-l1.mjs";
+import m27l1Body from "./lessons/m27-l1.mjs";
+import m28l1Body from "./lessons/m28-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -190,6 +198,40 @@ const F = {
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
   m19l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
+
+  // --- m24-m28 linux-internals (tmp.0ut track; fixtures in apps/web/src/elf/) ---
+  // hello.elf geometry is pinned by tools/gen-elf-fixtures.mjs
+  m24l1f1: "203b56c3abd27e97604f8c9e7dd34e00aaf1cdf47e4407093baa8eeaf7a4d4f2", // e_entry 0x400100
+  m24l1f2: "51e8ea280b44e16934d4d611901f3d3afc41789840acdff81942c2f65009cd52", // .text file offset 256
+  m24l1f3: "78b9e8c9cc87a7350e4be5e1255fefadd52ade42eb927d835b6631f22c785b8d", // kf_greet st_value 0x400130
+  m24l1f4: "7688b6ef52555962d008fff894223582c484517cea7da49ee67800adc7fc8866", // ELF64 phentsize 56
+  m24l1f5: "5819565de013f5e9f269c765c2e451effab9ca8c741d375dcdf3108dd3084c74", // endian e_ident field ei_data
+  m24l1f6: "a766b7b336b982ec85609aa5fe6b51e33e87b879398183ae546a96138a61402a", // compat phentsize 0x20
+  m25l1f1: "203b56c3abd27e97604f8c9e7dd34e00aaf1cdf47e4407093baa8eeaf7a4d4f2", // OEP (=hello entry)
+  m25l1f2: "e754478c35f2708c5d0bf28696b44f1bcf79832bf716a2bfba665212ba9b4f09", // parasite offset 1132
+  m25l1f3: "714b9b050d9acdbc99e24318c9b852ed393d76655ca0e6466d3b04842cacdb40", // repurposed type PT_NOTE
+  m25l1f4: "44a8fa1cfb14e5abe31b624183f5349256c899a20c3796eddc2f1a8d9468ae3f", // midrashim base 0xc000000
+  m25l1f5: "53c4ae6f686e49edd1b2c713bb1b1a480fb69503fa1cb7cca5fd5f38561f71ff", // jmp rax = ff e0
+  m25l1f6: "4cd0e21a9a0795a14ec9aa5f0e7d1abff0492565770e43eafdf1e3e8afed1f33", // go runtime PT_NOTE
+  m26l1f1: "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", // tiny e_phoff 0
+  m26l1f2: "29532d21c3d1b1cc2d3f0794cbabee19a015fedef1ecd64e1b951e13489ab7a8", // aliased p_type 0x464c457f
+  m26l1f3: "c837649cce43f2729138e72cc315207057ac82599a59be72765a477f22d14a54", // tiny size 57
+  m26l1f4: "8efbbe9bc19ad2e043c6cdb187c0a0fedde70b6458443ce0b5648ec04ccf4cdf", // finit_module 313
+  m26l1f5: "156091ee0884f36de9836d58b6f05f357ec6ef0620c571577ac61f7beac35f8e", // memfd_create 319
+  m26l1f6: "c51dfa6da243a9404de5b82f973b0785f60308852954118e6c498d9643ff1bd2", // execve family
+  m27l1f1: "522d5fa4ba7ee617b05f39781b9074482e3077fe04126fe117755f596eb8b3e7", // el0_svc_common
+  m27l1f2: "8378d49fcaf49c891f48bdc7e369b50a500c8d65f1e4127fdc2254b00ea33877", // proc_read
+  m27l1f3: "36bf10ffbf1b3cfedc393ceb4dc1f8998ebf480e8ad91853bcc1c2b2cb3e6454", // tainted 12288
+  m27l1f4: "94f8607915dff25f013e45fc0642fb9830b0fb25ab0ab46d477eaf1061def379", // bpf stack 512
+  m27l1f5: "ec44f61c0a57c3084c58db9e6b15b0a3b9289b97f0e90c979f58bea722c2a386", // ExitBootServices
+  m27l1f6: "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce", // 3 stddev
+  m27l1f7: "5d0bac30ee1db59a3da214968e62ae775a1b975214afeb9967ecef2402ee589c", // Granular ASLR
+  m28l1f1: "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3", // m4rx insn 8 bytes
+  m28l1f2: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35", // 2 junk bytes
+  m28l1f3: "912a303c80e01f6a5b70715406a9bec996336c72a7a967efbc46393e76048388", // xlatb
+  m28l1f4: "190268cda5dac8f1574ff2e1fb90e1171e0128516d75e78849a9ae41bb955273", // carry flag
+  m28l1f5: "9a97a5ed5d7edc5b48925179664d96ff33431da62689f16e467d211539f111ce", // rsp as PC
+  m28l1f6: "d88173e1954bac027c74dc7e3c4465861b955b5b826325f6214d80a2b516a645", // (x+5)*3
 };
 
 // Starter source for m3.l1.lab2. The student must discover the export
@@ -2142,7 +2184,465 @@ export const module23 = {
   ],
 };
 
+// --- m24-m28: linux-internals track (built on tmp.0ut zine research) --------
+// Static ELF fixtures + in-browser inspector; quiz labs survey five volumes
+// of Linux-internals research. Fixture geometry pinned by
+// tools/gen-elf-fixtures.mjs (hello entry 0x400100, parasite at file offset
+// 1132, weird true-sections 6, tiny 57 bytes).
+
+export const module24 = {
+  id: "m24",
+  title: "ELF Anatomy & Forensics",
+  track: "linux",
+  summary:
+    "Dissect a real x86-64 ELF in the browser: ehdr/phdr/shdr/symbols, what " +
+    "the kernel's loader actually validates, and how degenerate headers " +
+    "(weird ELFs, 57-byte executables) still parse.",
+  lessons: [
+    {
+      id: "m24.l1",
+      title: "From \\x7fELF to execution",
+      body: m24l1Body,
+      requires: ["m23.l1"],
+      labs: [
+        {
+          id: "m24.l1.lab1",
+          kind: "elf",
+          title: "Dissect hello.elf with the inspector",
+          brief:
+            "Boot the static fixture and drive the readelf-style console " +
+            "(info/ehdr/phdr/shdr/sym/hex) to pin down its layout facts.",
+          scenario: "elf-hello",
+          flags: [
+            {
+              id: "m24.l1.f1",
+              sha256: F.m24l1f1,
+              prompt:
+                "Submit hello.elf's e_entry as 0x-prefixed lowercase hex " +
+                "(the 'ehdr' or 'info' command shows it).",
+              points: 100,
+            },
+            {
+              id: "m24.l1.f2",
+              sha256: F.m24l1f2,
+              prompt:
+                "Submit the DECIMAL file offset of the .text section " +
+                "('shdr' lists it under off).",
+              points: 100,
+            },
+            {
+              id: "m24.l1.f3",
+              sha256: F.m24l1f3,
+              prompt:
+                "Submit symbol kf_greet's st_value as 0x-prefixed lowercase " +
+                "hex ('sym' command).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m24.l1.lab2",
+          kind: "quiz",
+          title: "Loader vs parser (tmpout v4/v5 quiz)",
+          brief:
+            "What fs/binfmt_elf.c checks, ignores, and falls through to — " +
+            "from dominikr's execve deep dive.",
+          flags: [
+            {
+              id: "m24.l1.f4",
+              sha256: F.m24l1f4,
+              prompt:
+                "ELF64's e_phentsize is fixed by the ABI. Submit it in decimal.",
+              points: 100,
+            },
+            {
+              id: "m24.l1.f5",
+              sha256: F.m24l1f5,
+              prompt:
+                "Which e_ident member records endianness? Submit just the " +
+                "field name like ei_class (lowercase, underscore).",
+              points: 150,
+            },
+            {
+              id: "m24.l1.f6",
+              sha256: F.m24l1f6,
+              prompt:
+                "The compat binfmt handler accepts a different phentsize for " +
+                "32-bit/x32 images. Submit it as 0x-hex.",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module25 = {
+  id: "m25",
+  title: "ELF Parasites: Infection & Repair",
+  track: "linux",
+  summary:
+    "The PT_NOTE infection method end-to-end: repurpose a segment, append a " +
+    "parasite, hide the OEP — then flip roles and recover every artifact as " +
+    "the analyst.",
+  lessons: [
+    {
+      id: "m25.l1",
+      title: "PT_NOTE parasites & disinfection",
+      body: m25l1Body,
+      requires: ["m24.l1"],
+      labs: [
+        {
+          id: "m25.l1.lab1",
+          kind: "elf",
+          title: "Patient zero: infected.elf",
+          brief:
+            "A tmpout-v1-style infection of the hello baseline. The parser " +
+            "sees nothing wrong — find the far-VA outlier, the appended " +
+            "parasite, and the original entry point hiding inside it.",
+          scenario: "elf-infected",
+          flags: [
+            {
+              id: "m25.l1.f1",
+              sha256: F.m25l1f1,
+              prompt:
+                "Recover the ORIGINAL entry point (OEP): disassemble the " +
+                "parasite's movabs rax, imm64; jmp rax stub and submit the " +
+                "immediate as 0x-prefixed lowercase hex.",
+              points: 200,
+            },
+            {
+              id: "m25.l1.f2",
+              sha256: F.m25l1f2,
+              prompt:
+                "Submit the DECIMAL file offset where the appended parasite " +
+                "begins (phdr[2]'s new p_offset).",
+              points: 150,
+            },
+            {
+              id: "m25.l1.f3",
+              sha256: F.m25l1f3,
+              prompt:
+                "Which segment type did the infector repurpose? Submit its " +
+                "PT_ name (e.g. pt_dynamic style, lowercase).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m25.l1.lab2",
+          kind: "quiz",
+          title: "Infection lore (tmpout v1 quiz)",
+          brief:
+            "Constants from sblip's x64 implementation, d3npa's injector and " +
+            "the runtime that fights back.",
+          flags: [
+            {
+              id: "m25.l1.f4",
+              sha256: F.m25l1f4,
+              prompt:
+                "Midrashim computes the new p_vaddr as file_size plus a far " +
+                "base constant. Submit that base as 0x-prefixed hex.",
+              points: 100,
+            },
+            {
+              id: "m25.l1.f5",
+              sha256: F.m25l1f5,
+              prompt:
+                "d3npa ends the jump-back stub with jmp rax because x86-64 " +
+                "has no 64-bit immediate jmp. Submit the two opcode bytes " +
+                "of that final jmp, space-separated hex (like: 48 b8).",
+              points: 150,
+            },
+            {
+              id: "m25.l1.f6",
+              sha256: F.m25l1f6,
+              prompt:
+                "Which language runtime requires an intact PT_NOTE (version " +
+                "info), breaking this infection? Submit the language name.",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module26 = {
+  id: "m26",
+  title: "Fileless & Memory-Resident Execution",
+  track: "linux",
+  summary:
+    "memfd + finit_module LKM loading, SHELF reflective payloads, TMZ's " +
+    "half-loader trilogy, fd-less Perl execution — and the 57-byte header " +
+    "that proves how forgiving the loader is.",
+  lessons: [
+    {
+      id: "m26.l1",
+      title: "Execution without an executable",
+      body: m26l1Body,
+      requires: ["m25.l1"],
+      labs: [
+        {
+          id: "m26.l1.lab1",
+          kind: "elf",
+          title: "Fifty-seven bytes",
+          brief:
+            "Inspect tiny.elf: magic-only ident, Phdr aliasing the Ehdr at " +
+            "e_phoff=0, trailing fields elided against the kernel's zero-" +
+            "padded header buffer.",
+          scenario: "elf-tiny",
+          flags: [
+            {
+              id: "m26.l1.f1",
+              sha256: F.m26l1f1,
+              prompt:
+                "Submit tiny.elf's e_phoff value (decimal — it aliases the " +
+                "Ehdr itself).",
+              points: 100,
+            },
+            {
+              id: "m26.l1.f2",
+              sha256: F.m26l1f2,
+              prompt:
+                "With e_phoff=0 the aliased Phdr's p_type reads back as a " +
+                "recognizable dword. Submit it as 0x-prefixed lowercase hex.",
+              points: 200,
+            },
+            {
+              id: "m26.l1.f3",
+              sha256: F.m26l1f3,
+              prompt:
+                "Submit tiny.elf's total size in decimal bytes.",
+              points: 100,
+            },
+          ],
+        },
+        {
+          id: "m26.l1.lab2",
+          kind: "quiz",
+          title: "The fileless toolbox (tmpout quiz)",
+          brief: "Syscall numbers and the syscall family SHELF avoids.",
+          flags: [
+            {
+              id: "m26.l1.f4",
+              sha256: F.m26l1f4,
+              prompt:
+                "finit_module loads an LKM from an fd. Submit its x86-64 " +
+                "syscall number in decimal.",
+              points: 150,
+            },
+            {
+              id: "m26.l1.f5",
+              sha256: F.m26l1f5,
+              prompt:
+                "memfd_create mints anonymous fds. Submit its x86-64 syscall " +
+                "number in decimal.",
+              points: 150,
+            },
+            {
+              id: "m26.l1.f6",
+              sha256: F.m26l1f6,
+              prompt:
+                "SHELF payloads deploy without invoking any member of which " +
+                "syscall family? Submit the family name (lowercase).",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module27 = {
+  id: "m27",
+  title: "Linux Kernel Offense & Defense Survey",
+  track: "linux-kernel",
+  summary:
+    "Five volumes of kernel research distilled: ftrace/kprobe/eBPF rootkits, " +
+    "procfs C2 channels, arm64 svc patching, boot-time bzImage patching — and " +
+    "the detection craft that catches them all.",
+  lessons: [
+    {
+      id: "m27.l1",
+      title: "How rootkits hook, and how they betray themselves",
+      body: m27l1Body,
+      requires: ["m26.l1"],
+      labs: [
+        {
+          id: "m27.l1.lab1",
+          kind: "quiz",
+          title: "Offense gauntlet (tmpout survey)",
+          brief:
+            "Pin one fact per technique from across v2-v5: hook sites, C2 " +
+            "surfaces, taint forensics and BPF budgets.",
+          flags: [
+            {
+              id: "m27.l1.f1",
+              sha256: F.m27l1f1,
+              prompt:
+                "wintermute hooks ARM64 syscalls by patching one function's " +
+                "prologue into a trampoline. Submit its name exactly " +
+                "(lowercase, underscores).",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f2",
+              sha256: F.m27l1f2,
+              prompt:
+                "The procfs C2 hooks /proc/kallsyms by overwriting one " +
+                "proc_ops member. Submit the member name (lowercase).",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f3",
+              sha256: F.m27l1f3,
+              prompt:
+                "After loading unsigned diamorphine, /proc/sys/kernel/tainted " +
+                "reads a specific value. Submit it in decimal.",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f4",
+              sha256: F.m27l1f4,
+              prompt:
+                "Every BPF program runs under a tight stack budget. Submit " +
+                "its size in decimal bytes.",
+              points: 100,
+            },
+          ],
+        },
+        {
+          id: "m27.l1.lab2",
+          kind: "quiz",
+          title: "Defense gauntlet (tmpout survey)",
+          brief:
+            "Detection and hardening: UEFI hooks caught at their own game, " +
+            "cache side-channels and granular randomization.",
+          flags: [
+            {
+              id: "m27.l1.f5",
+              sha256: F.m27l1f5,
+              prompt:
+                "skp's UEFI path swaps a boot-services pointer to gain early " +
+                "execution. Submit the service name without separators " +
+                "(lowercase).",
+              points: 150,
+            },
+            {
+              id: "m27.l1.f6",
+              sha256: F.m27l1f6,
+              prompt:
+                "GhostCache flags patched syscall paths when per-set means " +
+                "deviate beyond N standard deviations. Submit N in decimal.",
+              points: 100,
+            },
+            {
+              id: "m27.l1.f7",
+              sha256: F.m27l1f7,
+              prompt:
+                "elfmaster transplants every global function into its own " +
+                "mapping. What does the g in gASLR stand for? Submit the " +
+                "expansion (lowercase words, single spaces).",
+              points: 150,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const module28 = {
+  id: "m28",
+  title: "Obfuscation, Polymorphism & Weird Machines",
+  track: "reversing",
+  summary:
+    "False disassembly, entry-point obscuring, custom VM bytecodes, XLAT " +
+    "data-as-program decoding, stateless control flow, ROP compiled from " +
+    "Brainfuck and a metamorphic virus in 440 bytes.",
+  lessons: [
+    {
+      id: "m28.l1",
+      title: "Code that lies about being code",
+      body: m28l1Body,
+      requires: ["m27.l1"],
+      labs: [
+        {
+          id: "m28.l1.lab1",
+          kind: "quiz",
+          title: "Deobfuscation gauntlet I (tmpout)",
+          brief: "False-disassembly mechanics and M4rx's virtual ISA.",
+          flags: [
+            {
+              id: "m28.l1.f1",
+              sha256: F.m28l1f1,
+              prompt:
+                "M4rx's virtual instructions have a fixed width. Submit it " +
+                "in decimal bytes.",
+              points: 100,
+            },
+            {
+              id: "m28.l1.f2",
+              sha256: F.m28l1f2,
+              prompt:
+                "Each false-disassembly site plants junk bytes and jumps " +
+                "over them (jmp label+N). Submit N in decimal.",
+              points: 100,
+            },
+            {
+              id: "m28.l1.f3",
+              sha256: F.m28l1f3,
+              prompt:
+                "febnug decodes payload indices through one table-lookup " +
+                "instruction. Submit its mnemonic (lowercase).",
+              points: 150,
+            },
+          ],
+        },
+        {
+          id: "m28.l1.lab2",
+          kind: "quiz",
+          title: "Deobfuscation gauntlet II (tmpout)",
+          brief:
+            "Stateless control flow, ROP-as-Brainfuck and devirtualization.",
+          flags: [
+            {
+              id: "m28.l1.f4",
+              sha256: F.m28l1f4,
+              prompt:
+                "In 'State Without State', a single bit of state lives in " +
+                "one CPU flag. Submit its full name, lowercase two words.",
+              points: 150,
+            },
+            {
+              id: "m28.l1.f5",
+              sha256: F.m28l1f5,
+              prompt:
+                "In the Brainfuck-as-ROP compiler, one register serves as " +
+                "the program counter. Submit its name (lowercase).",
+              points: 150,
+            },
+            {
+              id: "m28.l1.f6",
+              sha256: F.m28l1f6,
+              prompt:
+                "Devirtualize patate's toy bytecode 01 02 05 03 03 FF acting " +
+                "on input x. Submit the expression compactly, no spaces " +
+                "(hint: multiplication uses * ).",
+              points: 250,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
-  version: 5,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23],
+  version: 6,
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module25, module26, module27, module28],
 };
