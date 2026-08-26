@@ -857,6 +857,54 @@ export function installWinApiExt(kernel, ctx) {
     mem.w64(handleOut, regHandle(norm));
     return STATUS_SUCCESS;
   });
+
+  // ---------------- userland-injection surface: handle-based process access
+  //
+  // The m21 lab contrasts TWO ways a driver writes into another process:
+  //   handle-based : ZwOpenProcess -> ZwWriteVirtualMemory (access checked)
+  //   handleless   : PsLookup + KeStackAttachProcess -> direct write
+  // Minted handles live in kernel.openHandles so the write path can enforce
+  // the PROCESS_VM_WRITE access bit — a bad mask fails LOUDLY like real
+  // Windows instead of silently succeeding in flat memory.
+  k.define("ZwOpenProcess", (handleOut, desiredAccess, objAttr, clientIds) => {
+    void objAttr;
+    if (!handleOut || !clientIds) return 0xc000000bn; // STATUS_INVALID_PARAMETER
+    const pid = mem.u64(clientIds); // CLIENT_ID.UniqueProcess at +0
+    const eproc = kernel.findEprocessByPid(pid);
+    if (!eproc) return 0xc000000bn;
+    kernel.nextProcHandle = (kernel.nextProcHandle ?? 0x2000n) + 4n;
+    kernel.openHandles = kernel.openHandles ?? [];
+    kernel.openHandles.push({
+      handle: kernel.nextProcHandle,
+      eproc,
+      grantedAccess: Number(BigInt(desiredAccess) & 0xffffffffn),
+    });
+    mem.w64(handleOut, kernel.nextProcHandle);
+    kernel.dbgLog.push(
+      `[inj] ZwOpenProcess: pid ${pid} -> handle 0x${kernel.nextProcHandle.toString(16)} ` +
+      `access 0x${Number(BigInt(desiredAccess) & 0xffffffffn).toString(16)}`);
+    return STATUS_SUCCESS;
+  });
+  k.define("ZwWriteVirtualMemory", (hProc, base, buf, len, written) => {
+    const rec = (kernel.openHandles ?? []).find((x) => x.handle === ptrSizeMask(hProc));
+    if (!rec) {
+      kernel.dbgLog.push("[inj] ZwWriteVirtualMemory: invalid process handle");
+      return 0xc000000bn;
+    }
+    if (!(rec.grantedAccess & 0x20)) { // PROCESS_VM_WRITE
+      kernel.dbgLog.push("[inj] ZwWriteVirtualMemory: handle lacks PROCESS_VM_WRITE");
+      return 0xc0000022n; // STATUS_ACCESS_DENIED
+    }
+    try {
+      mem.write(base, mem.read(buf, Number(len)));
+    } catch {
+      return 0xc0000005n; // STATUS_ACCESS_VIOLATION
+    }
+    if (written) mem.w64(written, BigInt(len));
+    kernel.dbgLog.push(`[inj] ZwWriteVirtualMemory: ${Number(len)} byte(s) -> 0x${base.toString(16)} via handle 0x${rec.handle.toString(16)}`);
+    return STATUS_SUCCESS;
+  });
+
   k.define("ObQueryNameString", (obj, infoBuf, len, resultLen) => {
     // OBJECT_NAME_INFORMATION: UNICODE_STRING + buffer
     const name = "kfsim-object";

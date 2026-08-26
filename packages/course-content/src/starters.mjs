@@ -572,3 +572,75 @@ NTSTATUS DriverEntry(
     return STATUS_SUCCESS;
 }
 `;
+
+// ---------------------------------------------------------------------------
+// m21.l1 — userland injection, both ways (handle-based vs handleless)
+export const INJECT_STARTER = `// m21.l1 - userland injection, two footprints
+//
+// kftarget.exe exposes a game-like code page at 0x7ff600100000. Land a
+// payload through BOTH classic paths and compare what each costs:
+//
+//   path 1  HANDLE-BASED : ZwOpenProcess -> ZwWriteVirtualMemory
+//          (a real handle with real access rights; wrong mask = ACCESS_DENIED)
+//   path 2  HANDLELESS   : PsLookup + KeStackAttachProcess -> direct write
+//          (no handle at all; you borrow the process's own address space)
+
+#include <ntddk.h>
+
+#define INJECT_VA 0x7ff600100000
+
+static const unsigned char PAYLOAD_A[8] = { 'K','F','H','A','N','D','L','E' };
+static const unsigned char PAYLOAD_B[8] = { 'K','F','A','T','T','A','C','H' };
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT  DriverObject,
+    _In_ PUNICODE_STRING RegistryPath)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    NTSTATUS st;
+    HANDLE hProc = NULL;
+    OBJECT_ATTRIBUTES oa;
+    CLIENT_ID cid;
+    PEPROCESS proc = NULL;
+    KAPC_STATE apcState;
+
+    // ---- path 1: the handle-based classic --------------------------------
+    InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
+    cid.UniqueProcess = (HANDLE)888;      // kftarget.exe
+    cid.UniqueThread = NULL;
+
+    st = ZwOpenProcess(&hProc, PROCESS_VM_WRITE | PROCESS_VM_OPERATION,
+                       &oa, &cid);
+    if (!NT_SUCCESS(st)) {
+        DbgPrint("INJ: ZwOpenProcess failed %08x\\n", st);
+        return st;
+    }
+
+    st = ZwWriteVirtualMemory(hProc, (PVOID)INJECT_VA,
+                              (PVOID)PAYLOAD_A, sizeof(PAYLOAD_A), NULL);
+    DbgPrint("INJ: handle-based write -> %s\\n",
+             NT_SUCCESS(st) ? "ok" : "fail");
+    ZwClose(hProc);
+
+    // ---- path 2: handleless via attach ------------------------------------
+    st = PsLookupProcessByProcessId((HANDLE)888, &proc);
+    if (!NT_SUCCESS(st)) {
+        DbgPrint("INJ: PsLookup failed %08x\\n", st);
+        return st;
+    }
+    KeStackAttachProcess(proc, &apcState);
+    {
+        // volatile byte loop: keeps the JS interpreter on scalar instructions
+        volatile unsigned char* dst = (volatile unsigned char*)(INJECT_VA + 8);
+        for (int i = 0; i < 8; i++) dst[i] = PAYLOAD_B[i];
+    }
+    KeUnstackDetachProcess(&apcState);
+    ObDereferenceObject(proc);
+    DbgPrint("INJ: attach-based write -> ok\\n");
+
+    DbgPrint("INJ: secret=kf-ul-inject-ok\\n");
+    return STATUS_SUCCESS;
+}
+`;

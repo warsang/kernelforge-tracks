@@ -32,6 +32,9 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX {
 
 NTSTATUS ZwOpenProcess(PHANDLE ProcessHandle, unsigned int DesiredAccess,
                        POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId);
+NTSTATUS ZwWriteVirtualMemory(HANDLE ProcessHandle, void *BaseAddress,
+                              const void *Buffer, unsigned long long NumberOfBytesToWrite,
+                              unsigned long long *NumberOfBytesWritten);
 NTSTATUS ZwTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
 NTSTATUS ZwQuerySystemInformation(unsigned int SystemInformationClass,
                                   void *SystemInformation,
