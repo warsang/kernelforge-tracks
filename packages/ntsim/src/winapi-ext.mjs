@@ -1307,4 +1307,113 @@ export function installWinApiExt(kernel, ctx) {
   k.define("FsRtlNotifyVolumeEvent", () => STATUS_SUCCESS);
   k.define("FsRtlCheckLockForReadAccess", () => 1n);
   k.define("FsRtlAreThereCurrentFileLocks", () => 0n);
+
+  // ---------------------------------------------------------- CNG (cng.sys) stubs
+  // Used by 3cf... driver for crypto; real semantics not needed for coverage,
+  // but returning SUCCESS with a fake handle lets the driver's control flow
+  // continue into its post-crypto path instead of early abort.
+  const cngHandles = new Map();
+  let nextCngHandle = 0xC6000001n;
+  k.define("BCryptOpenAlgorithmProvider", (phAlg, algId, impl, flags) => {
+    void algId; void impl; void flags;
+    const h = nextCngHandle++;
+    cngHandles.set(h, { kind: "alg" });
+    if (phAlg) mem.w64(phAlg, h);
+    kernel.dbgLog.push(`[cng] BCryptOpenAlgorithmProvider -> handle 0x${h.toString(16)}`);
+    return STATUS_SUCCESS;
+  });
+  k.define("BCryptCloseAlgorithmProvider", (hAlg) => { cngHandles.delete(ptrSizeMask(hAlg)); return STATUS_SUCCESS; });
+  k.define("BCryptGenerateSymmetricKey", (hAlg, phKey, pbKeyObject, cbKeyObject, pbSecret, cbSecret, flags) => {
+    void hAlg; void pbKeyObject; void cbKeyObject; void pbSecret; void cbSecret; void flags;
+    const h = nextCngHandle++;
+    cngHandles.set(h, { kind: "key" });
+    if (phKey) mem.w64(phKey, h);
+    return STATUS_SUCCESS;
+  });
+  k.define("BCryptDestroyKey", (hKey) => { cngHandles.delete(ptrSizeMask(hKey)); return STATUS_SUCCESS; });
+  k.define("BCryptSetProperty", (hObj, prop, pbInput, cbInput, flags) => { void hObj; void prop; void pbInput; void cbInput; void flags; return STATUS_SUCCESS; });
+  k.define("BCryptDecrypt", (hKey, pbInput, cbInput, pPadding, pbIV, cbIV, pbOutput, cbOutput, pcbResult, flags) => {
+    void hKey; void pPadding; void pbIV; void cbIV; void flags;
+    // simple identity copy: if output buffer exists, copy input -> output
+    if (pbOutput && pbInput && cbInput) {
+      const n = Math.min(Number(cbInput), Number(cbOutput ?? 0n) || Number(cbInput));
+      try { mem.write(pbOutput, mem.read(pbInput, n)); } catch {}
+      if (pcbResult) mem.w32(pcbResult, n);
+    } else if (pcbResult) mem.w32(pcbResult, Number(cbInput));
+    return STATUS_SUCCESS;
+  });
+  k.define("BCryptEncrypt", (...a) => impls.BCryptDecrypt(...a));
+
+  // ---------------------------------------------------------- FLTMGR stubs (minifilter)
+  // Real minifilters register via FltRegisterFilter with a FLT_REGISTRATION struct.
+  // Our stub records the registration address and pretends filtering started, so
+  // tracer shows the driver's intent and coverage includes the registration path.
+  kernel.fltRegistrations = kernel.fltRegistrations ?? [];
+  k.define("FltRegisterFilter", (driver, reg, retFlt) => {
+    void driver;
+    const r = ptrSizeMask(reg);
+    kernel.fltRegistrations.push({ reg: r, at: kernel.tracePhase });
+    if (retFlt) mem.w64(retFlt, k.alloc(0x20));
+    kernel.dbgLog.push(`[flt] FltRegisterFilter reg=0x${r.toString(16)} -> SUCCESS`);
+    return STATUS_SUCCESS;
+  });
+  k.define("FltStartFiltering", (flt) => { void flt; kernel.dbgLog.push(`[flt] FltStartFiltering`); return STATUS_SUCCESS; });
+  k.define("FltUnregisterFilter", (flt) => { void flt; kernel.dbgLog.push(`[flt] FltUnregisterFilter`); return STATUS_SUCCESS; });
+  k.define("FltGetFileNameInformation", (instance, fileObject, nameOptions, retInfo) => {
+    void instance; void fileObject; void nameOptions;
+    if (retInfo) mem.w64(retInfo, k.alloc(0x40));
+    return STATUS_SUCCESS;
+  });
+  k.define("FltReleaseFileNameInformation", () => STATUS_SUCCESS);
+  k.define("FltParseFileNameInformation", () => STATUS_SUCCESS);
+  k.define("FltTagFile", () => STATUS_SUCCESS);
+
+  // ---------------------------------------------------------- ksecdd / misc
+  k.define("SecLookupAccountSid", (sid, subAuthCount, domain, domainLen, sidNameUse, retSid) => {
+    void sid; void subAuthCount; void domain; void domainLen; void sidNameUse; void retSid;
+    return STATUS_SUCCESS;
+  });
+  k.define("IoThreadToProcess", (thread) => {
+    // thread is ETHREAD; return owning EPROCESS via Cid lookup
+    try {
+      const cidOff = kernel.tables.offsetOf("_ETHREAD", "Cid");
+      const pid = mem.u64(thread + cidOff);
+      return kernel.findEprocessByPid(pid) ?? 0n;
+    } catch { return 0n; }
+  });
+  k.define("PsGetCurrentThreadId", () => {
+    try {
+      const thr = kernel.currentThread;
+      if (!thr) return 0n;
+      const off = kernel.tables.offsetOf("_ETHREAD", "Cid") + 8;
+      return mem.u64(thr + off);
+    } catch { return 0x400n; }
+  });
+  k.define("RtlFreeUnicodeString", (us) => {
+    void us; return undefined;
+  });
+  k.define("RtlIsNtDdiVersionAvailable", () => 1n);
+  k.define("ZwOpenSymbolicLinkObject", (handleOut) => { if (handleOut) mem.w64(handleOut, 0x50000001n); return STATUS_SUCCESS; });
+  k.define("ZwQuerySymbolicLinkObject", (handle, linkTarget, returnedLen) => {
+    void handle;
+    if (linkTarget) {
+      const s = "\\Device\\HarddiskVolume1";
+      const buf = k.alloc(0x40);
+      mem.writeUtf16(buf, s);
+      mem.w16(linkTarget, s.length*2);
+      mem.w16(linkTarget+2n, 0x40);
+      mem.w64(linkTarget+8n, buf);
+    }
+    if (returnedLen) mem.w32(returnedLen, 0x30);
+    return STATUS_SUCCESS;
+  });
+  k.define("KeQueryActiveProcessors", () => 0xfn);
+  k.define("KeSetSystemAffinityThread", () => undefined);
+  k.define("KeRevertToUserAffinityThread", () => undefined);
+  // ExUuidCreate already provisioned as stub but make explicit for trace
+  k.define("ExUuidCreate", (uuidOut) => {
+    if (uuidOut) mem.write(uuidOut, new Uint8Array(16).fill(0x42));
+    return STATUS_SUCCESS;
+  });
+  k.define("MmIsAddressValid", (va) => { try { return mem.canRead(BigInt(va),1) ? 1n : 0n; } catch { return 0n; } });
 }

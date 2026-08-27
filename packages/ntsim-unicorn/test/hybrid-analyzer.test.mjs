@@ -71,14 +71,14 @@ test("[hybrid] analyzeDriver end-to-end: modeled import + SSE handoff rescue", a
   // entry @ t+0x10:
   //   xor ecx,ecx ; mov edx,0x10 ; mov r8d,'tset'
   //   call qword [rip+disp32]      -> ExAllocatePoolWithTag (modeled)
-  //   movaps xmm0,xmm1             -> JsInterpreter refuses, Unicorn rescues
+  //   psrldq xmm0,2                -> JsInterpreter refuses (unimplemented 0F 73), Unicorn rescues
   //   ret                          -> rax = pool allocation
   const at10 = [
     0x48, 0x31, 0xc9,
     0xba, 0x10, 0x00, 0x00, 0x00,
     0x41, 0xb8, 0x74, 0x65, 0x73, 0x74,
     0xff, 0x15, 0, 0, 0, 0, // disp32 patched below against the built IAT
-    0x0f, 0x28, 0xc1,
+    0x0f, 0x73, 0xd0, 0x02,
     0xc3,
   ];
   const CALL_OFF = 0x10 + 3 + 5 + 6; // offset of ff 15 within .text
@@ -101,7 +101,7 @@ test("[hybrid] analyzeDriver end-to-end: modeled import + SSE handoff rescue", a
   const cpu = r.__session.kernel.cpu;
   assert.ok(cpu instanceof HybridCpuBackend);
   assert.equal(cpu.handoffs.length, 1, JSON.stringify(cpu.handoffs));
-  assert.match(cpu.handoffs[0].opcode, /unimplemented 0f opcode/i);
+  assert.match(cpu.handoffs[0].opcode, /unimplemented 0f opcode 0x73/i);
   assert.ok(r.__session.kernel.apiTrace.some((e) => e.name === "ExAllocatePoolWithTag"));
 });
 

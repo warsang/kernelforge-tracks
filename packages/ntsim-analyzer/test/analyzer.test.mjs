@@ -154,7 +154,7 @@ test("analyzeDriver: SEH scope-table dispatch rescues faulting entry", async () 
   const t = probeTextRva(len);
 
   const text = new Uint8Array(len);
-  text.set([0xff, 0x30, 0x31, 0xc0, 0xc3], entrySub);        // faulting body
+  text.set([0x0f, 0x0b, 0x31, 0xc0, 0xc3], entrySub);        // faulting body (UD2)
   text.set([0xb8, 1, 0, 0, 0, 0xc3], 0x20);                  // filter
   text.set([0xb8, ...u32(0xdeadc0de), 0xc3], 0x30);          // except body
 

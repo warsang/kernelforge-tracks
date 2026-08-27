@@ -202,6 +202,18 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
     driverObject: `0x${drvRec.va.toString(16)}`,
     heap: { aslr: !!kernel.heapConfig?.aslr, poolBase: `0x${kernel.bases.pool.toString(16)}` },
   };
+  // Packer / encryption detection: UPX sections indicate compressed payload that
+  // must be unpacked before code is valid. Surface as load.packed for UI.
+  try {
+    const upx = pe.sections.filter(s => s.name.startsWith(".UPX"));
+    if (upx.length) {
+      report.load.packed = `UPX (${upx.map(s=>s.name).join(",")})`;
+      kernel.dbgLog.push(`[loader] detected packed image ${report.load.packed} — entry may require unpacking; emulation may fault`);
+    }
+    if (pe.imageBase !== 0x140000000n && pe.imageBase === 0x10000n) {
+      report.load.packed = (report.load.packed ? report.load.packed + " " : "") + "non-canonical base 0x10000";
+    }
+  } catch {}
 
   const driverName = opts.name ?? "uploaded.sys";
   const regPath = `\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\${serviceKeyOf(driverName)}`;

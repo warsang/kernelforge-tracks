@@ -138,12 +138,12 @@ test("rep movsb copies memory", () => {
 test("unimplemented opcode raises CpuError with rip", () => {
   const { mem, cpu } = newCpu();
   const c = new CodeBuf();
-  c.bytes(0x0f, 0x28, 0xc1); // movaps xmm0, xmm1 (SSE — unsupported)
+  c.bytes(0x0f, 0x0b); // UD2 — always #UD, classified as unimplemented
   c.db(0xc3);
   mem.write(0x1000n, c.b);
   const r = cpu.callFunction(0x1000n);
   assert.equal(r.status, "fault");
-  assert.match(r.error.message, /movaps|unimplemented/);
+  assert.match(r.error.message, /unimplemented/);
 });
 
 test("timeout guard stops infinite loops", () => {

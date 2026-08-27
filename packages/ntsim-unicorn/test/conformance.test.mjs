@@ -160,26 +160,26 @@ for (const [name, make] of Object.entries(backends)) {
   assert.equal(r.retval, 0xc0ffee11n);           // guest observed it via [SCRATCH]
 });
 
-// JS-interpreter-specific: fail-loud on SSE
+// JS-interpreter-specific: fail-loud on truly unknown opcode (UD2)
 test("[js] unimplemented opcode raises CpuError", async () => {
   const mem = new SparseMemory();
   const cpu = new JsInterpreter(mem);
   const c = new CodeBuf();
-  c.bytes(0x0f, 0x28, 0xc1); // movaps xmm0, xmm1
+  c.bytes(0x0f, 0x0b); // UD2
   c.db(0xc3);
   mem.write(0x1000n, c.b);
   const r = cpu.callFunction(0x1000n);
   assert.equal(r.status, "fault");
-  assert.match(r.error.message, /movaps|unimplemented|opcode/i);
+  assert.match(r.error.message, /unimplemented|opcode/i);
 });
 
-// Unicorn-specific: full ISA executes what the interpreter refuses
-test("[unicorn] SSE instruction executes (coverage advantage)", async () => {
+// Unicorn-specific: full ISA executes what the interpreter refuses (UD2 still faults on both, so use extended SSE that Unicorn handles but JS now also handles — demonstrate parity)
+test("[unicorn] extended SSE still executes on Unicorn (parity check)", async () => {
   const mem = new SparseMemory();
   const cpu = await createUnicornBackend(mem);
   const c = new CodeBuf();
   c.bytes(0x48, 0x31, 0xc0);   // xor rax,rax
-  c.bytes(0x0f, 0x28, 0xc1);   // movaps xmm0,xmm1
+  c.bytes(0x0f, 0x28, 0xc1);   // movaps xmm0,xmm1 — now supported on both, but Unicorn proves WASM path
   c.bytes(0x48, 0xff, 0xc0);   // inc rax
   c.db(0xc3);
   mem.write(0x1000n, c.b);
@@ -191,15 +191,15 @@ test("[unicorn] SSE instruction executes (coverage advantage)", async () => {
 });
 }
 
-// JS-interpreter-specific: fail-loud on SSE
+// JS-interpreter-specific: fail-loud on UD2
 test("[js] unimplemented opcode raises CpuError", async () => {
   const mem = new SparseMemory();
   const cpu = new JsInterpreter(mem);
   const c = new CodeBuf();
-  c.bytes(0x0f, 0x28, 0xc1); // movaps xmm0, xmm1
+  c.bytes(0x0f, 0x0b); // UD2
   c.db(0xc3);
   mem.write(0x1000n, c.b);
   const r = cpu.callFunction(0x1000n);
   assert.equal(r.status, "fault");
-  assert.match(r.error.message, /movaps|unimplemented|opcode/i);
+  assert.match(r.error.message, /unimplemented|opcode/i);
 });
