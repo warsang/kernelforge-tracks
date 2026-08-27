@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { findLinuxBugsCampaign } from "../src/bug/linux-engine.mjs";
 import { parseElfKo, mapModule } from "@kernelforge/linux-sim/src/module-loader.mjs";
 import { LinuxKernel } from "@kernelforge/linux-sim/src/linux-kernel.mjs";
@@ -16,7 +17,8 @@ function compileKo(source){
     const c=path.join(dir,"mod.c");
     const o=path.join(dir,"mod.o");
     writeFileSync(c, source);
-    execFileSync("clang", ["--target=x86_64-linux-gnu","-O1","-ffreestanding","-fno-stack-protector","-fno-pic","-mno-red-zone","-mcmodel=kernel","-isystem", path.join(process.cwd(),"packages/compiler-worker/include"),"-D__KERNEL__","-DMODULE","-c",c,"-o",o],{timeout:15000});
+    const includeDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../compiler-worker/include");
+    execFileSync("clang", ["--target=x86_64-linux-gnu","-O1","-ffreestanding","-fno-stack-protector","-fno-pic","-mno-red-zone","-mcmodel=kernel","-isystem", includeDir,"-D__KERNEL__","-DMODULE","-c",c,"-o",o],{timeout:15000});
     return new Uint8Array(readFileSync(o));
   } finally{ try{ rmSync(dir,{recursive:true,force:true}); }catch{} }
 }

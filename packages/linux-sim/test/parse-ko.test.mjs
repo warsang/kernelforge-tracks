@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function compileKo(source){
   const dir=mkdtempSync(path.join(tmpdir(),"kf-ko-"));
@@ -12,7 +13,8 @@ function compileKo(source){
     const cFile=path.join(dir,"mod.c");
     const oFile=path.join(dir,"mod.o");
     writeFileSync(cFile, source);
-    execFileSync("clang", ["--target=x86_64-linux-gnu","-O1","-ffreestanding","-fno-stack-protector","-fno-pic","-mno-red-zone","-mcmodel=kernel","-isystem", path.join(process.cwd(),"packages/compiler-worker/include"),"-D__KERNEL__","-DMODULE","-c",cFile,"-o",oFile], {timeout:15000});
+    const includeDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../compiler-worker/include");
+    execFileSync("clang", ["--target=x86_64-linux-gnu","-O1","-ffreestanding","-fno-stack-protector","-fno-pic","-mno-red-zone","-mcmodel=kernel","-isystem", includeDir,"-D__KERNEL__","-DMODULE","-c",cFile,"-o",oFile], {timeout:15000});
     const bytes=readFileSync(oFile);
     return new Uint8Array(bytes);
   } finally { try{ rmSync(dir,{recursive:true,force:true}); }catch{} }

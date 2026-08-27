@@ -273,6 +273,24 @@ export function finalizeTrace(kernel, modules = []) {
     } else if (e.kind === "etw") {
       rec.text = `ETW ${e.op ?? ""} ${e.summary ?? ""}`.trim();
       Object.assign(rec, { op: e.op, summary: e.summary });
+    } else if (e.kind === "mem_write") {
+      // Linux: guest memory writes (dropper path strings, struct path, etc)
+      const a = e.addr !== undefined ? hex(e.addr) : "0x0";
+      const sz = e.size ?? (e.data ? e.data.length : "?");
+      const prev = e.preview ? ` "${e.preview}"` : (e.data ? ` "${String(e.data).slice(0,32)}"` : "");
+      rec.addr = a; rec.size = sz; rec.preview = e.preview ?? e.data;
+      if(e.name) rec.text = `mem_write ${e.name} addr=${a} size=${sz}${prev}`;
+      else rec.text = `mem_write addr=${a} size=${sz}${prev}`;
+      if(e.filename) rec.text += ` file="${e.filename}"`;
+      if(e.mnt !== undefined) rec.text += ` mnt=${hex(e.mnt)} dentry=${hex(e.dentry)}`;
+      if(e.exe) rec.text += ` exe="${e.exe}" argv=[${(e.argv||[]).join(",")}]`;
+      if(e.pc) rec.pc = hex(e.pc);
+    } else if (e.kind === "cred") {
+      rec.text = `cred ${e.op} 0x${(e.cred??0n).toString(16)} uid=${e.uid??""}`;
+    } else if (e.kind === "msr") {
+      rec.text = `msr ${e.op} msr=0x${(e.msr??0n).toString(16)}`;
+    } else if (e.kind === "ftrace" || e.kind === "kprobe" || e.kind === "bpf" || e.kind === "ebpf") {
+      rec.text = `${e.kind} ${e.op||""} ${e.symbol||""} ${e.handler?hex(e.handler):""}`.trim();
     } else {
       rec.text = e.detail ?? e.kind;
     }

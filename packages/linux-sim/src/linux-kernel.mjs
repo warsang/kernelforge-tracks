@@ -125,6 +125,41 @@ export class LinuxKernel {
     this.currentIrql = 0;
 
     installLinuxApi(this);
+    // BUG-5: wrap mem.write to capture guest string builds (e.g., path at 0xffffffffc0000f3a before filp_open)
+    // Emit mem_write with addr/size/data + string preview, tagged with PC — only for guest execution, not loader
+    const origWrite = this.mem.write.bind(this.mem);
+    let suppressMemTrace = false;
+    this._suppressMemTrace = ()=> suppressMemTrace = true;
+    this._resumeMemTrace = ()=> suppressMemTrace = false;
+    const shouldTraceWrite = (addr, bytes)=>{
+      if(suppressMemTrace) return false;
+      const pc = this.cpu?.rip ?? 0n;
+      const inModule = addr >= this.bases.module && addr < this.bases.module + 0x100000n;
+      const pcInModule = pc >= this.bases.module && pc < this.bases.module + 0x100000n;
+      // Only trace writes that originate from module code (PC in module) and target module data
+      if(inModule && pcInModule) return true;
+      // Also trace printable strings even outside module if PC in module (e.g., stack string build)
+      if(pcInModule && bytes.length <= 128 && bytes.length >= 4){
+        let printable=0;
+        for(const b of bytes) if(b>=32 && b<=126 || b===0) printable++;
+        if(printable/bytes.length > 0.7) return true;
+      }
+      return false;
+    };
+    this.mem.write = (addr, bytes)=>{
+      const ret = origWrite(addr, bytes);
+      try{
+        if(shouldTraceWrite(addr, bytes)){
+          const preview = (()=>{ try{
+            let s="";
+            for(let i=0;i<Math.min(bytes.length,64);i++){ const c=bytes[i]; if(c===0) break; if(c>=32&&c<=126) s+=String.fromCharCode(c); else s+="."; }
+            return s.length>=3 ? s : null;
+          }catch{ return null; }})();
+          this.emitTrace({kind:"mem_write", addr: BigInt(addr), size: bytes.length, data: Array.from(bytes).slice(0,32), preview, pc: pc});
+        }
+      }catch{}
+      return ret;
+    };
     // Pre-populate kallsyms for common hooked symbols (generic, not kit-specific)
     for(const n of ["__x64_sys_getdents","__x64_sys_getdents64","__x64_sys_kill","__x64_sys_getuid","__x64_sys_getpgid","__x64_sys_getsid","__x64_sys_sysinfo","__x64_sys_read","__x64_sys_write","__x64_sys_openat","__x64_sys_bpf","__x64_sys_init_module","__x64_sys_finit_module","tcp4_seq_show","tcp6_seq_show","tpacket_rcv","icmp_rcv","sys_call_table","kallsyms_lookup_name"]){
       if(!this.kallsyms.has(n) && !this.apiThunks.has(n)){
@@ -183,12 +218,30 @@ export class LinuxKernel {
   materializeModuleRange(base,size,opts){
     const fill=opts?.fill??0;
     const end=base+BigInt(size);
+    const prevSuppress = this._suppressMemTrace ? true : false;
+    if(this._suppressMemTrace) this._suppressMemTrace();
+    // Actually use the closure flag: we set suppress via this._suppressMemTrace as function, not boolean
+    // So we need to handle both: if it's a function, call it to suppress, else set flag
+    let wasSuppressed = false;
+    try{
+      if(typeof this._suppressMemTrace==="function"){
+        this._suppressMemTrace();
+        wasSuppressed = true;
+      } else if(this._suppressMemTrace) wasSuppressed = true;
+    }catch{}
     for(let p=base & ~0xfffn; p< end; p+=0x1000n){
       if(!this.mem.hasPage(p)){
         const chunk = new Uint8Array(0x1000).fill(fill);
         this.mem.write(p, chunk);
       }
     }
+    if(wasSuppressed && typeof this._resumeMemTrace==="function") try{ this._resumeMemTrace(); }catch{}
+    // Ensure Unicorn sees the same pages (both pure and Hybrid)
+    try{
+      if(this.cpu && typeof this.cpu.mapRange==="function") this.cpu.mapRange(base,size);
+      if(this.cpu && this.cpu.uc && typeof this.cpu.uc.mapRange==="function") this.cpu.uc.mapRange(base,size);
+      if(this.cpu && this.cpu.js && typeof this.cpu.js.mapRange==="function") this.cpu.js.mapRange(base,size);
+    }catch{}
   }
 
   defineApi(name, impl, meta){
@@ -274,6 +327,15 @@ export class LinuxKernel {
       // find which thunk
       for(const [name,thunk] of k.apiThunks){
         if(thunk===va){
+          const cpu=k.cpu;
+          const regs=cpu.regs;
+          // BUG-1 diagnostics: log RIP/RSP before dispatch for __fentry__
+          const isFentry = name==="__fentry__" || name==="mcount";
+          if(isFentry){
+            try{ k.dbgLog.push(`[fentry] RIP=0x${va.toString(16)} RSP=0x${regs.rsp.toString(16)} before`); }catch{}
+          }
+          // BUG-6: __x86_return_thunk has no args — suppress misleading register noise
+          const isThunk = name.startsWith("__x86_");
           // collect args per System V? Actually kernel APIs are called via System V as well.
           // We'll read args as Windows ABI for sim: rcx,rdx,r8,r9 + stack
           // But Linux kernel internal calls use SysV (rdi,rsi,rdx,rcx,r8,r9). Need to support both.
@@ -281,9 +343,7 @@ export class LinuxKernel {
           // Better: read sysv order as primary for linux, then map to impl args as passed.
           // Impl signature expects (a,b,c,...) in call order. We'll provide sysv order.
           // So read rdi,rsi,rdx,rcx,r8,r9
-          const cpu=k.cpu;
-          const regs=cpu.regs;
-          const sysv=[regs.rdi??0n, regs.rsi??0n, regs.rdx??0n, regs.rcx??0n, regs.r8??0n, regs.r9??0n];
+          const sysv=isThunk ? [] : [regs.rdi??0n, regs.rsi??0n, regs.rdx??0n, regs.rcx??0n, regs.r8??0n, regs.r9??0n];
           // Also need win order for compatibility? We'll just use sysv. Some impls may expect win order, but our linux-api impls are written for sysv.
           // For generic stub (unknown), we treat as 0.
           // stack args beyond 6
@@ -304,35 +364,43 @@ export class LinuxKernel {
           const impl=k.apiImpls.get(name);
           let ret=0n;
           let isVoid=false;
+          if(isThunk) isVoid=true;
           try{
             if(impl){
-              const r=impl(...allArgs);
+              // For thunk, don't pass misleading args
+              const callArgs = isThunk ? [] : allArgs;
+              const r=impl(...callArgs);
               ret = r===undefined ? 0n : BigInt(r);
-              // check meta void
               const meta=k.apiMeta.get(name);
               if(meta?.ret==="void") isVoid=true;
+              if(isThunk) isVoid=true;
             }
           } catch(e){
             k.dbgLog.push(`[api] ${name} threw ${e.message}`);
             ret=0n;
           }
-          // trace
-          if(k.apiTrace.length < k.apiTraceLimit) k.apiTrace.push({name, args: allArgs.slice(0,4), ret, retAddr: 0n});
-          k.emitTrace({kind:"api", name, args: allArgs.slice(0,4), ret});
+          // trace — suppress args for thunk to avoid register noise (BUG-6)
+          const traceArgs = isThunk ? [] : allArgs.slice(0,4);
+          if(k.apiTrace.length < k.apiTraceLimit) k.apiTrace.push({name, args: traceArgs, ret, retAddr: 0n});
+          k.emitTrace({kind:"api", name, args: traceArgs, ret});
           // emulate ret: pop ret addr, set rip, handle RAX preservation for void
           try {
-            // For linux, return in rax
             const cpu=k.cpu;
-            // pop ret addr?
-            // In our callLinuxFunction we pushed marker; for thunk hook we need to pop it manually.
-            // The CPU is stopped at thunk's hlt (0xf4). The hook should unwind.
-            // We emulate ret by popping and setting rip to popped value.
             const retAddr = k.mem.u64(cpu.regs.rsp);
+            if(isFentry){
+              k.dbgLog.push(`[fentry] RSP=0x${cpu.regs.rsp.toString(16)} retAddr=0x${retAddr.toString(16)} after`);
+            }
             cpu.regs.rsp = (cpu.regs.rsp + 8n) & 0xffffffffffffffffn;
             if(!isVoid) cpu.regs.rax = ret & 0xffffffffffffffffn;
+            // BUG-1 diagnostics: if retAddr is 0 or not canonical, log
+            if(retAddr===0n) k.dbgLog.push(`[fentry] warning: retAddr is NULL, will fault`);
             cpu.rip = retAddr;
+            if(isFentry){
+              k.dbgLog.push(`[fentry] RIP set to 0x${retAddr.toString(16)} RSP now 0x${cpu.regs.rsp.toString(16)}`);
+            }
             return true; // handled
           } catch(e){
+            k.dbgLog.push(`[fentry] emulate ret failed: ${e.message}`);
             return true;
           }
         }
@@ -386,29 +454,30 @@ export class LinuxKernel {
     const cpu=this.cpu;
     const isHybrid = !!(cpu && cpu.js && cpu.uc);
     const isJs = !isHybrid && cpu.constructor?.name==="JsInterpreter";
-    // ensure canonical stack
+    // ensure canonical stack — ensure pages are mapped for Unicorn as well
     if(cpu.regs.rsp===0n || cpu.regs.rsp > M64-0x1000n){
       const stackTop=this.stackBase + BigInt(this.stackSize);
       cpu.regs.rsp = (stackTop & ~0xFn) - 8n;
       cpu.regs.rbp = 0n;
+      // Ensure stack pages are visible to Unicorn (Hybrid needs both)
+      try{ this.materializeModuleRange(this.stackBase, this.stackSize, {fill:0}); }catch{}
     }
     const marker = LOW_RET_MARKER;
     // For unicorn/hybrid we need a code hook at marker; for js we can use stopOnRip
     let hookHandle=null;
+    let hybridJsHandle=null, hybridUcHandle=null;
     let returned=false;
     const markerHook=(rip)=>{
       if(BigInt(rip)===marker){ returned=true; return true; }
       return null;
     };
     if(isJs){
-      // JsInterpreter poll
       cpu.stopOnRip = marker;
     } else {
-      // Unicorn/Hybrid — install low hook on both engines if hybrid
       try{
         if(isHybrid){
-          cpu.js.addCodeHook(markerHook, marker, marker);
-          cpu.uc.addCodeHook(markerHook, marker, marker);
+          hybridJsHandle=cpu.js.addCodeHook(markerHook, marker, marker);
+          hybridUcHandle=cpu.uc.addCodeHook(markerHook, marker, marker);
         } else if(typeof cpu.addCodeHook==="function"){
           hookHandle=cpu.addCodeHook(markerHook, marker, marker);
         }
@@ -420,6 +489,15 @@ export class LinuxKernel {
     for(let i=0;i<Math.min(args.length,6);i++) cpu.regs[order[i]]=BigInt(args[i]) & M64;
     if(args.length>6) for(let i=args.length-1;i>=6;i--) cpu.pushVal(BigInt(args[i]));
     cpu.pushVal(marker);
+    // Ensure marker page is mapped for Unicorn (both pure and Hybrid)
+    try{
+      const markerPage = marker & ~0xfffn;
+      if(this.cpu && typeof this.cpu.mapRange==="function") this.cpu.mapRange(markerPage, 0x1000);
+      if(this.cpu && this.cpu.uc && typeof this.cpu.uc.mapRange==="function") this.cpu.uc.mapRange(markerPage, 0x1000);
+      if(this.cpu && this.cpu.js && typeof this.cpu.js.mapRange==="function") this.cpu.js.mapRange(markerPage, 0x1000);
+      // Also ensure SparseMemory has it
+      if(!this.mem.hasPage(markerPage)) this.mem.write(markerPage, new Uint8Array(0x1000).fill(0xf4));
+    }catch{}
     cpu.rip = BigInt(funcAddr) & M64;
     let reason;
     for(;;){
@@ -429,7 +507,13 @@ export class LinuxKernel {
       if(reason==="breakpoint"){
         if(cpu.lastDebugStop){
           if(isJs) cpu.stopOnRip=null;
-          else if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
+          else {
+            if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
+            if(isHybrid){
+              try{ if(hybridJsHandle) cpu.js.hook_del(hybridJsHandle); }catch{}
+              try{ if(hybridUcHandle && typeof cpu.uc.hook_del==="function") cpu.uc.hook_del(hybridUcHandle); }catch{}
+            }
+          }
           return {status:"debug-stop", code:cpu.lastDebugStop.code, rip:cpu.lastDebugStop.rip};
         }
         if(cpu.rip===marker) break;
@@ -437,20 +521,26 @@ export class LinuxKernel {
       }
       if(reason==="error"||reason==="timeout"||reason==="halted"){
         if(isJs) cpu.stopOnRip=null;
-        else if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
+        else {
+          if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
+          if(isHybrid){
+            try{ if(hybridJsHandle) cpu.js.hook_del(hybridJsHandle); }catch{}
+            try{ if(hybridUcHandle && typeof cpu.uc.hook_del==="function") cpu.uc.hook_del(hybridUcHandle); }catch{}
+          }
+        }
         if(reason==="error") return {status:"fault", error:cpu.fault};
         if(reason==="timeout") return {status:"timeout"};
         return {status:reason, rip:cpu.rip};
       }
-      // For unicorn, a hook may have set returned but run returned "timeout" chunk; continue
       if(!isJs && returned) break;
     }
     if(isJs) cpu.stopOnRip=null;
-    else if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
-    // Hybrid cleanup: remove marker hooks
-    if(isHybrid){
-      try{ cpu.js.codeHooks = cpu.js.codeHooks.filter(h=>h.fn!==markerHook); }catch{}
-      try{ if(typeof cpu.uc.hook_del==="function"){} }catch{}
+    else {
+      if(hookHandle && typeof cpu.hook_del==="function") try{cpu.hook_del(hookHandle);}catch{}
+      if(isHybrid){
+        try{ if(hybridJsHandle) cpu.js.hook_del(hybridJsHandle); }catch{}
+        try{ if(hybridUcHandle && typeof cpu.uc.hook_del==="function") cpu.uc.hook_del(hybridUcHandle); }catch{}
+      }
     }
     return {status:"ok", retval: cpu.regs.rax};
   }

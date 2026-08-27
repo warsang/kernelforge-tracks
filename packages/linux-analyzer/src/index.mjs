@@ -180,21 +180,20 @@ async function analyzeKoOnce(imageBytes, opts={}){
     report.dbgLog.push(...kernel.dbgLog.splice(0));
   }
 
-  // Finalize trace similar to ntsim-analyzer
+  // Finalize trace similar to ntsim-analyzer — include engine for BUG-1 verification
   {
     const modules=[{name: driverName, base: mapped.base, size: mapped.imageSize}];
-    // try to finalize trace if kernel has tracer
     try{
       const { finalizeTrace } = await import("@kernelforge/ntsim/src/tracer.mjs");
       if(!opts.trace?.disable){
         const { events, text } = finalizeTrace(kernel, modules);
         report.trace=events;
-        report.traceText=text;
+        report.traceText=`engine: ${report.meta.engine}\n` + text;
       }
       report.etw=kernel.etwLog??[];
       kernel.tracePhase="idle";
     } catch{
-      report.traceText = kernel.traceEvents.map(e=> `[${e.phase}] ${e.kind} ${e.name??e.text??""}`).join("\n");
+      report.traceText = `engine: ${report.meta.engine}\n` + kernel.traceEvents.map(e=> `[${e.phase}] ${e.kind} ${e.name??e.text??""}`).join("\n");
     }
   }
   report.apiTraceSummary=summarizeApiTrace(kernel.apiTrace);

@@ -252,33 +252,35 @@ export function installLinuxApi(kernel){
   }, {ret:"pvoid"});
 
   // VFS helpers — success-by-default, fuzz-configurable via stubPolicy (BUG-3/4)
+  // BUG-5: emit full addr/size/data + string preview for forensics
   kernel.defineApi("filp_open", function(filenamePtr, flags, mode){
+    const filename = this.mem.readAnsi(filenamePtr,128);
     const pol=this.stubPolicy.get("filp_open");
     if(pol?.mode==="err"){
       const code=BigInt(pol.errCode ?? -2);
       const errPtr = (code & 0xffffffffffffffffn);
-      this.dbgLog.push(`[filp_open] ${this.mem.readAnsi(filenamePtr,64)} -> ERR_PTR ${errPtr.toString(16)}`);
-      this.emitTrace({kind:"mem_write", addr:0n, name:"filp_open", ret:errPtr});
+      this.dbgLog.push(`[filp_open] ${filename} -> ERR_PTR ${errPtr.toString(16)}`);
+      this.emitTrace({kind:"mem_write", addr:filenamePtr, size: filename.length, data: filename, name:"filp_open", filename, ret:errPtr});
       return errPtr;
     }
     const f=this.allocSlub(96,"file");
-    // minimal struct file
-    this.mem.w64(f, 0n); // f_op
-    this.dbgLog.push(`[filp_open] ${this.mem.readAnsi(filenamePtr,64)} -> file 0x${f.toString(16)}`);
-    this.emitTrace({kind:"mem_write", addr:f, name:"filp_open", ret:f});
+    this.mem.w64(f, 0n);
+    this.dbgLog.push(`[filp_open] ${filename} -> file 0x${f.toString(16)}`);
+    this.emitTrace({kind:"mem_write", addr:f, size:96, data:`file for ${filename}`, name:"filp_open", filename, ret:f});
     return f;
   }, {ret:"pvoid"});
 
   kernel.defineApi("kern_path", function(namePtr, flags, pathPtr){
     const pol=this.stubPolicy.get("kern_path");
     if(pol?.mode==="err") return (-2n & 0xffffffffffffffffn);
-    const name=this.mem.readAnsi(namePtr,64);
+    const name=this.mem.readAnsi(namePtr,128);
     const d=this.allocSlub(64,"dentry");
     const m=this.allocSlub(64,"vfsmount");
-    // struct path { mnt, dentry } at pathPtr (16B)
-    try{ this.mem.w64(pathPtr, m); this.mem.w64(pathPtr+8n, d); }catch{}
+    // struct path { mnt @0, dentry @8 } — use typed offsets (generic for all kernels, LP64)
+    const PATH_MNT_OFF = 0n, PATH_DENTRY_OFF = 8n;
+    try{ this.mem.w64(pathPtr + PATH_MNT_OFF, m); this.mem.w64(pathPtr + PATH_DENTRY_OFF, d); }catch{}
     this.dbgLog.push(`[kern_path] ${name} -> path 0x${pathPtr.toString(16)} {mnt 0x${m.toString(16)} dentry 0x${d.toString(16)}}`);
-    this.emitTrace({kind:"mem_write", addr:pathPtr, name:"kern_path", ret:0n});
+    this.emitTrace({kind:"mem_write", addr:pathPtr, size:16, data:`{mnt:0x${m.toString(16)},dentry:0x${d.toString(16)}}`, name:"kern_path", filename:name, mnt:m, dentry:d, ret:0n});
     return 0n;
   }, {ret:"long"});
 
@@ -297,7 +299,29 @@ export function installLinuxApi(kernel){
   }, {ret:"long"});
 
   kernel.defineApi("call_usermodehelper", function(pathPtr, argvPtr, envpPtr, wait){
-    this.dbgLog.push(`[call_usermodehelper] ${this.mem.readAnsi(pathPtr,64)} argv 0x${argvPtr.toString(16)}`);
+    const exe = this.mem.readAnsi(pathPtr,128);
+    // Decode argv array (null-terminated array of char* at argvPtr)
+    const argv = [];
+    try{
+      for(let i=0;i<8;i++){
+        const ptr = this.mem.u64(argvPtr + BigInt(i*8));
+        if(ptr===0n) break;
+        argv.push(this.mem.readAnsi(ptr,64));
+      }
+    }catch{}
+    // Similarly envp
+    const envp = [];
+    try{
+      if(envpPtr){
+        for(let i=0;i<8;i++){
+          const ptr=this.mem.u64(envpPtr + BigInt(i*8));
+          if(ptr===0n) break;
+          envp.push(this.mem.readAnsi(ptr,64));
+        }
+      }
+    }catch{}
+    this.dbgLog.push(`[call_usermodehelper] ${exe} argv [${argv.join(",")}] envp [${envp.join(",")}]`);
+    this.emitTrace({kind:"mem_write", addr:pathPtr, size: exe.length, data: exe, name:"call_usermodehelper", exe, argv, envp, ret:0n});
     const pol=this.stubPolicy.get("call_usermodehelper");
     if(pol?.mode==="err") return 1n;
     return 0n;
@@ -506,9 +530,12 @@ export function installLinuxApi(kernel){
   kernel.defineApi("vfs_read", function(file, buf, len, pos){ return BigInt(len); }, {ret:"long"});
   kernel.defineApi("vfs_write", function(file, buf, len, pos){ return BigInt(len); }, {ret:"long"});
 
-  // mutex etc stubs
-  for(const nm of ["mutex_lock","mutex_unlock","mutex_init","spin_lock","spin_unlock","spin_lock_init","try_module_get","module_put","nonseekable_open","single_open","single_release","seq_read","seq_lseek","seq_release","__mutex_init","__x86_return_thunk","__x86_indirect_thunk_rax","__x86_indirect_thunk_rbp","__x86_indirect_thunk_r12"]){
+  // mutex etc stubs — thunks are void (no args, no ret) to avoid misleading trace
+  for(const nm of ["mutex_lock","mutex_unlock","mutex_init","spin_lock","spin_unlock","spin_lock_init","try_module_get","module_put","nonseekable_open","single_open","single_release","seq_read","seq_lseek","seq_release","__mutex_init"]){
     kernel.defineApi(nm, function(){ return 0n; }, {ret:"long"});
+  }
+  for(const nm of ["__x86_return_thunk","__x86_indirect_thunk_rax","__x86_indirect_thunk_rbp","__x86_indirect_thunk_r12"]){
+    kernel.defineApi(nm, function(){ return undefined; }, {ret:"void"});
   }
   // copy helpers for put_user etc already done
 
