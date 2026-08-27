@@ -1,13 +1,22 @@
 {
   "name": "@kernelforge/ghidra-decompiler",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./src/index.mjs",
   "scripts": {
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@kernelforge/ntsim": "*"
-  }
+    "@kernelforge/ntsim": "^0.1.0"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-debug.git"
+  },
+  "author": "warsang"
 }

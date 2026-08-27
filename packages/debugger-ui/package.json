@@ -1,7 +1,7 @@
 {
   "name": "@kernelforge/debugger-ui",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
@@ -13,5 +13,14 @@
   },
   "dependencies": {
     "monaco-editor": "^0.52.2"
-  }
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-debug.git"
+  },
+  "author": "warsang"
 }

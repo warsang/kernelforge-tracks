@@ -1,10 +1,19 @@
 {
   "name": "@kernelforge/v86-lab",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./src/index.mjs",
   "scripts": {
     "test": "node --test test/*.test.mjs"
-  }
+  },
+  "license": "BSD-2-Clause",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-tracks.git"
+  },
+  "author": "warsang"
 }

@@ -1,7 +1,7 @@
 {
   "name": "@kernelforge/ntsim-analyzer",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Run-any-driver analysis harness over ntsim: upload .sys -> map -> DriverEntry -> IOCTLs -> report",
   "exports": {
@@ -25,8 +25,17 @@
     "./src/bug/instrument.mjs": "./src/bug/instrument.mjs"
   },
   "dependencies": {
-    "@kernelforge/compiler-worker": "*",
-    "@kernelforge/ntsim": "*",
+    "@kernelforge/compiler-worker": "^0.1.0",
+    "@kernelforge/ntsim": "^0.1.0",
     "z3-solver": "^5.2.0"
-  }
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-analyzer.git"
+  },
+  "author": "warsang"
 }

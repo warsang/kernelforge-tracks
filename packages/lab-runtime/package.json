@@ -1,7 +1,7 @@
 {
   "name": "@kernelforge/lab-runtime",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
@@ -12,6 +12,15 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@kernelforge/course-content": "*"
-  }
+    "@kernelforge/course-content": "^0.1.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-tracks.git"
+  },
+  "author": "warsang"
 }

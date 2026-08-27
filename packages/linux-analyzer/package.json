@@ -1,7 +1,7 @@
 {
   "name": "@kernelforge/linux-analyzer",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "exports": {
     ".": "./src/index.mjs",
@@ -11,9 +11,18 @@
     "./src/bug/*": "./src/bug/*"
   },
   "dependencies": {
-    "@kernelforge/linux-sim": "*",
-    "@kernelforge/ntsim": "*",
-    "@kernelforge/ntsim-analyzer": "*",
+    "@kernelforge/linux-sim": "^0.1.0",
+    "@kernelforge/ntsim": "^0.1.0",
+    "@kernelforge/ntsim-analyzer": "^0.1.0",
     "z3-solver": "^5.2.0"
-  }
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-analyzer.git"
+  },
+  "author": "warsang"
 }

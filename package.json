@@ -20,7 +20,8 @@
     "vendor:ghidra": "node tools/build-ghidra-wasm.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "wrangler": "^4.127.0"
   },
   "engines": {
     "node": ">=20"
