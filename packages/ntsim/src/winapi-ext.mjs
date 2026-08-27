@@ -846,6 +846,14 @@ export function installWinApiExt(kernel, ctx) {
     const [x, y] = caseIns ? [a.toLowerCase(), b.toLowerCase()] : [a, b];
     return x < y ? -1n : x > y ? 1n : 0n;
   });
+  // BOOLEAN RtlPrefixUnicodeString(PCUNICODE_STRING String1, PCUNICODE_STRING String2, BOOLEAN CaseInSensitive)
+  // Returns TRUE if String1 is a prefix of String2
+  k.define("RtlPrefixUnicodeString", (s1, s2, caseIns) => {
+    const a = usRead(mem, s1).str;
+    const b = usRead(mem, s2).str;
+    const [x, y] = caseIns ? [a.toLowerCase(), b.toLowerCase()] : [a, b];
+    return y.startsWith(x) ? 1n : 0n;
+  });
   k.define("RtlEqualString", (aVa, bVa, caseIns) => {
     const rd = (va) => {
       const n = mem.u16(va);
@@ -998,9 +1006,36 @@ export function installWinApiExt(kernel, ctx) {
   k.define("PsReferencePrimaryToken", (eproc) => mem.u64(eproc + BigInt(tokenOffSafe())) & ~0xfn);
   k.define("PsDereferencePrimaryToken", () => undefined);
   k.define("SeQueryInformationToken", (_token, infoClass, outInfo) => {
+    const ic = Number(BigInt.asUintN(32, BigInt(infoClass ?? 0)));
+    // TokenUser (1) — return SID S-1-5-18 (SYSTEM) so token checks pass
+    if (ic === 1) {
+      const sidVa = k.alloc(0x20);
+      // SID S-1-5-18: Revision 1, Count 1, Authority 5, SubAuth 18
+      mem.write(sidVa, Uint8Array.from([0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x05, 0x12,0x00,0x00,0x00]));
+      const tuVa = k.alloc(0x20);
+      mem.w64(tuVa, sidVa); // TOKEN_USER.Sid
+      mem.w32(tuVa + 8n, 0); // Attributes
+      mem.w64(outInfo, tuVa);
+      return STATUS_SUCCESS;
+    }
     const blob = k.alloc(0x30);
     mem.write(blob, Uint8Array.from({ length: 0x30 }, (_, i) => (i * 7 + 0x41) & 0xff)); // pattern token
     mem.w64(outInfo, blob);
+    return STATUS_SUCCESS;
+  });
+  // BOOLEAN RtlConvertSidToUnicodeString(PUNICODE_STRING DestinationString, PSID Sid, BOOLEAN AllocateDestinationString)
+  k.define("RtlConvertSidToUnicodeString", (destUs, sidVa, allocate) => {
+    void sidVa;
+    const sidStr = "S-1-5-18";
+    const needAlloc = !!allocate && Number(allocate) !== 0;
+    let buf = mem.u64(destUs + 8n);
+    if (needAlloc || !buf) {
+      buf = k.alloc((sidStr.length + 1) * 2);
+      mem.w64(destUs + 8n, buf);
+    }
+    mem.writeUtf16(buf, sidStr);
+    mem.w16(destUs, sidStr.length * 2);
+    mem.w16(destUs + 2n, (sidStr.length + 1) * 2);
     return STATUS_SUCCESS;
   });
   k.define("SeAccessCheck", () => 1n);

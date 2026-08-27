@@ -352,6 +352,35 @@ export class NtKernel {
     // their pristine layout.
     if (!this.paging) this.seedProcessThreads();
 
+    // Wire realistic primary tokens so PsReferencePrimaryToken / SeQueryInformationToken
+    // return walkable data (System = S-1-5-18). Uses kdemu dump's System token when available,
+    // else synthetic. This unblocks hidden drivers that validate token before installing hooks.
+    try {
+      const tokenOff = this.tables.offsetOf("_EPROCESS", "Token");
+      const systemEproc = this.processesByName.get("System");
+      if (systemEproc != null) {
+        const tokenVa = this.allocPool(0x100, "Toke");
+        // Minimal _TOKEN: at offset 0x40 is UserAndGroupCount etc on 22H2, but for our
+        // SeQueryInformationToken we just need a non-zero token so PsReferencePrimaryToken works.
+        // Store a SID string nearby and a TOKEN_USER at tokenVa+0x80 for SeQuery.
+        const sidVa = tokenVa + 0x60n;
+        this.mem.write(sidVa, Uint8Array.from([0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x05,0x12,0x00,0x00,0x00]));
+        const tuVa = tokenVa + 0x80n;
+        this.mem.w64(tuVa, sidVa);
+        this.mem.w32(tuVa + 8n, 0);
+        // Link EPROCESS.Token (EX_FAST_REF) — low 4 bits are refcount, store pointer | 0
+        this.mem.w64(systemEproc + BigInt(tokenOff), tokenVa & ~0xfn);
+        // Also wire other processes with distinct SIDs for realism (optional)
+        for (const [name, eproc] of this.processesByName.entries()) {
+          if (name === "System") continue;
+          if (eproc === systemEproc) continue;
+          try { this.mem.w64(eproc + BigInt(tokenOff), tokenVa & ~0xfn); } catch {}
+        }
+        this.systemTokenVa = tokenVa;
+        this.dbgLog.push(`[kdemu] System token @ 0x${tokenVa.toString(16)} (S-1-5-18) for ${systemEproc.toString(16)}`);
+      }
+    } catch (e) { this.dbgLog.push(`[kdemu] token wiring failed: ${e.message}`); }
+
     // scenario modules visible via `lm` — kfbootkit.sys is the L1 flag target
     this.loadedDrivers.push(
       { name: "ntoskrnl.exe", base: 0xfffff8052b800000n, imageSize: 0x800000 },
@@ -1089,7 +1118,7 @@ export class NtKernel {
   }
 
   /** Kernel data exports drivers import by address (not called through). */
-  static DATA_EXPORTS = new Set(["PsProcessType", "PsThreadType", "PsInitialSystemProcess"]);
+  static DATA_EXPORTS = new Set(["PsProcessType", "PsThreadType", "PsInitialSystemProcess", "PspCidTable", "PspCidTableLock", "PsActiveProcessHead"]);
 
   /**
    * Resolve "ntdll!Name"-style import; provisions when unknown.
@@ -1114,6 +1143,14 @@ export class NtKernel {
       const systemEproc = this.processesByName?.get("System") ?? this.findEprocessByPid(4n);
       if (!systemEproc) throw new Error("System EPROCESS not present — bootstrap first");
       backing = systemEproc;
+    } else if (name === "PsActiveProcessHead") {
+      backing = this.PsActiveProcessHead;
+    } else if (name === "PspCidTable") {
+      backing = this.#createPspCidTable();
+    } else if (name === "PspCidTableLock") {
+      backing = this.allocPool(0x10, "CidL");
+      this.mem.w64(backing, 0n);
+      this.mem.w64(backing + 8n, 0n);
     } else {
       // minimal OBJECT_TYPE stand-in: non-zero so "is it initialized" checks pass
       backing = this.allocPool(0x40, "ObjT");
@@ -1124,6 +1161,57 @@ export class NtKernel {
     this.dataExports.set(name, slot);
     this.dbgLog.push(`[analyzer] modeled data export ${name} @ 0x${slot.toString(16)} -> 0x${(backing & M64).toString(16)}`);
     return slot;
+  }
+
+  #createPspCidTable() {
+    // Real walkable HANDLE_TABLE from synthetic EPROCESS list (kdemu-derived pids)
+    // TableCode low 2 bits = level (0 = flat). Entries are 16-byte HANDLE_TABLE_ENTRY
+    // where LowValue holds Object (EPROCESS) with valid bit.
+    try {
+      const htSize = this.tables.has("_HANDLE_TABLE") ? Number(this.tables.sizeOf("_HANDLE_TABLE")) : 128;
+      const htVa = this.allocPool(htSize, "HndT");
+      // zero table
+      this.mem.write(htVa, new Uint8Array(htSize));
+      const entriesVa = this.allocPool(0x4000, "CidE"); // 1024 entries *16
+      this.mem.write(entriesVa, new Uint8Array(0x4000));
+      // TableCode at offset 8
+      let tableCodeOff = 8;
+      try { tableCodeOff = this.tables.offsetOf("_HANDLE_TABLE", "TableCode"); } catch {}
+      this.mem.w64(htVa + BigInt(tableCodeOff), entriesVa & ~0x3n);
+      // HandleTableList self-loop at offset 24
+      try {
+        const listOff = this.tables.offsetOf("_HANDLE_TABLE", "HandleTableList");
+        this.mem.w64(htVa + BigInt(listOff), htVa + BigInt(listOff));
+        this.mem.w64(htVa + BigInt(listOff) + 8n, htVa + BigInt(listOff));
+      } catch {}
+      // Populate entries: index = handleValue>>2 ; handle for CID is pid*4? Use pid as handle
+      let pidOff = null;
+      try { pidOff = this.tables.offsetOf("_EPROCESS", "UniqueProcessId"); } catch {}
+      const seen = new Set();
+      for (const [procName, eproc] of this.processesByName.entries()) {
+        if (!eproc) continue;
+        let pid = 0n;
+        try { pid = this.mem.u64(eproc + BigInt(pidOff ?? 0)); } catch { continue; }
+        if (pid === 0n) continue;
+        const handle = pid * 4n; // CID handle
+        const idx = Number(handle >> 2n);
+        if (seen.has(idx)) continue;
+        seen.add(idx);
+        const entryVa = entriesVa + BigInt(idx * 16);
+        if (entryVa + 16n > entriesVa + 0x4000n) continue;
+        // LowValue: Object pointer | 0x1 valid, HighValue: granted access placeholder
+        this.mem.w64(entryVa, (eproc & M64) | 1n);
+        this.mem.w64(entryVa + 8n, 0x1fffffn); // GrantedAccess
+      }
+      // Also ensure System entry at idx 1 (pid 4 -> handle 0x10 -> idx 4) is present
+      this.dbgLog.push(`[kdemu] PspCidTable HANDLE_TABLE @ 0x${htVa.toString(16)} TableCode 0x${entriesVa.toString(16)} entries for ${seen.size} processes`);
+      return htVa;
+    } catch (e) {
+      this.dbgLog.push(`[kdemu] PspCidTable creation failed: ${e.message}`);
+      const fallback = this.allocPool(0x40, "HndT");
+      this.mem.w64(fallback, 0n);
+      return fallback;
+    }
   }
 
   /** Write an E9 rel32 detour over an export's prologue (hook modeling). */

@@ -219,6 +219,14 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
   const regPath = `\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\${serviceKeyOf(driverName)}`;
   report.load.registryPath = regPath;
   report.load.driverName = driverName;
+  // Seed the driver's service key so ZwOpenKey for its own service succeeds.
+  // Many drivers (f9dd...) abort DriverEntry if they cannot open their service key.
+  try {
+    const svcMap = new Map([["Start", { type: 4, data: Uint8Array.from([0x03,0x00,0x00,0x00]) }], ["Type", { type: 4, data: Uint8Array.from([0x01,0x00,0x00,0x00]) }], ["ErrorControl", { type: 4, data: Uint8Array.from([0x01,0x00,0x00,0x00]) }]]);
+    kernel.registry.set(regPath, svcMap);
+    kernel.registry.set(regPath + "\\Parameters", new Map([["Config", { type: 1, data: new TextEncoder().encode("default\0") }]]));
+    kernel.dbgLog.push(`[kdemu] seeded service key ${regPath}`);
+  } catch {}
 
   if (opts.rekeySecurityCookie !== false) rekeySecurityCookie(kernel, mapped);
 

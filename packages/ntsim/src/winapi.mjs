@@ -523,7 +523,29 @@ export function installWinApi(kernel) {
         return STATUS_SUCCESS;
       }
     }
-    return STATUS_OBJECT_NAME_NOT_FOUND;
+    // For driver coverage, auto-create missing service/config keys under \Registry\*
+    // Many drivers (f9dd...) fail DriverEntry if their service key is absent.
+    if (norm === "\\" || norm.length <= 1) {
+      kernel.dbgLog.push(`[registry] ZwOpenKey empty path -> NOT_FOUND`);
+      return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    if (!norm.toLowerCase().startsWith("\\registry\\")) {
+      return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    if (!kernel.registry.has(norm)) {
+      kernel.registry.set(norm, new Map([["Dummy", { type: 1, data: new TextEncoder().encode("1\0") }]]));
+      const parts = norm.split("\\");
+      let cur = "";
+      for (let i = 1; i < parts.length; i++) {
+        cur += "\\" + parts[i];
+        if (!kernel.registry.has(cur) && cur.toLowerCase().includes("services")) {
+          kernel.registry.set(cur, new Map());
+        }
+      }
+      kernel.dbgLog.push(`[registry] auto-created ${norm}`);
+    }
+    mem.w64(handleOut, regHandle(norm));
+    return STATUS_SUCCESS;
   });
   k.define("ZwClose", (handle) => {
     kernel.handles.delete(ptrSizeMask(handle));
@@ -534,7 +556,13 @@ export function installWinApi(kernel) {
     const key = kernel.handles.get(ptrSizeMask(handle));
     if (!key) return STATUS_INVALID_PARAMETER;
     const vn = usRead(mem, valueNameVa).str;
-    const entry = kernel.registry.get(key)?.get(vn);
+    let entry = kernel.registry.get(key)?.get(vn);
+    // For auto-created service keys, synthesize any queried value so drivers don't abort
+    if (!entry && key.toLowerCase().startsWith("\\registry\\")) {
+      entry = { type: 1, data: new TextEncoder().encode("1\0") };
+      kernel.registry.get(key)?.set(vn, entry);
+      kernel.dbgLog.push(`[registry] synthesized ${key}\\${vn} -> "1"`);
+    }
     if (!entry) return STATUS_OBJECT_NAME_NOT_FOUND;
     // KEY_VALUE_PARTIAL_INFORMATION: Type u32, DataLength u32, Data[]
     mem.w32(infoBuf, entry.type);
@@ -569,6 +597,15 @@ export function installWinApi(kernel) {
     const name = usRead(mem, usNameVa).str;
     const thunk = kernel.apiThunks.get(name);
     if (thunk) return thunk;
+    // Data exports (PsInitialSystemProcess, PspCidTable, etc) are address-taken, not called
+    // Return the same slot that an import would resolve to, so pattern scans find real memory
+    if (name === "PsInitialSystemProcess" || name === "PspCidTable" || name === "PspCidTableLock" || name === "PsActiveProcessHead") {
+      try {
+        const slot = kernel.resolveImportProvisioned(`ntoskrnl!${name}`);
+        kernel.dbgLog.push(`[winapi] MmGetSystemRoutineAddress("${name}") -> data slot 0x${slot.toString(16)}`);
+        return slot;
+      } catch {}
+    }
     // PHNT-known exports get auto-provisioned as traced stubs with correct void/ntstatus
     if (API_META.has(name)) {
       const addr = kernel.provisionUnknownApi(name);
