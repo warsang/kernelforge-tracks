@@ -1,0 +1,25 @@
+{
+  "name": "@kernelforge/sogen-runtime",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "main": "./src/index.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@kernelforge/debugger-ui": "^0.1.0",
+    "@kernelforge/ntsim": "^0.1.0",
+    "capstone-wasm": "^1.0.3",
+    "flatbuffers": "^25.9.23"
+  },
+  "license": "GPL-2.0-only",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-tracks.git"
+  },
+  "author": "warsang"
+}

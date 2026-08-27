@@ -1,0 +1,24 @@
+{
+  "name": "@kernelforge/course-content",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "main": "./src/index.mjs",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "hashflag": "node ./scripts/hash-flag.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/warsang/kernelforge-tracks.git"
+  },
+  "author": "warsang"
+}
