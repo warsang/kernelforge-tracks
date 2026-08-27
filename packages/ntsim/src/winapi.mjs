@@ -93,11 +93,12 @@ export function installWinApi(kernel) {
   k.define("ExAllocatePool", (poolType, size) => k.alloc(size));
   k.define("ExAllocatePoolWithTag", (poolType, size, tag) => {
     // PagedPool (type 1) above APC_LEVEL would bugcheck a real machine.
+    // Keep realism (record violation) but still allocate for coverage (all .sys).
     if ((Number(poolType) & 1) === 1 && kernel.currentIrql > 1) {
+      kernel.irqlViolations.push({ name: "ExAllocatePoolWithTag", irql: kernel.currentIrql });
       kernel.dbgLog.push(
         `[pool] ExAllocatePoolWithTag(PagedPool) at IRQL ${kernel.currentIrql} ` +
-        `> APC_LEVEL — real Windows bugchecks here (returning NULL)`);
-      return 0n;
+        `> APC_LEVEL — real Windows bugchecks here (allocating for coverage)`);
     }
     return kernel.allocPool(Number(size), tag ? poolTagStr(tag) : "ntsm");
   });
@@ -514,8 +515,21 @@ export function installWinApi(kernel) {
 
   k.define("ZwOpenKey", (handleOut, access, objAttr) => {
     void access;
-    // OBJECT_ATTRIBUTES.ObjectName @ +0x10 -> UNICODE_STRING
-    const name = objAttr ? usRead(mem, mem.u64(objAttr + 0x10n)).str : "";
+    // OBJECT_ATTRIBUTES: Length@0, RootDirectory@8, ObjectName@16 (PUNICODE_STRING)
+    let name = "";
+    let rootPrefix = "";
+    if (objAttr) {
+      try {
+        const rootDir = mem.u64(objAttr + 8n);
+        if (rootDir) {
+          const rk = kernel.handles.get(ptrSizeMask(rootDir));
+          if (typeof rk === "string") rootPrefix = rk;
+        }
+        const usVa = mem.u64(objAttr + 0x10n);
+        name = usVa ? usRead(mem, usVa).str : "";
+        if (rootPrefix) name = rootPrefix + "\\" + name;
+      } catch { name = objAttr ? usRead(mem, mem.u64(objAttr + 0x10n)).str : ""; }
+    }
     const norm = "\\" + name.replace(/^\\*/, "");
     for (const key of kernel.registry.keys()) {
       if (key.toLowerCase() === norm.toLowerCase()) {

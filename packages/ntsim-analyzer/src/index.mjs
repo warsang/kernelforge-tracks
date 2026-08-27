@@ -230,8 +230,13 @@ async function analyzeDriverOnce(imageBytes, opts = {}) {
 
   if (opts.rekeySecurityCookie !== false) rekeySecurityCookie(kernel, mapped);
 
-  const regPathBuf = kernel.allocPool(0x100);
-  mem.writeUtf16(regPathBuf, regPath);
+  // DriverEntry second arg is PUNICODE_STRING RegistryPath, not PWSTR
+  const regPathBuf = kernel.allocPool(0x10); // UNICODE_STRING
+  const regPathStrBuf = kernel.allocPool(0x200);
+  mem.writeUtf16(regPathStrBuf, regPath);
+  mem.w16(regPathBuf, regPath.length * 2);
+  mem.w16(regPathBuf + 2n, 0x200);
+  mem.w64(regPathBuf + 8n, regPathStrBuf);
 
   // ------------------------------------------------------ DriverEntry
   kernel.tracePhase = "DriverEntry";

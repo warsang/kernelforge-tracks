@@ -886,7 +886,7 @@ export function installWinApiExt(kernel, ctx) {
     const s = usRead(mem, src);
     const free = (mem.u16(dst + 2n) - d.length) / 2;
     const take = Math.min(free, s.str.length);
-    if (take > 0) mem.writeUtf16(d.buffer + d.length, s.str.slice(0, take));
+    if (take > 0) mem.writeUtf16(d.buffer + BigInt(d.length), s.str.slice(0, take));
     mem.w16(dst, d.length + take * 2);
     return STATUS_SUCCESS;
   });
@@ -903,7 +903,7 @@ export function installWinApiExt(kernel, ctx) {
     const d = usRead(mem, dst);
     const free = (mem.u16(dst + 2n) - d.length) / 2;
     const take = Math.min(free, chars.length);
-    if (take > 0) mem.writeUtf16(d.buffer + d.length, String.fromCharCode(...chars.slice(0, take)));
+    if (take > 0) mem.writeUtf16(d.buffer + BigInt(d.length), String.fromCharCode(...chars.slice(0, take)));
     mem.w16(dst, d.length + take * 2);
     return STATUS_SUCCESS;
   });
