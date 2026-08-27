@@ -502,8 +502,16 @@ function renderSidebar() {
   const analyzerBtn = h("button", {
     class: "tool",
     onclick: () => renderAnalyzer(document.getElementById("main")),
-  }, "⚒ Driver Analyzer");
+  }, "⚒ Driver Analyzer (.sys)");
   sidebar.append(analyzerBtn);
+  const linuxAnalyzerBtn = h("button", {
+    class: "tool",
+    onclick: async () => {
+      const { renderLinuxAnalyzer } = await import("./linux-analyzer.js");
+      renderLinuxAnalyzer(document.getElementById("main"));
+    },
+  }, "🐧 Linux Driver Analyzer (.ko)");
+  sidebar.append(linuxAnalyzerBtn);
   // Floating pyre-style decompiler/disassembler workspace. Overlays the
   // current lesson — students never leave the page they are studying.
   const analysisBtn = h("button", {

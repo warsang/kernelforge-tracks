@@ -28,15 +28,16 @@ export function warmupCompiler() {
 
 /**
  * @param {string} source C source
+ * @param {{target?: string}} [opts] target "windows" (default) or "linux"
  * @returns {Promise<{objBytes: Uint8Array, via: "wasm"|"server"}>}
  */
-export async function compileDriverSource(source) {
+export async function compileDriverSource(source, opts={}) {
+  const target = opts.target ?? "windows";
   if (!wasmBroken) {
     try {
-      const objBytes = await getBrowserCompiler().compileSource(source);
+      const objBytes = await getBrowserCompiler().compileSource(source, target);
       return { objBytes, via: "wasm" };
     } catch (e) {
-      // fall through to server bridge; remember wasm is broken this session
       console.warn("[compiler] wasm path failed, falling back to server:", e?.message);
       wasmBroken = true;
     }
@@ -45,7 +46,7 @@ export async function compileDriverSource(source) {
   const resp = await fetch("/api/compile", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, target }),
   });
   if (!resp.ok) {
     let msg = `compile API ${resp.status}`;

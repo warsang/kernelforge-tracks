@@ -80,10 +80,11 @@ export class BrowserCompiler {
 
   /**
    * @param {string} source C source
-   * @returns {Promise<Uint8Array>} x64 COFF object
+   * @param {string} [target] "windows" | "linux"
+   * @returns {Promise<Uint8Array>} object bytes
    */
-  async compileSource(source) {
-    const bytes = await this._call("compile", { source });
+  async compileSource(source, target="windows") {
+    const bytes = await this._call("compile", { source, target });
     return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
   }
 }

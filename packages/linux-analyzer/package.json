@@ -1,0 +1,19 @@
+{
+  "name": "@kernelforge/linux-analyzer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./src/index.mjs": "./src/index.mjs",
+    "./src/harvest.mjs": "./src/harvest.mjs",
+    "./src/autoops.mjs": "./src/autoops.mjs",
+    "./src/bug/*": "./src/bug/*"
+  },
+  "dependencies": {
+    "@kernelforge/linux-sim": "*",
+    "@kernelforge/ntsim": "*",
+    "@kernelforge/ntsim-analyzer": "*",
+    "z3-solver": "^5.2.0"
+  }
+}
