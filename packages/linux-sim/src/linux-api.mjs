@@ -4,6 +4,38 @@
  */
 
 export function installLinuxApi(kernel){
+  // Version-dispatch table keyed by vermagic (from .modinfo), not hardcoded buildName.
+  // Each entry is consulted at call time via kernel.vermagic.
+  const API_VERSIONS = {
+    notify_change: [
+      { until: "5.12", sig: ["dentry","attr","delegated"], ret:"long", args:3 },
+      { from: "5.12", sig: ["mnt_idmap","dentry","attr","delegated"], ret:"long", args:4 },
+    ],
+  };
+  function parseVersion(v){
+    const m = String(v||"").match(/(\d+)\.(\d+)(?:\.(\d+))?/);
+    if(!m) return null;
+    return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]||0) };
+  }
+  function cmpVer(a,b){
+    if(a.major!==b.major) return a.major-b.major;
+    if(a.minor!==b.minor) return a.minor-b.minor;
+    return a.patch-b.patch;
+  }
+  function pickRow(table, vermagic){
+    const v = parseVersion(vermagic);
+    if(!v) return table[table.length-1];
+    for(const row of table){
+      if(row.until){
+        const u = parseVersion(row.until);
+        if(u && cmpVer(v,u) < 0) return row;
+      } else if(row.from){
+        const f = parseVersion(row.from);
+        if(f && cmpVer(v,f) >= 0) return row;
+      } else return row;
+    }
+    return table[table.length-1];
+  }
   // __fentry__ and tracing nops — must be void preserving (BUG-1)
   for(const n of ["__fentry__","mcount","__tracepoint_iter","__traceiter","trace_printk"]){
     kernel.defineApi(n, function(){ return undefined; }, {ret:"void"});
@@ -289,12 +321,20 @@ export function installLinuxApi(kernel){
     return undefined;
   }, {ret:"void"});
 
-  kernel.defineApi("notify_change", function(dentry, attrPtr, delegatedPtr){
+  kernel.defineApi("notify_change", function(a,b,c,d){
     const pol=this.stubPolicy.get("notify_change");
     if(pol?.mode==="err") return (-1n & 0xffffffffffffffffn);
-    this.dbgLog.push(`[notify_change] dentry 0x${dentry.toString(16)} attr 0x${attrPtr.toString(16)}`);
-    // optionally write delegated_inode if provided
+    const row = pickRow(API_VERSIONS.notify_change, this.vermagic || this.buildName);
+    let mnt_idmap, dentry, attrPtr, delegatedPtr;
+    if(row.args===4){
+      mnt_idmap=a; dentry=b; attrPtr=c; delegatedPtr=d;
+      this.dbgLog.push(`[notify_change] idmap 0x${mnt_idmap.toString(16)} dentry 0x${dentry.toString(16)} attr 0x${attrPtr.toString(16)} delegated 0x${delegatedPtr?delegatedPtr.toString(16):"0"}`);
+    } else {
+      dentry=a; attrPtr=b; delegatedPtr=c; mnt_idmap=0n;
+      this.dbgLog.push(`[notify_change] dentry 0x${dentry.toString(16)} attr 0x${attrPtr.toString(16)} delegated 0x${delegatedPtr?delegatedPtr.toString(16):"0"} (legacy)`);
+    }
     try{ if(delegatedPtr) this.mem.w64(delegatedPtr, 0n); }catch{}
+    this.emitTrace({kind:"api", name:"notify_change", args: row.args===4? [mnt_idmap,dentry,attrPtr] : [dentry,attrPtr], ret:0n, vermagic: this.vermagic});
     return 0n;
   }, {ret:"long"});
 
@@ -358,19 +398,21 @@ export function installLinuxApi(kernel){
     return 0n;
   }, {ret:"long"});
 
-  // ---- kprobe ----
-  const KPROBE_SYMBOL_OFF = 0x10;
-  const KPROBE_PRE_OFF = 0x28;
-  const KPROBE_POST_OFF = 0x30;
+  // ---- kprobe ---- (BUG-7: offsets must be BigInt, kp must be coerced)
+  const KPROBE_SYMBOL_OFF = 0x10n;
+  const KPROBE_PRE_OFF = 0x28n;
+  const KPROBE_POST_OFF = 0x30n;
+  const KPROBE_ADDR_OFF = 0x20n;
   kernel.defineApi("register_kprobe", function(kpPtr){
     try{
+      const kp = BigInt(kpPtr);
       const pol=this.stubPolicy.get("register_kprobe");
       if(pol?.mode==="err") return (-22n & 0xffffffffffffffffn);
-      const symPtr=this.mem.u64(kpPtr + BigInt(KPROBE_SYMBOL_OFF));
+      const symPtr=this.mem.u64(kp + KPROBE_SYMBOL_OFF);
       const sym=symPtr? this.mem.readAnsi(symPtr,64) : "";
-      const pre=this.mem.u64(kpPtr + BigInt(KPROBE_PRE_OFF));
-      const post=this.mem.u64(kpPtr + BigInt(KPROBE_POST_OFF));
-      const addr=sym? (this.kallsyms.get(sym) || this.apiThunks.get(sym) || 0n) : this.mem.u64(kpPtr+0x20);
+      const pre=this.mem.u64(kp + KPROBE_PRE_OFF);
+      const post=this.mem.u64(kp + KPROBE_POST_OFF);
+      const addr=sym? (this.kallsyms.get(sym) || this.apiThunks.get(sym) || 0n) : this.mem.u64(kp+KPROBE_ADDR_OFF);
       this.kprobes.push({kpPtr:BigInt(kpPtr), symbol:sym, addr, pre_handler:pre, post_handler:post});
       this.opsRegistry.push({subsystem:"kprobe", api:"register_kprobe", opsVa:BigInt(kpPtr), handlerVa:pre||post, symbol, layout:"kprobe"});
       this.dbgLog.push(`[register_kprobe] ${sym || "addr 0x"+addr.toString(16)} pre 0x${pre.toString(16)}`);

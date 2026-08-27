@@ -276,6 +276,11 @@ export function applyRelocs(kernel, base, parsed, sectionAddrs, resolveExternal)
  */
 export function mapModule(kernel, parsed, base, resolveExternal){
   base = BigInt(base);
+  // Use explicit vermagic from .modinfo as source of truth for version dispatch (not hardcoded buildName)
+  if(parsed.modinfo?.vermagic){
+    kernel.vermagic = parsed.modinfo.vermagic;
+    kernel.buildName = kernel.vermagic; // for display
+  }
   // Determine overall size: max (sh_addr+sh_size) among SHF_ALLOC
   let maxEnd=0n;
   for(const s of parsed.sections){

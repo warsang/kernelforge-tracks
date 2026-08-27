@@ -48,6 +48,7 @@ export class LinuxKernel {
       stack: B.stack ?? DEFAULT_BASES.stack,
     };
     this.buildName = opts.buildName ?? "linux-6.6.18";
+    this.vermagic = opts.vermagic ?? this.buildName;
     this.apiThunks = new Map();
     this.thunkAliasMap = new Map();
     this.nextThunk = this.bases.thunk;

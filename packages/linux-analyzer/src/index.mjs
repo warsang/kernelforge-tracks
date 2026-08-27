@@ -204,7 +204,14 @@ async function analyzeKoOnce(imageBytes, opts={}){
 function summarizeCall(r){
   if(!r) return null;
   const out={status: r.status};
-  if("retval" in r) out.retval=`0x${BigInt.asUintN(64, r.retval).toString(16).padStart(16,"0")}`;
+  if("retval" in r){
+    let v = BigInt(r.retval);
+    // BUG-9: init_module returns int (-1 = 0xffffffff in eax, zero-extended to 0x00000000ffffffff in rax)
+    // For display, sign-extend 32-bit negative returns to 64 for readability (0xffffffffffffffff)
+    if((v & 0xffffffffn) === 0xffffffffn && (v >> 32n) === 0n) v = 0xffffffffffffffffn;
+    else if((v & 0xffffffffn) === 0xfffffffen && (v >> 32n) === 0n) v = 0xfffffffffffffffen; // -2
+    out.retval=`0x${BigInt.asUintN(64, v).toString(16).padStart(16,"0")}`;
+  }
   if(r.error) out.error=String(r.error.message??r.error);
   if(r.rip!==undefined) out.rip=`0x${r.rip.toString(16)}`;
   return out;
