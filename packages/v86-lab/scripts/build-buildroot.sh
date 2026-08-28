@@ -85,6 +85,10 @@ BR2_ROOTFS_OVERLAY="/work/overlay"
 BR2_TARGET_GENERIC_GETTY=y
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
+# Autologin root so the browser console is immediately usable (no `root` prompt).
+# The session's waitForShell also handles the classic login prompt, so this is
+# an optimization — labs still work if the option is dropped by olddefconfig.
+BR2_TARGET_GENERIC_GETTY_AUTOLOGIN="root"
 BR2_PACKAGE_BUSYBOX=y
 BR2_PACKAGE_GDB=y
 BR2_PACKAGE_GDB_SERVER=y
