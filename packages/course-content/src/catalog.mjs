@@ -19,6 +19,9 @@
  *     0xfffff8055a701400, canary page 0xfffff8055a702000   (KFWARZ_* in
  *     apps/web/src/scenarios.js)
  *   - pool-corrupt world: second KfPb block at 0xfffff90000001200 (m4.l1.f1)
+ *   - anti-trace world: kftrace!TraceVeh at 0xfffff8055a800000+0x1400
+ *     => answer 0xfffff8055a801400; traced !selftest swallows exactly 4
+ *     EXCEPTION_SINGLE_STEP events before TraceVeh sees one    (m29.l1.f1/f2)
  * Userland worlds (packages/sogen-runtime reference backend):
  *   - sauer-recon: sauerbraten.exe base 0x00400000, entity array at
  *     0x02100040, local player index 3 => VA 0x021000d0, health +0x24
@@ -77,6 +80,7 @@ import m26l3Body from "./lessons/m26-l3.mjs";
 import m27l1Body from "./lessons/m27-l1.mjs";
 import m27l2Body from "./lessons/m27-l2.mjs";
 import m28l1Body from "./lessons/m28-l1.mjs";
+import m29l1Body from "./lessons/m29-l1.mjs";
 
 const F = {
   // m1.l0 primer lab: reading-comprehension + live cross-checks in the debugger
@@ -253,6 +257,11 @@ const F = {
   m19l1f1: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // recovered function count
   m19l1f2: "2ba183e0287b7805bdad4926afa8481094ad547d173e20abbc34e8fd7af9d463", // callback VA
   m19l1f3: "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b", // CreationStatus offset (decimal)
+
+  // --- anti-trace (window-kernel track, trap-flag tripwires) ---
+  m29l1f1: "7e42f0651ea88cf8aef7cfcc06130640bd22f4510142ec56ec163cbbaf1f0896", // kftrace!TraceVeh VA
+  m29l1f2: "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a", // swallowed INT1 count (4)
+  m29l1f3: "9c852c785adf33aa647e451ae74e177c62eb37c4637b1a97949a7aa06ae059e7", // kf-trace-bypass-ok
 };
 
 // Starter source for m3.l1.lab2. The student must discover the export
@@ -2878,7 +2887,67 @@ export const module28 = {
   ],
 };
 
+export const module29 = {
+  id: "m29",
+  title: "Tracing & Anti-Tracing",
+  track: "windows-kernel",
+  summary:
+    "The trap flag as both scalpel and tripwire: hardware single-stepping, " +
+    "pushfq/popfq detection, TF injection into vectored handlers, and the " +
+    "mov-ss stall that keeps snapshots honest.",
+  lessons: [
+    {
+      id: "m29.l1",
+      title: "Tracing & anti-tracing",
+      body: m29l1Body,
+      requires: ["m28.l1"],
+      labs: [
+        {
+          id: "m29.l1.lab1",
+          kind: "windbg",
+          title: "Walk the trap-flag gauntlet",
+          brief:
+            "kftrace.sys guards a payload secret behind CPU-level tripwires. " +
+            "Map them, validate every check under a simulated tracer, then " +
+            "neutralize the gate and take the secret.",
+          scenario: "anti-trace",
+          flags: [
+            {
+              id: "m29.l1.f1",
+              sha256: F.m29l1f1,
+              prompt:
+                "!traceinfo shows kftrace's registered vectored exception " +
+                "handler (kftrace!TraceVeh). Submit its address as full " +
+                "16-digit hex with 0x prefix.",
+              points: 100,
+            },
+            {
+              id: "m29.l1.f2",
+              sha256: F.m29l1f2,
+              prompt:
+                "Attach the simulated tracer (!trace on) and run !selftest " +
+                "exactly once. Every EXCEPTION_SINGLE_STEP the driver raises " +
+                "is intercepted before TraceVeh sees one. Submit how many " +
+                "events were swallowed by the tracer (decimal number).",
+              points: 150,
+            },
+            {
+              id: "m29.l1.f3",
+              sha256: F.m29l1f3,
+              prompt:
+                "Detach (!trace off), clear g_AntiTraceEnabled with eb at the " +
+                "address from !traceinfo, rerun !selftest until the verdict " +
+                "is CLEAN and the secret DbgPrints. Submit it exactly.",
+              points: 200,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const catalog = {
   version: 6,
-  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module25, module26, module27, module28],
+  modules: [module1, module2, module3, module4, module5, module6, module7, module8, module9, module10, module11, module12, module13, module14, module15, module16, module17, module18, module19, module20, module21, module22, module23, module24, module25, module26, module27, module28, module29],
 };

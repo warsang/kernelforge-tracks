@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { catalog } from "../src/index.mjs";
 import { checkFlag, emptyProgress, submitFlagForProgress } from "@kernelforge/lab-runtime";
 
-test("catalog v6 has twenty-eight modules / forty-four lessons / one-hundred-thirty-nine flags", () => {
+test("catalog v6 has twenty-nine modules / forty-five lessons / one-hundred-forty-two flags", () => {
   assert.equal(catalog.version, 6);
-  assert.equal(catalog.modules.length, 28);
+  assert.equal(catalog.modules.length, 29);
   const lessons = catalog.modules.flatMap((m) => m.lessons);
-  assert.equal(lessons.length, 44);
+  assert.equal(lessons.length, 45);
   const flags = lessons.flatMap((l) => l.labs.flatMap((lab) => lab.flags));
-  assert.equal(flags.length, 139);
+  assert.equal(flags.length, 142);
 });
 
 test("tracks span kernel, userland and linux", () => {
@@ -20,7 +20,7 @@ test("tracks span kernel, userland and linux", () => {
   }
 });
 
-test("lesson chain is linear m1.l0 -> m19.l1", () => {
+test("lesson chain is linear m1.l0 -> m29.l1", () => {
   const lessons = catalog.modules.flatMap((m) => m.lessons);
   for (const l of lessons) {
     if (l.id === "m1.l0") { assert.deepEqual(l.requires, []); continue; }
@@ -192,6 +192,10 @@ test("answer hashes verify against expected plaintexts", async () => {
     // m28 VM-exit MSR interception
     "m28.l1.f1": "0xc0000082",
     "m28.l1.f2": "kf-vmexit-detected",
+    // m29 tracing & anti-tracing (trap-flag tripwires)
+    "m29.l1.f1": "0xfffff8055a801400",
+    "m29.l1.f2": "4",
+    "m29.l1.f3": "kf-trace-bypass-ok",
   };
   const all = catalog.modules
     .flatMap((m) => m.lessons)

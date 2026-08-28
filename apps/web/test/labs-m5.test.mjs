@@ -145,7 +145,7 @@ test("bypass flow: eb-clearing the gate releases the secret when clean", async (
   const { catalog } = await import("@kernelforge/course-content");
   const { checkFlag } = await import("@kernelforge/lab-runtime");
   const lab = catalog.modules.flatMap((m) => m.lessons)
-    .flatMap((l) => l.labs).find((x) => x.id === "m5.l1.lab1");
+    .flatMap((l) => l.labs).find((x) => x.id === "m29.l1.lab1");
   assert.equal(await checkFlag("0xfffff8055a801400", lab.flags[0]), true);
   assert.equal(await checkFlag("4", lab.flags[1]), true);
   assert.equal(await checkFlag("kf-trace-bypass-ok", lab.flags[2]), true);

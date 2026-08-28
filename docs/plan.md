@@ -96,7 +96,7 @@ guard with `eb`, verifies, and captures the checksum secret.
 
 Answers: corrupted block user VA (0x…), heal secret string.
 
-## Module 5 — Tracing & Anti-Tracing (scenario `anti-trace`)
+## Module 29 — Tracing & Anti-Tracing (scenario `anti-trace`)
 
 Infra (ntsim):
 - CPU: RFLAGS.TF (bit 8) modeled; `PUSHFQ`/`POPFQ` (0x9C/0x9D) compose and
@@ -126,7 +126,7 @@ Answers: TraceVeh VA (0x…), swallowed-event count (decimal), bypass secret.
 
 ## Integration checklist
 
-- `catalog.version = 2`; lesson chain `m1.l3 -> m2.l1 -> m3.l1 -> m4.l1 -> m5.l1`.
+- `catalog.version = 6`; lesson chain `m1.l0 -> m29.l1` (linear through 45 lessons; anti-trace is the current tail).
 - Lesson bodies ship as markdown-in-JS under `packages/course-content/src/lessons/`
   rendered client-side via `marked`.
 - e2e extended: every new lab boots headless and accepts its answers.

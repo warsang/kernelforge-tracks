@@ -388,7 +388,7 @@ False disassembly with polymorphic junk bytes, M4rx's custom VM ISA and its
 RE, code virtualization survey, XLAT table decoding, stateless control flow,
 Brainfuck-compiled ROP chains and a metamorphic virus in 440 bytes.
 
-**Module 5 — Tracing & Anti-Tracing** (`anti-trace`)
+**Module 29 — Tracing & Anti-Tracing** (`anti-trace`)
 `kftrace.sys` arms CPU trap-flag tripwires: passive TF reads
 (`pushfq`/`test 100h`), TF injection into a vectored handler, and the
 mov-ss stall. Map them (`!traceinfo`), attach a simulated tracer and watch

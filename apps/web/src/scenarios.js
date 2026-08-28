@@ -1470,6 +1470,77 @@ scenarios["pool-corrupt"] = {
 };
 
 /**
+ * Anti-tracing lab world: same base world plus kftrace.sys — a protection
+ * driver that self-checks for single-step tracers on the emulated CPU:
+ *   Variant A  pushfq/pop/test 100h          (trap-flag read)
+ *   Variant B  pushfq/or [rsp],100h/popfq    (TF injection -> INT1 -> VEH)
+ *   Advanced   mov ss stall before pushfq    (unmasked TF snapshot)
+ * An attached simulated tracer intercepts EXCEPTION_SINGLE_STEP before the
+ * driver's vectored handler, starving it — exactly how real anti-trace
+ * detects analysis. Student maps the tripwire (!traceinfo), validates it
+ * under tracer (!trace on / !selftest), then neutralizes the gate (eb).
+ */
+function setupAntiTrace(kernel) {
+  const mem = kernel.mem;
+  const KFTRACE_BASE = 0xfffff8055a800000n;
+  const VEH_ADDR = KFTRACE_BASE + 0x1400n;   // modeled kftrace!TraceVeh VA
+  const GATE_ADDR = KFTRACE_BASE + 0x2000n;  // g_AntiTraceEnabled (u8)
+  const SELFTEST_CODE = KFTRACE_BASE + 0x3000n; // guest check sequences page
+  const SELFTEST_OUT = KFTRACE_BASE + 0x3e00n;  // u64 results slot
+
+  // protection armed out of the box: secret withheld until operator proves control
+  mem.w8(GATE_ADDR, 1);
+
+  // searchable evidence describing each variant (s -a <base> <len> "...")
+  mem.writeAnsi(KFTRACE_BASE + 0x4000n,
+    "kftrace: variant A reads tf via pushfq/pop rax/test 100h");
+  mem.writeAnsi(KFTRACE_BASE + 0x4200n,
+    "kftrace: variant B injects tf then relies on TraceVeh catching int1");
+  mem.writeAnsi(KFTRACE_BASE + 0x4400n,
+    "kftrace: mov ss stall hides tf from the debugger across pushfq");
+
+  kernel.tracer = { attached: false };
+
+  kernel.registerVectoredHandler("kftrace!TraceVeh", ({ code, rip }) => {
+    kernel.dbgLog.push(
+      `kftrace: TraceVeh caught ${code} @ 0x${rip.toString(16)} — continuing cleanly`);
+    return true;
+  });
+
+  kernel.antiTrace = {
+    base: KFTRACE_BASE,
+    vehAddr: VEH_ADDR,
+    gateAddr: GATE_ADDR,
+    selftestCode: SELFTEST_CODE,
+    selftestOut: SELFTEST_OUT,
+    enabled: () => mem.u8(GATE_ADDR) === 1,
+    runs: 0,
+    lastVerdict: null,
+  };
+
+  kernel.loadedModules.push({
+    base: KFTRACE_BASE, sizeOfImage: 0x8000, name: "kftrace.sys",
+    full: "\\SystemRoot\\system32\\drivers\\kftrace.sys", lab: true,
+  });
+  kernel.materializeModuleRange(KFTRACE_BASE, 0x8000);
+}
+
+scenarios["anti-trace"] = {
+  title: "anti-trace — trap-flag tripwire forensics",
+  description:
+    "Boots the 22H2 world with kftrace.sys loaded. The driver arms CPU " +
+    "trap-flag tripwires (pushfq/popfq, TF injection into a vectored " +
+    "handler, mov-ss stall). Map them with !traceinfo, validate under a " +
+    "simulated tracer (!trace on, !selftest), then bypass the gate.",
+  boot: async (io) => {
+    const session = await bootDefault(io);
+    setupAntiTrace(session.kernel);
+    session.kind = "anti-trace";
+    return session;
+  },
+};
+
+/**
  * Sentinel v1 world (m1.l4 defense lab): the synthetic 22H2 world AFTER two
  * of module-1's attacks landed:
  *   1. kftarget.exe is DKOM-unlinked from ActiveProcessLinks — but its
