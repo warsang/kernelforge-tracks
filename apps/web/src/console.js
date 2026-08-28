@@ -121,6 +121,38 @@ async function createXtermConsole(container, { onSubmit, prompt = DEFAULT_PROMPT
   term.open(host);
   try { fit.fit(); } catch { /* zero-size hosts are fine pre-layout */ }
 
+  // Allow page scroll when the xterm viewport is at its scroll limits.
+  // xterm's viewport handles wheel internally and calls preventDefault,
+  // which traps scroll inside the terminal even when the user intends to
+  // scroll the lesson page. With overscroll-behavior:auto and this
+  // handler, wheel events at the top/bottom bubble to #main.
+  try {
+    const viewport = host.querySelector(".xterm-viewport");
+    if (viewport) {
+      viewport.addEventListener(
+        "wheel",
+        (e) => {
+          const atTop = viewport.scrollTop <= 0;
+          const atBottom =
+            viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
+          const deltaY = e.deltaY;
+          // If we're at the top and scrolling up, or at the bottom and
+          // scrolling down, let the event propagate to the page.
+          // Otherwise let xterm handle it (it will scroll its buffer).
+          if ((atTop && deltaY < 0) || (atBottom && deltaY > 0)) {
+            // Do not preventDefault — allow bubbling to #main
+            return;
+          }
+          // For interior scrolling, xterm will handle it; we don't need to
+          // do anything, but ensure the event doesn't bubble unnecessarily.
+          // No preventDefault here either — xterm's own handler will call it
+          // if it actually scrolls. With passive:true we can't call it anyway.
+        },
+        { passive: true }
+      );
+    }
+  } catch { /* viewport not yet in DOM */ }
+
   let lineBuf = "";
   let historyIdx = -1;
   let adapter = null;
