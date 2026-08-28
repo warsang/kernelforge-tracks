@@ -109,7 +109,29 @@ export async function bootLinuxSession({ worldId, image, rootfs, snapshot, v86 }
     serial.push(new Uint8Array([byte]));
   });
 
-  return new V86LabSession(emulator, serial, worldId);
+  const session = new V86LabSession(emulator, serial, worldId);
+
+  // If this is a real boot (not a mock injected by tests), wait for the
+  // guest shell to be ready. Buildroot's getty on ttyS0 prints
+  // "buildroot login:" and expects "root" (no password); the overlay's
+  // S99kflag also prints "guest ready ~#" once lab-init finishes. We
+  // handle both so the prompt the student sees is immediately usable and
+  // `gdb start` probes are not lost to a login prompt.
+  // Tests that inject `v86: null` or a mock bundle skip this (they use a
+  // fake image and never produce real serial output).
+  const isRealBoot = bundle && image && typeof image.byteLength === "number" && image.byteLength > 1024;
+  if (isRealBoot) {
+    try {
+      await session.waitForShell({ timeoutMs: 120_000 });
+    } catch (e) {
+      // Non-fatal: boot still succeeded, but shell may not be ready yet.
+      // The web console will still tail serial output; commands may need a
+      // manual `root` login. Log for debugging but don't throw.
+      console.warn("[v86] waitForShell timeout:", e.message);
+    }
+  }
+
+  return session;
 }
 
 export class V86LabSession {
@@ -117,6 +139,88 @@ export class V86LabSession {
     this.emulator = emulator;
     this.serial = serial;
     this.worldId = worldId;
+  }
+
+  /**
+   * Wait until the guest shell is interactive.
+   * Handles the buildroot `buildroot login:` prompt by auto-sending `root`
+   * (no password) and then waits for a shell prompt (`#` or `guest ready`).
+   * The overlay's S99kflag prints `guest ready ~#` once decoys and villains
+   * are done; a real root shell's PS1 is `~ #` or `# `.
+   */
+  async waitForShell({ timeoutMs = 120_000 } = {}) {
+    const start = Date.now();
+    let loginSent = false;
+    let lastLoginCheck = 0;
+
+    const isShellPromptLine = (line) => {
+      const t = line.replace(/\r/g, "").trim();
+      if (!t) return false;
+      // Lab marker is not a shell prompt — it just signals lab-init done
+      if (t.includes("guest ready")) return false;
+      // Real shell: `~ #`, `/ #`, `#`, `buildroot:~#`
+      if (t === "#" || t.endsWith("#") || /[~\/] #$/.test(t) || t === "~ #" || t.endsWith(" #")) return true;
+      // Also handle `~ #` without newline yet (buffer)
+      return false;
+    };
+    const hasShellPrompt = (raw) => {
+      const tail = raw.slice(-4096);
+      const lines = tail.split("\n");
+      // Check last 8 lines for a prompt
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 8); i--) {
+        if (isShellPromptLine(lines[i])) return true;
+      }
+      // Fallback: check for prompt without newline at end (partial buffer)
+      const last = lines[lines.length - 1]?.replace(/\r/g, "").trim() ?? "";
+      if (last.endsWith("#") || last.includes("~ #")) return true;
+      return false;
+    };
+
+    // Phase 1: wait for lab-init to finish (guest ready). This is the signal
+    // that the kernel, S99kflag overlay, and kfvillain have all loaded. We
+    // must not return before this, otherwise probes race the boot.
+    while (Date.now() - start < timeoutMs) {
+      const raw = this.serial.text + "\n" + this.serial.buffer;
+      if (raw.includes("guest ready")) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    // Phase 2: wait for login prompt and auto-login. Some builds autologin
+    // via inittab (`getty -a root` or `login -f root`), so login may never
+    // appear — that's fine, we just proceed to prompt wait.
+    const loginDeadline = Date.now() + 8000;
+    while (Date.now() < loginDeadline && Date.now() - start < timeoutMs) {
+      const raw = this.serial.text + "\n" + this.serial.buffer;
+      const lower = raw.toLowerCase();
+      if (lower.includes("login:")) {
+        if (Date.now() - lastLoginCheck > 800) {
+          lastLoginCheck = Date.now();
+          if (!loginSent) {
+            await this.sendLine("root");
+            loginSent = true;
+            await new Promise((r) => setTimeout(r, 1200));
+            break;
+          }
+        }
+      }
+      // If we already have a shell prompt, no need to login
+      if (hasShellPrompt(raw)) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    // Phase 3: wait for an actual shell prompt (`#`). This is the only
+    // reliable signal that `sh` is ready to accept `echo probe` etc.
+    while (Date.now() - start < timeoutMs) {
+      const raw = this.serial.text + "\n" + this.serial.buffer;
+      if (hasShellPrompt(raw)) {
+        await new Promise((r) => setTimeout(r, 500));
+        // Re-check stability
+        const raw2 = this.serial.text + "\n" + this.serial.buffer;
+        if (hasShellPrompt(raw2)) return;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    throw new Error("timeout waiting for guest shell prompt (#)");
   }
 
   /** Push a file into the guest (used for staged modules). */
@@ -159,7 +263,7 @@ export class V86LabSession {
   /** Type a command into the guest console (shell over ttyS0). */
   async sendLine(line) {
     for (const ch of line + "\n") {
-      this.emulator.serial0_send(ch.charCodeAt(0));
+      this.emulator.serial0_send(ch);
       // Yield per-char so the 16550 16-byte FIFO doesn't overflow on long lines
       // (e.g. `which gdbserver ...` or heredoc delimiters). 2ms is enough for
       // v86 to drain the FIFO at 115200 baud in the browser event loop.
