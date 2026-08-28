@@ -130,7 +130,7 @@ test("hook suppresses hidden PID only; eb repair restores lookup", async () => {
 test("pool-corrupt world has three KfPb blocks, one smashed guard", async () => {
   const { kernel, kind } = await boot("pool-corrupt");
   assert.equal(kind, "pool-corrupt");
-  assert.equal(kernel.poolAllocs.length, 3);
+  assert.equal(kernel.poolAllocs.filter((a) => a.tag === "KfPb").length, 3);
   assert.equal(kernel.verifyGuards().length, 1);
   assert.equal(kernel.verifyGuards()[0].addr, 0xfffff90000001200n);
 

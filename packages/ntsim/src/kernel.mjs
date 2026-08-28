@@ -377,9 +377,9 @@ export class NtKernel {
           try { this.mem.w64(eproc + BigInt(tokenOff), tokenVa & ~0xfn); } catch {}
         }
         this.systemTokenVa = tokenVa;
-        this.dbgLog.push(`[kdemu] System token @ 0x${tokenVa.toString(16)} (S-1-5-18) for ${systemEproc.toString(16)}`);
+        this.emitTrace({ kind: "kdemu", text: `System token @ 0x${tokenVa.toString(16)} (S-1-5-18) for ${systemEproc.toString(16)}` });
       }
-    } catch (e) { this.dbgLog.push(`[kdemu] token wiring failed: ${e.message}`); }
+    } catch (e) { this.emitTrace({ kind: "kdemu", text: `token wiring failed: ${e.message}` }); }
 
     // scenario modules visible via `lm` — kfbootkit.sys is the L1 flag target
     this.loadedDrivers.push(
@@ -1204,10 +1204,10 @@ export class NtKernel {
         this.mem.w64(entryVa + 8n, 0x1fffffn); // GrantedAccess
       }
       // Also ensure System entry at idx 1 (pid 4 -> handle 0x10 -> idx 4) is present
-      this.dbgLog.push(`[kdemu] PspCidTable HANDLE_TABLE @ 0x${htVa.toString(16)} TableCode 0x${entriesVa.toString(16)} entries for ${seen.size} processes`);
+      this.emitTrace({ kind: "kdemu", text: `PspCidTable HANDLE_TABLE @ 0x${htVa.toString(16)} TableCode 0x${entriesVa.toString(16)} entries for ${seen.size} processes` });
       return htVa;
     } catch (e) {
-      this.dbgLog.push(`[kdemu] PspCidTable creation failed: ${e.message}`);
+      this.emitTrace({ kind: "kdemu", text: `PspCidTable creation failed: ${e.message}` });
       const fallback = this.allocPool(0x40, "HndT");
       this.mem.w64(fallback, 0n);
       return fallback;
