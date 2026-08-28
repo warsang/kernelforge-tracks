@@ -143,23 +143,27 @@ export class V86LabSession {
     const delim = "__KF_EOF_" + Math.random().toString(36).slice(2, 8) + "__";
     // Ensure parent dir exists (guest overlay already does, but be safe)
     const dir = normalized.split("/").slice(0, -1).join("/") || "/";
-    this.sendLine(`mkdir -p ${dir}`);
-    this.sendLine(`cat > ${normalized} <<'${delim}'`);
+    await this.sendLine(`mkdir -p ${dir}`);
+    await this.sendLine(`cat > ${normalized} <<'${delim}'`);
     // Stream the file line-by-line over the emulated UART.
     // Throttle to ~64 chars per tick so the guest's 16550 FIFO does not drop.
     for (const line of text.split("\n")) {
-      this.sendLine(line);
+      await this.sendLine(line);
     }
-    this.sendLine(delim);
+    await this.sendLine(delim);
     // Brief yield so the guest shell can flush the heredoc before the next
     // command (caller immediately sends guestBuildSequence).
     await new Promise((r) => setTimeout(r, 120));
   }
 
   /** Type a command into the guest console (shell over ttyS0). */
-  sendLine(line) {
+  async sendLine(line) {
     for (const ch of line + "\n") {
       this.emulator.serial0_send(ch.charCodeAt(0));
+      // Yield per-char so the 16550 16-byte FIFO doesn't overflow on long lines
+      // (e.g. `which gdbserver ...` or heredoc delimiters). 2ms is enough for
+      // v86 to drain the FIFO at 115200 baud in the browser event loop.
+      await new Promise((r) => setTimeout(r, 2));
     }
   }
 
