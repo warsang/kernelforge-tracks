@@ -27,6 +27,7 @@
   "dependencies": {
     "@kernelforge/compiler-worker": "^0.1.0",
     "@kernelforge/ntsim": "^0.1.0",
+    "@kernelforge/ntsim-assets": "^0.1.0",
     "z3-solver": "^5.2.0"
   },
   "license": "MIT",
