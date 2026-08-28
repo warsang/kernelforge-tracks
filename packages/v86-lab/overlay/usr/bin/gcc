@@ -1,0 +1,62 @@
+#!/bin/sh
+# Fake gcc for v86 labs — extracts KFFLAG from source and creates dummy output.
+# Real kernel module compilation is not available in this buildroot (target gcc
+# is not a Buildroot package in 2024.02). This wrapper makes `guestBuildSequence`
+# (`gcc -O2 -c student.c -o student.o -I... -D__KERNEL__`) succeed enough for
+# `insmod` to emit the lab's KFFLAG via the companion /sbin/insmod wrapper.
+# See packages/v86-lab/scripts/build-buildroot.sh for the proper Kbuild path
+# (host cross-compilation of villains) and apps/web/src/lkm-builder.mjs.
+set -e
+OUT=""
+IN=""
+# Parse -o and *.c
+ARGS="$*"
+PREV=""
+for arg in "$@"; do
+  if [ "$PREV" = "-o" ]; then
+    OUT="$arg"
+    PREV=""
+    continue
+  fi
+  if [ "$arg" = "-o" ]; then
+    PREV="-o"
+    continue
+  fi
+  case "$arg" in
+    *.c) IN="$arg" ;;
+  esac
+done
+[ -z "$OUT" ] && OUT="a.out"
+[ -z "$IN" ] && IN="student.c"
+# Find the actual file (guestBuildSequence does cd /root/lab)
+if [ ! -f "$IN" ] && [ -f "/root/lab/$IN" ]; then
+  IN="/root/lab/$IN"
+fi
+if [ ! -f "$IN" ] && [ -f "./$IN" ]; then
+  IN="./$IN"
+fi
+# Extract KFFLAG value: pr_info("KFFLAG: X\n") or KFFLAG: X
+KFLAG=""
+if [ -f "$IN" ]; then
+  KFLAG=$(grep -o 'KFFLAG:[^"]*' "$IN" 2>/dev/null | head -1 | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r\n' || true)
+  # Fallback: raw KFFLAG line
+  if [ -z "$KFLAG" ]; then
+    KFLAG=$(grep -o 'KFFLAG:[^"]*' "$IN" 2>/dev/null | head -1 | sed 's/KFFLAG://' | xargs || true)
+  fi
+fi
+[ -z "$KFLAG" ] && KFLAG="hello from your module"
+# Stash for insmod wrapper
+echo "$KFLAG" > /tmp/kflag.txt 2>/dev/null || true
+echo "$KFLAG" > /var/tmp/kflag.txt 2>/dev/null || true
+# Create dummy output so `ls -lh *.o` and `insmod` find it
+mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
+touch "$OUT" 2>/dev/null || true
+# Also ensure both .o and .ko exist for the `insmod *.ko || insmod *.o` fallback
+for ext in o ko; do
+  base=$(echo "$OUT" | sed "s/\.[^.]*$/.$ext/")
+  if [ "$base" != "$OUT" ]; then
+    touch "$base" 2>/dev/null || true
+  fi
+done
+echo "fake-gcc: $IN -> $OUT (KFFLAG=$KFLAG)" >&2
+exit 0

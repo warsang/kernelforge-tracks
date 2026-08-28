@@ -30,7 +30,7 @@ async function main() {
     bios: { buffer: (await readFile(path.join(pkg, "vendor/seabios.bin"))).buffer },
     vga_bios: { buffer: (await readFile(path.join(pkg, "vendor/vgabios.bin"))).buffer },
     bzimage: { buffer: bzImage.buffer.slice(bzImage.byteOffset, bzImage.byteOffset + bzImage.byteLength) },
-    cmdline: "console=ttyS0 tsc=reliable",
+    cmdline: "console=ttyS0 tsc=reliable noapic root=/dev/ram0 rw init=/sbin/init",
     uart1: true,
     autostart: true,
     wasm_path: path.join(pkg, "vendor/v86.wasm"),

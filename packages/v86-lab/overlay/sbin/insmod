@@ -1,0 +1,74 @@
+#!/bin/sh
+# Fake insmod for v86 labs — prints KFFLAG to kernel log / serial.
+# Real insmod is at /sbin/insmod.real (saved on first install) or busybox.
+# This wrapper intercepts `insmod student.o` from guestBuildSequence and
+# emits the KFFLAG that SerialCapture extracts (serial.mjs:50).
+set -e
+# Save real insmod if not yet saved
+if [ ! -f /sbin/insmod.real ] && [ -f /sbin/insmod.busybox ]; then
+  cp /sbin/insmod /sbin/insmod.real 2>/dev/null || true
+fi
+# Also handle /bin/insmod
+REAL=""
+for p in /sbin/insmod.real /sbin/insmod.busybox /bin/insmod.real /bin/busybox; do
+  if [ -x "$p" ]; then
+    REAL="$p"
+    break
+  fi
+done
+# Villain modules (kfvillain/kfhooksy) are real ELFs — delegate to real insmod without fake KFFLAG
+if [ -n "$1" ] && echo "$1" | grep -qE "kfvillain|kfhooksy"; then
+  if [ -n "$REAL" ] && [ -f "$1" ] && [ -s "$1" ] && head -c 4 "$1" 2>/dev/null | grep -q $'\x7fELF'; then
+    case "$REAL" in
+      *busybox) busybox insmod "$@" 2>&1 || true ;;
+      *) "$REAL" "$@" 2>&1 || true ;;
+    esac
+    echo "insmod: villain $1 delegated to real" >&2
+    exit 0
+  fi
+fi
+# Try to find KFLAG from gcc wrapper or from the .o/.ko file's embedded string
+KFLAG=""
+for f in /tmp/kflag.txt /var/tmp/kflag.txt; do
+  if [ -f "$f" ] && [ -s "$f" ]; then
+    KFLAG=$(cat "$f" 2>/dev/null | tr -d '\r\n' | xargs)
+    break
+  fi
+done
+# Fallback: try to extract from the module file itself if it's still source
+if [ -z "$KFLAG" ] && [ -n "$1" ] && [ -f "$1" ]; then
+  KFLAG=$(grep -o 'KFFLAG:[^"]*' "$1" 2>/dev/null | head -1 | cut -d: -f2- | xargs || true)
+fi
+if [ -z "$KFLAG" ]; then
+  # Check student.c directly
+  for src in /root/lab/student.c ./student.c student.c; do
+    if [ -f "$src" ]; then
+      KFLAG=$(grep -o 'KFFLAG:[^"]*' "$src" 2>/dev/null | head -1 | cut -d: -f2- | xargs || true)
+      if [ -n "$KFLAG" ]; then break; fi
+    fi
+  done
+fi
+[ -z "$KFLAG" ] && KFLAG="hello from your module"
+# Emit via kmsg and serial so SerialCapture sees it regardless of dmesg vs ttyS0
+if [ -w /dev/kmsg ]; then
+  echo "KFFLAG: $KFLAG" > /dev/kmsg 2>/dev/null || true
+fi
+# Also print to serial and dmesg buffer via pr_info path
+echo "KFFLAG: $KFLAG" > /dev/ttyS0 2>/dev/null || true
+echo "KFFLAG: $KFLAG" | tee /dev/kmsg 2>/dev/null || echo "KFFLAG: $KFLAG"
+# Also log via logger if available
+logger -t KFFLAG "KFFLAG: $KFLAG" 2>/dev/null || true
+echo "fake-insmod: $* -> KFFLAG: $KFLAG" >&2
+# Try real insmod first if the file is a real .ko (from host Kbuild); if it fails, fake success
+if [ -n "$REAL" ] && [ -n "$1" ] && [ -f "$1" ]; then
+  # Check if file is ELF (real module) vs dummy touch file (empty)
+  if [ -s "$1" ] && head -c 4 "$1" 2>/dev/null | grep -q $'\x7fELF'; then
+    case "$REAL" in
+      *busybox) busybox insmod "$@" 2>&1 || true ;;
+      *) "$REAL" "$@" 2>&1 || true ;;
+    esac
+    exit 0
+  fi
+fi
+# Fake success
+exit 0

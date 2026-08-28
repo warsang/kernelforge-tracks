@@ -2,6 +2,10 @@
 # Serial console + instrumentation primitives + deterministic addresses.
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_SERIAL_8250_MANY_PORTS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
 
 # lab primitives
 CONFIG_KPROBES=y
@@ -20,6 +24,9 @@ CONFIG_MODULE_SIG=n
 CONFIG_DEBUG_INFO=n
 
 # v86 hardware: PIIX3 IDE controller (no IO-APIC, no SMP)
+# Explicitly disable APIC/MPPARSE — v86 provides a dummy MP table at 0xf8bf0
+# that the generic i386 defconfig tries to parse via setup_IO_APIC and
+# panics with NULL dereference (see headless boot log: EIP setup_IO_APIC+0x29b).
 CONFIG_PCI=y
 CONFIG_ATA=y
 CONFIG_ATA_PIIX=y
@@ -27,3 +34,9 @@ CONFIG_ATA_GENERIC=y
 CONFIG_SCSI=y
 CONFIG_BLK_DEV_SD=y
 CONFIG_SMP=n
+CONFIG_NR_CPUS=1
+CONFIG_X86_UP_APIC=n
+CONFIG_X86_UP_IOAPIC=n
+CONFIG_X86_LOCAL_APIC=n
+CONFIG_X86_IO_APIC=n
+CONFIG_X86_MPPARSE=n
