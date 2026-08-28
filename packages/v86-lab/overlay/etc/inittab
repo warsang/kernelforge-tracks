@@ -1,10 +1,3 @@
-# /etc/inittab — buildroot guest with autologin for v86 labs
-# Keep the default buildroot sysinit but make ttyS0 autologin root so the
-# browser's `guest>` console is immediately usable without typing `root`.
-# The linux track's automation (save-boot-state, headless tests, web's
-# waitForShell) also handles the classic `buildroot login:` prompt, so this
-# is an optimization, not a requirement — labs work either way.
-
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -o remount,rw /
 ::sysinit:/bin/mkdir -p /dev/pts /dev/shm
@@ -17,14 +10,7 @@ null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
 null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 ::sysinit:/bin/hostname -F /etc/hostname
 ::sysinit:/etc/init.d/rcS
-
-# Autologin root on the serial console — no password prompt.
-ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100 -n -l /bin/sh
-# Fallback: if getty -n -l is not supported by this busybox, use login -f
-#ttyS0::respawn:/bin/login -f root
-# Legacy getty without autologin (uncomment to restore classic behavior):
-#ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
-
+ttyS0::askfirst:/bin/sh
 ::shutdown:/etc/init.d/rcK
 ::shutdown:/sbin/swapoff -a
 ::shutdown:/bin/umount -a -r

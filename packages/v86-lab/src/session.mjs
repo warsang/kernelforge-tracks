@@ -185,10 +185,13 @@ export class V86LabSession {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    // Phase 2: wait for login prompt and auto-login. Some builds autologin
-    // via inittab (`getty -a root` or `login -f root`), so login may never
-    // appear — that's fine, we just proceed to prompt wait.
-    const loginDeadline = Date.now() + 8000;
+    // Phase 2: wait for login / askfirst prompt and auto-login. Some builds
+    // autologin via inittab (`getty -a root` or `login -f root` or
+    // `askfirst:/bin/sh`), so login may never appear — that's fine, we just
+    // proceed to prompt wait. `askfirst` prints `Please press Enter to
+    // activate this console` and waits for a newline.
+    const loginDeadline = Date.now() + 10000;
+    let askFirstSent = false;
     while (Date.now() < loginDeadline && Date.now() - start < timeoutMs) {
       const raw = this.serial.text + "\n" + this.serial.buffer;
       const lower = raw.toLowerCase();
@@ -202,6 +205,13 @@ export class V86LabSession {
             break;
           }
         }
+      }
+      if (!askFirstSent && (lower.includes("press enter") || lower.includes("activate this console"))) {
+        await this.sendLine("");
+        askFirstSent = true;
+        await new Promise((r) => setTimeout(r, 800));
+        // After pressing Enter, askfirst spawns sh, which will print its PS1
+        continue;
       }
       // If we already have a shell prompt, no need to login
       if (hasShellPrompt(raw)) break;
@@ -265,9 +275,11 @@ export class V86LabSession {
     for (const ch of line + "\n") {
       this.emulator.serial0_send(ch);
       // Yield per-char so the 16550 16-byte FIFO doesn't overflow on long lines
-      // (e.g. `which gdbserver ...` or heredoc delimiters). 2ms is enough for
-      // v86 to drain the FIFO at 115200 baud in the browser event loop.
-      await new Promise((r) => setTimeout(r, 2));
+      // (e.g. `which gdbserver ...` or heredoc delimiters). 20ms is safe for
+      // v86's 16550 16-byte FIFO at 115200 baud in the browser event loop
+      // and avoids the `ps` -> `p` / `echo` -> `oheoY` truncation seen with
+      // 2-10ms under load (the shell's line discipline is slow to drain).
+      await new Promise((r) => setTimeout(r, 20));
     }
   }
 
