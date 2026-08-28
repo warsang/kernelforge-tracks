@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kallsyms.h>
+#include <linux/kprobes.h>
 #include <linux/syscalls.h>
 
 static unsigned long **sys_call_table_p;
@@ -24,9 +25,28 @@ static asmlinkage long hooksy_kill(int pid, int sig, int unused)
     return real_kill(pid, sig, unused);
 }
 
+static unsigned long lookup_sys_call_table(void)
+{
+    /* kallsyms_lookup_name is not exported in 6.6+, so resolve via kprobe */
+    struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
+    unsigned long (*kallsyms_lookup_name_p)(const char *);
+    if (register_kprobe(&kp) < 0)
+        return 0;
+    kallsyms_lookup_name_p = (void *)kp.addr;
+    unregister_kprobe(&kp);
+    if (!kallsyms_lookup_name_p)
+        return 0;
+    return kallsyms_lookup_name_p("sys_call_table");
+}
+
 static int __init hooksy_init(void)
 {
-    sys_call_table_p = (unsigned long **)kallsyms_lookup_name("sys_call_table");
+    unsigned long addr = lookup_sys_call_table();
+    if (!addr) {
+        /* fallback to System.map literal for this build */
+        addr = 0xc1d7e1c0;
+    }
+    sys_call_table_p = (unsigned long **)addr;
     if (!sys_call_table_p)
         return -ENOENT;
 
@@ -42,7 +62,7 @@ static int __init hooksy_init(void)
         write_cr0(cr0);
     }
     hooked = 1;
-    pr_info("kfhooksy: sys_call_table[37] -> %px\n", hooksy_kill);
+    pr_info("kfhooksy: sys_call_table[37] -> %px (table %px)\n", hooksy_kill, sys_call_table_p);
     return 0;
 }
 

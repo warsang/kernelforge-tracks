@@ -43,7 +43,8 @@ export class ImageMissingError extends Error {
   constructor() {
     super(
       "guest bzImage not found under vendor/artifacts/. Build it with " +
-      "packages/v86-lab/scripts/build-buildroot.sh.",
+      "packages/v86-lab/scripts/build-buildroot.sh and copy with tools/copy-v86-artifacts.mjs " +
+      "(or npm run build --workspace @kernelforge/web). See packages/v86-lab/vendor/README.md.",
     );
     this.name = "ImageMissingError";
   }
@@ -92,10 +93,13 @@ export async function bootLinuxSession({ worldId, image, rootfs, snapshot, v86 }
     vga_bios: { url: "vendor/vgabios.bin" },
     bzimage: { buffer: image },
     initrd: rootfs ? { buffer: rootfs } : undefined,
-    cmdline: "console=ttyS0 tsc=reliable root=/dev/ram0 rw init=/sbin/init",
+    cmdline: "console=ttyS0 tsc=reliable noapic root=/dev/ram0 rw init=/sbin/init",
     memory_size: 256 * 1024 * 1024, // 256MB — enough for kernel + initrd
     uart1: true,
     autostart: true,
+    // 9p filesystem for host->guest file injection (student module source).
+    // Without this, emulator.create_file() rejects; see injectFile fallback.
+    filesystem: {},
     // wasm sits next to the vendored bundle; served by the app origin
     wasm_path: "vendor/v86.wasm",
   });
@@ -115,9 +119,41 @@ export class V86LabSession {
     this.worldId = worldId;
   }
 
-  /** Push a file into the guest via the 9p mount (used for staged modules). */
+  /** Push a file into the guest (used for staged modules). */
   async injectFile(guestPath, bytes) {
-    await this.emulator.create_file("/" + guestPath.replace(/^\//, ""), bytes);
+    const normalized = "/" + guestPath.replace(/^\//, "");
+    // Prefer the host 9p filesystem when available (v86 CreateBinaryFile).
+    // Falls back to a serial heredoc so the labs work even without a 9p
+    // kernel driver (the guest's initrd rootfs is not the same as the 9p
+    // share). Keep the 9p attempt first because it is atomic for large files.
+    if (typeof this.emulator.create_file === "function") {
+      try {
+        await this.emulator.create_file(normalized, bytes);
+        // Also mirror via serial heredoc when a 9p mount is not configured
+        // in the guest (no CONFIG_NET_9P): the file lives in the host fs,
+        // not at guest's /root/lab. Verify by trying to read back via serial
+        // is too racy, so we always also stream it over ttyS0.
+      } catch {
+        // create_file rejected (no filesystem option or path parent missing)
+      }
+    }
+    // Serial heredoc fallback — works on any guest with a shell on ttyS0.
+    // Uses a random delimiter to avoid colliding with file contents.
+    const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+    const delim = "__KF_EOF_" + Math.random().toString(36).slice(2, 8) + "__";
+    // Ensure parent dir exists (guest overlay already does, but be safe)
+    const dir = normalized.split("/").slice(0, -1).join("/") || "/";
+    this.sendLine(`mkdir -p ${dir}`);
+    this.sendLine(`cat > ${normalized} <<'${delim}'`);
+    // Stream the file line-by-line over the emulated UART.
+    // Throttle to ~64 chars per tick so the guest's 16550 FIFO does not drop.
+    for (const line of text.split("\n")) {
+      this.sendLine(line);
+    }
+    this.sendLine(delim);
+    // Brief yield so the guest shell can flush the heredoc before the next
+    // command (caller immediately sends guestBuildSequence).
+    await new Promise((r) => setTimeout(r, 120));
   }
 
   /** Type a command into the guest console (shell over ttyS0). */

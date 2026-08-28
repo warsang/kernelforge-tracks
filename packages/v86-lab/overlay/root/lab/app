@@ -1,0 +1,4 @@
+#!/bin/sh
+# placeholder GDB target — `gdb start /root/lab/app` demos the RSP bridge.
+# Real kernel labs compile inside the guest (`student.c` -> `student.ko`).
+while true; do sleep 3600; done

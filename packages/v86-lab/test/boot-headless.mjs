@@ -21,7 +21,7 @@ const emu = await new bundle.V86({
   vga_bios: { buffer: (await readFile(path.join(pkg, "vendor/vgabios.bin"))).buffer },
   bzimage: { buffer: bz.buffer.slice(bz.byteOffset, bz.byteOffset + bz.byteLength) },
   initrd: { buffer: initrd.buffer.slice(initrd.byteOffset, initrd.byteOffset + initrd.byteLength) },
-  cmdline: "console=ttyS0 tsc=reliable root=/dev/ram0 rw init=/sbin/init",
+  cmdline: "console=ttyS0 tsc=reliable noapic root=/dev/ram0 rw init=/sbin/init",
   memory_size: 256 * 1024 * 1024, // 256MB — enough for kernel + initrd
   uart1: true,
   autostart: true,

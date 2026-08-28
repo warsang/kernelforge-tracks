@@ -1,0 +1,24 @@
+#!/bin/sh
+# S99kflag — buildroot guest lab init (runs after S01logging etc.)
+# Spawns decoys, seeds /root/.kflag and /root/trigger, builds villain modules.
+# BUILDTIME seed values must mirror packages/v86-lab/src/seeds.mjs.
+
+case "$1" in
+  start)
+    echo "[S99kflag] starting lab init..."
+    # Run in background so boot isn't blocked if gcc is slow; but log to serial
+    # Use `sh` explicitly in case the file lacks +x in the cpio (busybox fakeroot)
+    sh /root/lab/lab-init.sh 2>&1 | tee -a /var/log/lab-init.log | tee /dev/ttyS0 2>/dev/null || true
+    ;;
+  stop)
+    ;;
+  restart|reload)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+exit 0
