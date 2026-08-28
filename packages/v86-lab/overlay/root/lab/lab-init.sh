@@ -72,3 +72,9 @@ fi
 # ensure serial console is ready; print boot marker for save-boot-state.mjs waiter
 echo "[lab-init] guest ready ~#"
 echo "guest ready ~#" > /dev/ttyS0 2>/dev/null || true
+
+# Spawn a shell on ttyS0 for the browser's guest console. The inittab's
+# getty/askfirst should already provide one, but as a fallback ensure that
+# even if getty fails, the serial is usable. Use login -f root for a proper
+# login shell with correct tty handling; fall back to plain sh.
+( /bin/login -f root < /dev/ttyS0 > /dev/ttyS0 2>&1 & ) 2>/dev/null || ( setsid sh -l < /dev/ttyS0 > /dev/ttyS0 2>&1 & ) 2>/dev/null || ( sh < /dev/ttyS0 > /dev/ttyS0 2>&1 & ) 2>/dev/null || true
