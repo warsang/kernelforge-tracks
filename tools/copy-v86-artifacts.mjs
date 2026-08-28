@@ -28,6 +28,15 @@ const dstDir = path.join(repo, "apps/web/public/vendor/artifacts");
 const distDir = path.join(repo, "apps/web/dist/vendor/artifacts");
 const FILES = ["bzImage", "rootfs.cpio", "boot-state.bin"];
 
+// also mirror the v86 vendor files and browsercc wasm so `public/vendor`
+// is self-contained even though `apps/web/public/vendor` is no longer a
+// symlink to `packages/v86-lab/vendor` (see .gitignore).
+const V86_VENDOR_SRC = path.join(repo, "packages/v86-lab/vendor");
+const V86_VENDOR_DST = path.join(repo, "apps/web/public/vendor");
+const BROWSERCC_SRC = path.join(repo, "vendor/browsercc/dist");
+const BROWSERCC_DST = path.join(repo, "apps/web/public/vendor/browsercc/dist");
+const BROWSERCC_DIST_DST = path.join(repo, "apps/web/dist/vendor/browsercc/dist");
+
 async function sha256(p) {
   try {
     const buf = await readFile(p);
@@ -64,6 +73,31 @@ async function copyOne(name) {
 
 let ok = 0;
 for (const f of FILES) if (await copyOne(f)) ok++;
+
+// mirror v86 vendor files (seabios, vgabios, v86.wasm, bundle) if public/vendor is a real dir
+try {
+  await mkdir(V86_VENDOR_DST, { recursive: true });
+  for (const name of ["seabios.bin", "vgabios.bin", "v86.wasm", "v86-bundle-lib.js"]) {
+    try { await cp(path.join(V86_VENDOR_SRC, name), path.join(V86_VENDOR_DST, name)); } catch {}
+    try {
+      await mkdir(path.join(repo, "apps/web/dist/vendor"), { recursive: true });
+      await cp(path.join(V86_VENDOR_SRC, name), path.join(repo, "apps/web/dist/vendor", name));
+    } catch {}
+  }
+} catch {}
+
+// mirror browsercc dist (clang.js, lld.js, headers-manifest.json etc.)
+try {
+  await mkdir(BROWSERCC_DST, { recursive: true });
+  await mkdir(BROWSERCC_DIST_DST, { recursive: true });
+  let copied = 0;
+  for (const name of ["clang.js", "lld.js", "headers-manifest.json", "linux-headers-manifest.json"]) {
+    try { await cp(path.join(BROWSERCC_SRC, name), path.join(BROWSERCC_DST, name)); copied++; } catch {}
+    try { await cp(path.join(BROWSERCC_SRC, name), path.join(BROWSERCC_DIST_DST, name)); } catch {}
+  }
+  if (copied) console.log(`[copy-v86-artifacts] browsercc ${copied} files -> public/vendor/browsercc/dist + dist/vendor/browsercc/dist`);
+} catch {}
+
 if (ok === 0) {
   console.warn("[copy-v86-artifacts] no artifacts copied — v86 labs will show ImageMissingError until the image is built.");
   console.warn("  This is expected on CI without a Linux builder; the rest of the site still builds.");
