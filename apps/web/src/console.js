@@ -121,36 +121,61 @@ async function createXtermConsole(container, { onSubmit, prompt = DEFAULT_PROMPT
   term.open(host);
   try { fit.fit(); } catch { /* zero-size hosts are fine pre-layout */ }
 
-  // Allow page scroll when the xterm viewport is at its scroll limits.
-  // xterm's viewport handles wheel internally and calls preventDefault,
-  // which traps scroll inside the terminal even when the user intends to
-  // scroll the lesson page. With overscroll-behavior:auto and this
-  // handler, wheel events at the top/bottom bubble to #main.
+  // Allow page scroll when the xterm viewport is at its scroll limits,
+  // and also when the viewport has no scrollable overflow at all.
+  // xterm's viewport handles wheel internally with preventDefault, which
+  // traps scroll inside the terminal even when the user intends to scroll
+  // the lesson page (and even when the terminal is not focused, the
+  // page's #main should still scroll). Use xterm's official
+  // attachCustomWheelEventHandler which can return false to let the event
+  // bubble to #main. Fall back to a passive viewport listener for older
+  // xterm builds.
   try {
     const viewport = host.querySelector(".xterm-viewport");
-    if (viewport) {
-      viewport.addEventListener(
-        "wheel",
-        (e) => {
-          const atTop = viewport.scrollTop <= 0;
-          const atBottom =
-            viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
-          const deltaY = e.deltaY;
-          // If we're at the top and scrolling up, or at the bottom and
-          // scrolling down, let the event propagate to the page.
-          // Otherwise let xterm handle it (it will scroll its buffer).
-          if ((atTop && deltaY < 0) || (atBottom && deltaY > 0)) {
-            // Do not preventDefault — allow bubbling to #main
-            return;
-          }
-          // For interior scrolling, xterm will handle it; we don't need to
-          // do anything, but ensure the event doesn't bubble unnecessarily.
-          // No preventDefault here either — xterm's own handler will call it
-          // if it actually scrolls. With passive:true we can't call it anyway.
-        },
-        { passive: true }
-      );
+    // Primary: xterm API — return false to let the browser handle the wheel
+    // at the scroll limits (or when there's nothing to scroll).
+    if (typeof term.attachCustomWheelEventHandler === "function") {
+      term.attachCustomWheelEventHandler((ev) => {
+        // If there's no scrollback or viewport not scrollable, always let
+        // the page handle it — otherwise the terminal would trap all wheel
+        // events even when it has nothing to scroll.
+        if (!viewport || viewport.scrollHeight <= viewport.clientHeight) {
+          return false;
+        }
+        const atTop = viewport.scrollTop <= 0;
+        const atBottom =
+          viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
+        const deltaY = ev.deltaY;
+        if ((atTop && deltaY < 0) || (atBottom && deltaY > 0)) {
+          return false; // bubble to #main / window
+        }
+        return true; // let xterm scroll its buffer
+      });
     }
+    // Fallback / extra safety: also listen on the host so that wheel
+    // events that xterm doesn't handle (e.g. when terminal not focused
+    // but mouse is over it) still bubble correctly.
+    const wheelTarget = viewport || host;
+    wheelTarget.addEventListener(
+      "wheel",
+      (e) => {
+        // If the viewport can't scroll at all, don't trap the event.
+        if (!viewport || viewport.scrollHeight <= viewport.clientHeight) {
+          return;
+        }
+        const atTop = viewport.scrollTop <= 0;
+        const atBottom =
+          viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
+        if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+          // Let it bubble — do not call preventDefault
+          e.stopPropagation();
+        }
+      },
+      { passive: true }
+    );
+    // Ensure the host and viewport allow scroll chaining to #main.
+    host.style.overscrollBehavior = "auto";
+    if (viewport) viewport.style.overscrollBehavior = "auto";
   } catch { /* viewport not yet in DOM */ }
 
   let lineBuf = "";
