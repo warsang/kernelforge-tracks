@@ -4,10 +4,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    hmr: { overlay: false },
     headers: {
-      // SharedArrayBuffer / cross-origin isolation for future unicorn backend
-      "cross-origin-opener-policy": "same-origin",
-      "cross-origin-embedder-policy": "require-corp",
+      // COEP/CORP disabled for Halfix WASM (halfix.wasm has no CORP header)
+      // Re-enable only if unicorn SharedArrayBuffer is needed and static files send CORP
+      // "cross-origin-opener-policy": "same-origin",
+      // "cross-origin-embedder-policy": "require-corp",
     },
     proxy: {
       // dev convenience only; production uses the wasm path.
@@ -30,6 +32,7 @@ export default defineConfig({
     },
   },
   build: { outDir: "dist", target: "es2022" },
+  optimizeDeps: { exclude: ["@kernelforge/halfix-lab"] },
   // v86's libv86.js does `if (typeof process !== "undefined") global.setImmediate`
   // which would ReferenceError in browsers where `process` is polyfilled but
   // `global` is not. Shim `global` to `globalThis` and keep `process.env` minimal.

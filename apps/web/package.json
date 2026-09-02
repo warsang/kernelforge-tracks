@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node ../../tools/copy-v86-artifacts.mjs || true",
+    "prebuild": "node ../../tools/copy-v86-artifacts.mjs || true; node ../../tools/copy-halfix-artifacts.mjs || true",
     "build": "vite build",
-    "postbuild": "node ../../tools/copy-v86-artifacts.mjs || true",
+    "postbuild": "node ../../tools/copy-v86-artifacts.mjs || true; node ../../tools/copy-halfix-artifacts.mjs || true",
     "preview": "vite preview",
     "test": "node --test test/*.test.mjs"
   },
@@ -23,6 +23,7 @@
     "@kernelforge/compiler-worker": "^0.1.0",
     "@kernelforge/sogen-runtime": "^0.1.0",
     "@kernelforge/v86-lab": "^0.1.0",
+    "@kernelforge/halfix-lab": "^0.1.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "capstone-wasm": "^1.0.3",

@@ -143,6 +143,12 @@ input.cmd { width: 100%; font-family: var(--mono); margin-top: 6px; }
 .mono { font-family: ui-monospace, monospace; font-size: 0.85em; word-break: break-all; }
 .report { margin-top: 12px; }
 button.tool { width: 100%; text-align: left; margin-bottom: 8px; }
+#halfix-vga { image-rendering: pixelated; }
+.halfix-log { font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+.halfix-log .good { color: var(--good); }
+.halfix-log .err { color: var(--bad); }
+.halfix-log .warn { color: var(--warn); }
+.halfix-log .mono { font-size: 11px; color: var(--dim); }
 
 /* rendered lesson markdown */
 .lesson-body { font-size: 14px; line-height: 1.65; max-width: 78ch; }

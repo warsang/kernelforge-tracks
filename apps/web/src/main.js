@@ -522,6 +522,14 @@ function renderSidebar() {
     },
   }, "⚗ Ghidra Analysis");
   sidebar.append(analysisBtn);
+  const halfixBtn = h("button", {
+    class: "tool",
+    onclick: async () => {
+      const { renderHalfix } = await import("./halfix.js");
+      renderHalfix(document.getElementById("main"));
+    },
+  }, "🖥️ Halfix — Win10 22H2 (x86)");
+  sidebar.append(halfixBtn);
   // Free navigation: every lesson is selectable so players can jump straight
   // to the topics they care about. The progression chain stays in the data
   // and still drives points/completion marks — it guides, it no longer gates.

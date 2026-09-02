@@ -1,0 +1,3 @@
+[submodule "vendor/halfix"]
+	path = vendor/halfix
+	url = https://github.com/nepx/halfix
